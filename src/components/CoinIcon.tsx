@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 interface CoinIconProps {
   coin: string;
@@ -21,13 +21,35 @@ const COIN_BG: Record<string, { bg: string; fg: string; ring?: string }> = {
   SUI: { bg: '#3898EC', fg: '#FFFFFF' },
   JUP: { bg: '#18241C', fg: '#C7F284', ring: '#C7F284' },
   RAY: { bg: '#131A35', fg: '#5AC4BE', ring: '#8C6EEF' },
+  ZEC: { bg: '#F4B728', fg: '#111827', ring: '#FDE68A' },
+  USDC: { bg: '#2775CA', fg: '#FFFFFF', ring: '#93C5FD' },
+  USDT: { bg: '#26A17B', fg: '#FFFFFF', ring: '#6EE7B7' },
+  USDG: { bg: '#111827', fg: '#D500F9', ring: '#D500F9' },
+  PEPE: { bg: '#15803D', fg: '#DCFCE7', ring: '#4ADE80' },
+  BONK: { bg: '#EA580C', fg: '#FEF3C7', ring: '#FACC15' },
+  CAKE: { bg: '#3B2314', fg: '#60EFFF', ring: '#F472B6' },
+  AAVE: { bg: '#2EBAC6', fg: '#FFFFFF', ring: '#B6509E' },
+  UNI: { bg: '#FF007A', fg: '#FFFFFF' },
+  ARB: { bg: '#1D2939', fg: '#28A0F0', ring: '#28A0F0' },
+  PAXG: { bg: '#CA8A04', fg: '#FEF9C3', ring: '#FACC15' },
 };
+
+function normalizeCoinSymbol(coin: string): string {
+  const clean = (coin || 'BTC').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const strippedK = clean.replace(/^K(?=[A-Z]{2,})/, '');
+  if (strippedK === 'WETH') return 'ETH';
+  if (strippedK === 'WBTC') return 'BTC';
+  if (strippedK === 'WBNB') return 'BNB';
+  if (strippedK === 'WSOL') return 'SOL';
+  if (strippedK === 'WHYPE') return 'HYPE';
+  return strippedK || clean || 'BTC';
+}
 
 /**
  * Crisp inline vector icon per cryptocurrency asset (zero external CDN latency).
  */
 export const CoinIcon: React.FC<CoinIconProps> = ({ coin, size = 14, className = '' }) => {
-  const sym = (coin || 'BTC').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  const sym = normalizeCoinSymbol(coin);
   const style = COIN_BG[sym] || { bg: '#1E293B', fg: '#38BDF8', ring: '#38BDF8' };
 
   const renderGlyph = () => {
@@ -142,18 +164,34 @@ export const CoinIcon: React.FC<CoinIconProps> = ({ coin, size = 14, className =
             <path d="M7.6 7.4h3c1.1 0 1.8.6 1.8 1.5 0 .7-.4 1.2-1.1 1.4l1.3 2.3h-1.6l-1.1-2H9v2H7.6V7.4zm1.4 1.1v1.4h1.4c.5 0 .8-.3.8-.7s-.3-.7-.8-.7H9z" fill="#5AC4BE" />
           </g>
         );
+      case 'ZEC':
+        return (
+          <path
+            d="M9.3 4.2h1.4v1.4h2.9v1.5l-4.5 5.8h4.5v1.5h-2.9v1.4H9.3v-1.4H6.4v-1.5l4.5-5.8H6.4V5.6h2.9V4.2z"
+            fill={style.fg}
+          />
+        );
+      case 'USDC':
+      case 'USDT':
+      case 'USDG':
+        return (
+          <path
+            d="M9.4 4.3h1.2v1.2c1.4.2 2.4 1 2.4 2.1h-1.5c0-.6-.5-1-1.5-1-.9 0-1.4.4-1.4.9 0 .6.5.9 1.7 1.1 1.8.4 2.8 1 2.8 2.4 0 1.2-1 2.1-2.5 2.3v1.4H9.4v-1.4c-1.5-.2-2.6-1.1-2.7-2.4h1.5c.1.7.7 1.1 1.7 1.1 1 0 1.6-.4 1.6-1 0-.6-.5-.9-1.8-1.2-1.7-.4-2.7-1-2.7-2.3 0-1.2 1-2 2.4-2.2V4.3z"
+            fill={style.fg}
+          />
+        );
       default:
         return (
           <text
             x="10"
             y="12.8"
             textAnchor="middle"
-            fontSize="8.5"
+            fontSize={sym.length >= 4 ? '6.6' : '8.2'}
             fontWeight="800"
             fill={style.fg}
             fontFamily="monospace"
           >
-            {sym.slice(0, 2)}
+            {sym.slice(0, 3)}
           </text>
         );
     }
@@ -177,6 +215,53 @@ export const CoinIcon: React.FC<CoinIconProps> = ({ coin, size = 14, className =
       />
       {renderGlyph()}
     </svg>
+  );
+};
+
+interface MarketTokenIconProps {
+  symbol: string;
+  chainId?: string;
+  address?: string;
+  imageUrl?: string;
+  size?: number;
+  className?: string;
+}
+
+/**
+ * Full-coverage market & DEX token icon:
+ * Renders real off-chain/on-chain logo via backend `/api/live/token-icon` (never 404),
+ * with instant vector <CoinIcon /> while loading or on offline fallback.
+ */
+export const MarketTokenIcon: React.FC<MarketTokenIconProps> = ({
+  symbol,
+  chainId = 'hyperliquid',
+  address = '',
+  imageUrl,
+  size = 16,
+  className = '',
+}) => {
+  const [failed, setFailed] = useState(false);
+  const src =
+    imageUrl ||
+    `/api/live/token-icon?symbol=${encodeURIComponent(symbol || 'TOK')}&chain=${encodeURIComponent(
+      chainId
+    )}${address ? `&addr=${encodeURIComponent(address)}` : ''}`;
+
+  if (failed || !src) {
+    return <CoinIcon coin={symbol} size={size} className={className} />;
+  }
+
+  return (
+    <img
+      src={src}
+      alt={`${symbol} icon`}
+      width={size}
+      height={size}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      className={`rounded-full shrink-0 object-cover bg-[#0B1220] border border-white/10 ${className}`}
+      style={{ width: size, height: size }}
+    />
   );
 };
 

@@ -1,29 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
-import {
-  getRealCandles,
-  getRealMarketSnapshot,
-  getRealAggregatedOrderbook,
-  verifyAndFetchAccountBalance,
-  executeRealExchangeOrder,
-} from './backend/exchangeGateway.mjs';
-
-function readJsonBody(req: any): Promise<any> {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk: any) => {
-      data += chunk;
-    });
-    req.on('end', () => {
-      try {
-        resolve(data ? JSON.parse(data) : {});
-      } catch (e) {
-        reject(e);
-      }
-    });
-    req.on('error', reject);
-  });
-}
+import { handleGatewayApiRoute } from './backend/exchangeGateway.mjs';
 
 export default defineConfig({
   plugins: [
@@ -36,70 +13,64 @@ export default defineConfig({
             return next();
           }
 
-          res.setHeader('Content-Type', 'application/json');
-
           try {
+            // If production gateway (8080) is running locally, share its warm single-instance cache & rate-limit budget cleanly;
+            // otherwise seamlessly fall back to in-process handleGatewayApiRoute.
+            const rawBody =
+              req.method && req.method !== 'GET' && req.method !== 'HEAD'
+                ? await new Promise<string>((resolve) => {
+                    let s = '';
+                    req.on('data', (c: any) => {
+                      s += c;
+                    });
+                    req.on('end', () => resolve(s));
+                  })
+                : '';
+
+            try {
+              const controller = new AbortController();
+              const timer = setTimeout(() => controller.abort(), 9000);
+              const proxyRes = await fetch(`http://127.0.0.1:8080${req.url}`, {
+                method: req.method || 'GET',
+                headers: { 'Content-Type': 'application/json' },
+                body: rawBody || undefined,
+                signal: controller.signal,
+              });
+              clearTimeout(timer);
+              const ct = proxyRes.headers.get('content-type') || 'application/json';
+              const cc = proxyRes.headers.get('cache-control');
+              res.setHeader('Content-Type', ct);
+              if (cc) res.setHeader('Cache-Control', cc);
+              res.statusCode = proxyRes.status;
+              const buf = Buffer.from(await proxyRes.arrayBuffer());
+              res.end(buf);
+              return;
+            } catch {
+              // 8080 not running -> execute in-process gateway cleanly
+            }
+
             const urlObj = new URL(req.url, 'http://localhost:5173');
-
-            if (urlObj.pathname === '/api/health' && req.method === 'GET') {
-              res.statusCode = 200;
-              res.end(
-                JSON.stringify({
-                  ok: true,
-                  service: 'fincept-whale-quant-terminal',
-                  mode: 'VITE_DEV_GATEWAY',
-                  timestamp: new Date().toISOString(),
-                })
-              );
+            const parsedBody = rawBody ? JSON.parse(rawBody) : {};
+            const result: any = await handleGatewayApiRoute(
+              urlObj.pathname,
+              urlObj.searchParams,
+              req.method || 'GET',
+              async () => parsedBody,
+              'VITE_DEV_GATEWAY'
+            );
+            if (result.contentType) {
+              res.setHeader('Content-Type', result.contentType);
+              res.setHeader('Cache-Control', 'public, max-age=3600');
+              res.statusCode = result.status;
+              res.end(result.payload);
               return;
             }
-
-            if (urlObj.pathname === '/api/live/snapshot' && req.method === 'GET') {
-              const snap = await getRealMarketSnapshot();
-              res.statusCode = 200;
-              res.end(JSON.stringify(snap));
-              return;
-            }
-
-            if (urlObj.pathname === '/api/live/candles' && req.method === 'GET') {
-              const hlCoin = urlObj.searchParams.get('hlCoin') || 'BTC';
-              const binanceSymbol = urlObj.searchParams.get('binanceSymbol') || 'BTCUSDT';
-              const interval = urlObj.searchParams.get('interval') || '15m';
-              const limit = Number(urlObj.searchParams.get('limit') || '140');
-              const candleRes = await getRealCandles(hlCoin, binanceSymbol, interval, limit);
-              res.statusCode = 200;
-              res.end(JSON.stringify(candleRes));
-              return;
-            }
-
-            if (urlObj.pathname === '/api/live/orderbook' && req.method === 'GET') {
-              const hlCoin = urlObj.searchParams.get('hlCoin') || 'BTC';
-              const binanceSymbol = urlObj.searchParams.get('binanceSymbol') || 'BTCUSDT';
-              const book = await getRealAggregatedOrderbook(hlCoin, binanceSymbol);
-              res.statusCode = 200;
-              res.end(JSON.stringify(book));
-              return;
-            }
-
-            if (urlObj.pathname === '/api/account/verify' && req.method === 'POST') {
-              const body = await readJsonBody(req);
-              const result = await verifyAndFetchAccountBalance(body);
-              res.statusCode = 200;
-              res.end(JSON.stringify(result));
-              return;
-            }
-
-            if (urlObj.pathname === '/api/execute/order' && req.method === 'POST') {
-              const body = await readJsonBody(req);
-              const result = await executeRealExchangeOrder(body);
-              res.statusCode = 200;
-              res.end(JSON.stringify(result));
-              return;
-            }
-
-            res.statusCode = 404;
-            res.end(JSON.stringify({ ok: false, error: 'Endpoint not found' }));
+            res.setHeader('Content-Type', 'application/json');
+            res.statusCode = result.status;
+            res.end(JSON.stringify(result.payload));
+            return;
           } catch (err: any) {
+            res.setHeader('Content-Type', 'application/json');
             res.statusCode = 500;
             res.end(
               JSON.stringify({

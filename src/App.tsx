@@ -6,6 +6,7 @@ import {
   ChordFlowLink,
   ClosedTradeLog,
   DexScreenerPoolItem,
+  DexUniverseStats,
   ExecutionEnvironment,
   HlpVaultSummary,
   MarketPair,
@@ -43,12 +44,54 @@ import {
   verifyRealAccountWithBackend,
 } from './engine/walletAdapter';
 import { WhaleChordViz } from './components/WhaleChordViz';
-import { CoinIcon } from './components/CoinIcon';
+import { CoinIcon, MarketTokenIcon } from './components/CoinIcon';
 import {
   CandlestickOrderflowChart,
   ChartInterval,
 } from './components/CandlestickOrderflowChart';
 import { WalletConnectModal } from './components/WalletConnectModal';
+
+function buildMarketPairFromDexPool(
+  pool: DexScreenerPoolItem,
+  candles?: CandlePoint[],
+  overrideSymbol?: string
+): MarketPair {
+  const baseAsset = (pool.baseSymbol || pool.symbol.split('/')[0] || 'TOK').trim();
+  const wrappedAliasMap: Record<string, string> = { WETH: 'ETH', WBTC: 'BTC', WSOL: 'SOL', WBNB: 'BNB', WHYPE: 'HYPE' };
+  const normalizedHlCoin = wrappedAliasMap[baseAsset.toUpperCase()] || baseAsset;
+  const px = pool.priceUsd || 0;
+  const high24h =
+    candles && candles.length > 0 ? Math.max(...candles.map((c) => c.high)) : px * 1.03;
+  const low24h =
+    candles && candles.length > 0 ? Math.min(...candles.map((c) => c.low)) : px * 0.97;
+  const flow1h = pool.whaleNetBuy1hUsd || 0;
+  return {
+    symbol: overrideSymbol || pool.symbol,
+    baseAsset,
+    quoteAsset: pool.quoteSymbol || 'USDC',
+    hlCoin: normalizedHlCoin,
+    binanceSymbol: `${normalizedHlCoin.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase()}USDT`,
+    chainNetwork: pool.chain,
+    marketType: pool.pairAddress?.startsWith('HL-PERP-') ? 'PERP' : 'DEX_POOL',
+    primaryExchange: 'DEXSCREENER',
+    supportedExchanges: ['DEXSCREENER', 'HYPERLIQUID'],
+    price: px,
+    change24h: pool.change24h || 0,
+    high24h,
+    low24h,
+    volume24hUsd: pool.volume24hUsd || 0,
+    openInterestUsd: pool.liquidityTvlUsd || 0,
+    fundingRate: 0,
+    spreadBps: 4,
+    depthPlusMinusHalfPctUsd: pool.liquidityTvlUsd || 0,
+    dexPoolTvlUsd: pool.liquidityTvlUsd || 0,
+    liquidityScore: pool.passedLiquidityGate ? 88 : 68,
+    obiScore: 0.1,
+    cvdDelta15mUsd: flow1h,
+    whaleNetFlow1hUsd: flow1h,
+    whaleBias: flow1h > 50_000 ? 'ACCUMULATING' : flow1h < -50_000 ? 'DISTRIBUTING' : 'NEUTRAL',
+  };
+}
 
 export function App() {
   const [markets, setMarkets] = useState<MarketPair[]>(INITIAL_MARKETS);
@@ -77,7 +120,27 @@ export function App() {
     arbitrumL2?: number;
     bscMainnet?: number;
     solanaSlot?: number;
+    hyperEvmBlock?: number;
+    robinhoodBlock?: number;
   }>({});
+  const [dexUniverseStats, setDexUniverseStats] = useState<DexUniverseStats | null>(null);
+  const [dexChainFilter, setDexChainFilter] = useState<
+    'all' | 'solana' | 'bsc' | 'hyperliquid' | 'robinhood' | 'ethereum'
+  >('all');
+  const [dexSearchQuery, setDexSearchQuery] = useState<string>('');
+  const [dexUniverseItems, setDexUniverseItems] = useState<DexScreenerPoolItem[]>([]);
+  const [isLoadingDexUniverse, setIsLoadingDexUniverse] = useState<boolean>(false);
+  const [inspectedDexPool, setInspectedDexPool] = useState<DexScreenerPoolItem | null>(null);
+  const [inspectedPoolTrades, setInspectedPoolTrades] = useState<any[]>([]);
+  const [isLoadingPoolTrades, setIsLoadingPoolTrades] = useState<boolean>(false);
+  const [selectedDexChartPool, setSelectedDexChartPool] = useState<DexScreenerPoolItem | null>(null);
+  const [dexChartCandles, setDexChartCandles] = useState<CandlePoint[]>([]);
+  const [dexChartInterval, setDexChartInterval] = useState<ChartInterval>('15m');
+  const [dexChartSource, setDexChartSource] = useState<string>('ONCHAIN_DEX');
+  const [isLoadingDexChart, setIsLoadingDexChart] = useState<boolean>(false);
+  const [customDeskPool, setCustomDeskPool] = useState<DexScreenerPoolItem | null>(null);
+  const dexChartPanelRef = useRef<HTMLDivElement | null>(null);
+  const [tapeChainFilter, setTapeChainFilter] = useState<string>('ALL');
   const [chordLinks, setChordLinks] = useState<ChordFlowLink[]>(INITIAL_CHORD_LINKS);
   const [dexPools, setDexPools] = useState<DexScreenerPoolItem[]>(INITIAL_DEXSCREENER_POOLS);
   const [jupiterRoutes, setJupiterRoutes] = useState<Record<string, any>>({});
@@ -183,10 +246,15 @@ export function App() {
     dexscreener: 'LIVE',
   });
 
-  const activePair = useMemo(
-    () => markets.find((m) => m.symbol === selectedSymbol) || markets[0],
-    [markets, selectedSymbol]
-  );
+  const activePair = useMemo<MarketPair>(() => {
+    const baseMatch = markets.find((m) => m.symbol === selectedSymbol);
+    if (baseMatch) return baseMatch;
+    if (customDeskPool) {
+      const baseAsset = (customDeskPool.baseSymbol || customDeskPool.symbol.split('/')[0] || 'TOK').trim();
+      return buildMarketPairFromDexPool(customDeskPool, undefined, `${baseAsset}-DEX`);
+    }
+    return markets[0];
+  }, [markets, selectedSymbol, customDeskPool]);
 
   const activePosition = useMemo(
     () => positions.find((p) => p.symbol === activePair.symbol),
@@ -216,14 +284,38 @@ export function App() {
   // 1. Fetch Real Historical & Live OHLCV Candlesticks from Exchange Gateway
   useEffect(() => {
     let mounted = true;
+    const isCustomDesk =
+      customDeskPool && activePair.symbol === `${(customDeskPool.baseSymbol || customDeskPool.symbol.split('/')[0] || 'TOK').trim()}-DEX`;
     const loadRealCandles = async (showSpinner = false) => {
       if (showSpinner) setIsLoadingCandles(true);
-      const res = await fetchBackendRealCandles(
-        activePair.hlCoin,
-        activePair.binanceSymbol,
-        chartTimeframe,
-        140
-      );
+      let res: {
+        ok: boolean;
+        candles: CandlePoint[];
+        source?: string;
+        highWindow?: number;
+        lowWindow?: number;
+        recentCvd15m?: number;
+      } = { ok: false, candles: [] };
+      if (isCustomDesk && customDeskPool) {
+        try {
+          const addr = customDeskPool.fullPairAddress || customDeskPool.pairAddress;
+          const cid = customDeskPool.chainId || customDeskPool.chain || 'solana';
+          const hlCoin = customDeskPool.baseSymbol || customDeskPool.symbol.split('/')[0].trim();
+          const r = await fetch(
+            `/api/live/candles?hlCoin=${encodeURIComponent(hlCoin)}&chain=${encodeURIComponent(cid)}&poolAddress=${encodeURIComponent(addr)}&interval=${chartTimeframe}&limit=140`
+          );
+          if (r.ok) res = await r.json();
+        } catch {
+          // ignore transient error
+        }
+      } else {
+        res = await fetchBackendRealCandles(
+          activePair.hlCoin,
+          activePair.binanceSymbol,
+          chartTimeframe,
+          140
+        );
+      }
       if (!mounted) return;
       if (showSpinner) setIsLoadingCandles(false);
 
@@ -388,6 +480,10 @@ export function App() {
 
         if (snap.realDexPools && snap.realDexPools.length > 0) {
           setDexPools(snap.realDexPools);
+        }
+
+        if (snap.dexUniverseStats) {
+          setDexUniverseStats(snap.dexUniverseStats);
         }
 
         if (snap.jupiterRoutes && Object.keys(snap.jupiterRoutes).length > 0) {
@@ -1172,6 +1268,144 @@ export function App() {
     }
   };
 
+  const loadDexUniverse = async (chain: string, queryText = '') => {
+    setIsLoadingDexUniverse(true);
+    try {
+      const endpoint = queryText.trim()
+        ? `/api/live/dex/search?q=${encodeURIComponent(queryText.trim())}&chain=${encodeURIComponent(chain)}`
+        : `/api/live/dex/universe?chain=${encodeURIComponent(chain)}&limit=300`;
+      const res = await fetch(endpoint);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.items)) {
+          setDexUniverseItems(data.items);
+        }
+        if (data.totalIndexedPools !== undefined) {
+          setDexUniverseStats(data);
+        }
+      }
+    } catch {
+      // Keep cached dexPools on transient error
+    } finally {
+      setIsLoadingDexUniverse(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTopTab === 'DEX_SCREENER') {
+      loadDexUniverse(dexChainFilter, dexSearchQuery);
+    }
+  }, [activeTopTab, dexChainFilter]);
+
+  const handleInspectPoolTrades = async (pool: DexScreenerPoolItem) => {
+    setInspectedDexPool(pool);
+    setIsLoadingPoolTrades(true);
+    setInspectedPoolTrades([]);
+    try {
+      const addr = pool.fullPairAddress || pool.pairAddress;
+      const cid = pool.chainId || pool.chain || 'solana';
+      const res = await fetch(
+        `/api/live/dex/pool-trades?chain=${encodeURIComponent(cid)}&poolAddress=${encodeURIComponent(addr)}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.trades)) {
+          setInspectedPoolTrades(data.trades);
+        }
+      }
+    } catch {
+      // Ignore transient network errors
+    } finally {
+      setIsLoadingPoolTrades(false);
+    }
+  };
+
+  const loadDexPoolChart = async (
+    pool: DexScreenerPoolItem,
+    tf: ChartInterval = dexChartInterval,
+    showSpinner = true
+  ) => {
+    const addr = pool.fullPairAddress || pool.pairAddress;
+    const cid = pool.chainId || pool.chain || 'solana';
+    const hlCoin = pool.baseSymbol || pool.symbol.split('/')[0].trim();
+    if (showSpinner) setIsLoadingDexChart(true);
+    try {
+      const res = await fetch(
+        `/api/live/candles?hlCoin=${encodeURIComponent(hlCoin)}&chain=${encodeURIComponent(cid)}&poolAddress=${encodeURIComponent(addr)}&interval=${tf}&limit=140`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data.candles) && data.candles.length > 0) {
+          setDexChartCandles(data.candles);
+          if (data.source) setDexChartSource(data.source);
+          setCommandFeedback(
+            `Real Chart Loaded (${data.source}): ${pool.symbol} (${pool.chain}) @ $${pool.priceUsd}`
+          );
+          return;
+        }
+      }
+      setDexChartSource(`UNAVAILABLE (${cid.toUpperCase()})`);
+    } catch {
+      // keep state on transient error
+    } finally {
+      if (showSpinner) setIsLoadingDexChart(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTopTab !== 'DEX_SCREENER' || !selectedDexChartPool) return;
+    const targetAddr = selectedDexChartPool.fullPairAddress || selectedDexChartPool.pairAddress;
+    const latestFromFeed = [...dexUniverseItems, ...dexPools].find(
+      (it) =>
+        (it.fullPairAddress || it.pairAddress) === targetAddr &&
+        (it.chainId || it.chain) === (selectedDexChartPool.chainId || selectedDexChartPool.chain)
+    );
+    if (latestFromFeed && latestFromFeed.priceUsd !== selectedDexChartPool.priceUsd) {
+      setSelectedDexChartPool(latestFromFeed);
+    }
+  }, [dexUniverseItems, dexPools, activeTopTab]);
+
+  useEffect(() => {
+    if (activeTopTab !== 'DEX_SCREENER' || !selectedDexChartPool) return;
+    loadDexPoolChart(selectedDexChartPool, dexChartInterval, dexChartCandles.length === 0);
+    const timer = setInterval(() => {
+      loadDexPoolChart(selectedDexChartPool, dexChartInterval, false);
+    }, 8000);
+    return () => clearInterval(timer);
+  }, [
+    activeTopTab,
+    selectedDexChartPool?.fullPairAddress,
+    selectedDexChartPool?.chainId,
+    dexChartInterval,
+  ]);
+
+  const handleOpenDexPoolChart = async (pool: DexScreenerPoolItem) => {
+    setSelectedDexChartPool(pool);
+    setDexChartCandles([]);
+    setDexChartSource('SYNCING...');
+    setTimeout(() => {
+      dexChartPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 40);
+    await Promise.all([
+      loadDexPoolChart(pool, dexChartInterval, true),
+      handleInspectPoolTrades(pool),
+    ]);
+  };
+
+  const handlePinPoolToMainDesk = (pool: DexScreenerPoolItem) => {
+    const baseAsset = (pool.baseSymbol || pool.symbol.split('/')[0] || 'TOK').trim();
+    const matchedMkt = markets.find((m) => m.symbol === pool.symbol || (pool.chainId === 'hyperliquid' && pool.pairAddress.startsWith('HL-PERP-') && m.baseAsset.toUpperCase() === baseAsset.toUpperCase()));
+    if (matchedMkt) {
+      setCustomDeskPool(null);
+      setSelectedSymbol(matchedMkt.symbol);
+    } else {
+      setCustomDeskPool(pool);
+      setSelectedSymbol(`${baseAsset}-DEX`);
+    }
+    setActiveTopTab('TERMINAL_DESK');
+    setActiveSubTab('OVERVIEW');
+  };
+
   const formatDepthOrVol = (usd: number) => {
     if (usd >= 1_000_000_000) return `$${(usd / 1_000_000_000).toFixed(2)}B`;
     if (usd >= 1_000_000) return `$${(usd / 1_000_000).toFixed(2)}M`;
@@ -1375,7 +1609,10 @@ export function App() {
             return (
               <button
                 key={m.symbol}
-                onClick={() => setSelectedSymbol(m.symbol)}
+                onClick={() => {
+                  setCustomDeskPool(null);
+                  setSelectedSymbol(m.symbol);
+                }}
                 className={`px-1.5 py-0.5 border flex items-center justify-between gap-1 min-w-0 transition-colors ${
                   isSel
                     ? 'bg-[#131E30] border-[#00E5FF] text-[#F8FAFC] font-extrabold shadow-[inset_0_0_0_1px_rgba(0,229,255,0.2)]'
@@ -1413,7 +1650,17 @@ export function App() {
       <div className="flex flex-wrap items-center justify-between px-3 py-1.5 bg-[#06090F] border-b border-[#1E2736] text-[11px] gap-2 w-full">
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
           <div className="flex items-center gap-2 shrink-0">
-            <CoinIcon coin={activePair.baseAsset} size={18} />
+            {customDeskPool && activePair.symbol.endsWith('-DEX') ? (
+              <MarketTokenIcon
+                symbol={activePair.baseAsset}
+                chainId={customDeskPool.chainId}
+                address={customDeskPool.baseTokenAddress || customDeskPool.fullPairAddress}
+                imageUrl={customDeskPool.tokenImageUrl}
+                size={18}
+              />
+            ) : (
+              <CoinIcon coin={activePair.baseAsset} size={18} />
+            )}
             {activePair.cmcRank && (
               <span className="px-1.5 py-0.5 text-[9.5px] font-extrabold bg-[#FF9F1C] text-black">
                 CMC #{activePair.cmcRank}
@@ -1421,13 +1668,13 @@ export function App() {
             )}
             <span className="text-sm font-extrabold text-[#FF9F1C]">{activePair.symbol}</span>
             <span className="px-1.5 py-0.5 text-[9.5px] font-bold bg-[#121B2A] text-[#00E5FF] border border-[#1E2F48]">
-              {activePair.primaryExchange}
+              {customDeskPool && activePair.symbol.endsWith('-DEX') ? customDeskPool.chain : activePair.primaryExchange}
             </span>
           </div>
 
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="text-sm font-extrabold text-white">
-              ${activePair.price.toLocaleString()}
+              ${activePair.price >= 100 ? activePair.price.toLocaleString() : activePair.price >= 0.01 ? activePair.price.toFixed(4) : activePair.price > 0 ? activePair.price.toPrecision(4) : '0'}
             </span>
             <span
               className={`px-1.5 py-0.5 text-[10px] font-extrabold ${
@@ -1989,7 +2236,20 @@ export function App() {
                     );
                   })()}
 
-                  {activeSubTab === 'WHALE_TAPE' && (
+                  {activeSubTab === 'WHALE_TAPE' && (() => {
+                    const filteredTape = whaleTxs.filter((w) => {
+                      if (tapeChainFilter === 'ALL') return true;
+                      const cid = (w.chainId || '').toUpperCase();
+                      const cName = (w.chainName || w.exchange || '').toUpperCase();
+                      if (tapeChainFilter === 'BSC') {
+                        return cid === 'BSC' || cName.includes('BSC') || cName.includes('BNB');
+                      }
+                      if (tapeChainFilter === 'HYPERLIQUID') {
+                        return cid === 'HYPERLIQUID' || cName.includes('HYPER');
+                      }
+                      return cid === tapeChainFilter || cName.includes(tapeChainFilter);
+                    });
+                    return (
                     <div className="flex flex-col h-full bg-[#06080C] p-2.5 overflow-y-auto space-y-2 text-[10.5px]">
                       <div className="flex flex-wrap items-center justify-between border-b border-[#1E2736] pb-1.5 gap-2">
                         <div>
@@ -1997,15 +2257,37 @@ export function App() {
                             REAL-TIME ON-CHAIN BLOCKCHAIN EXPLORER (TX HASH • BLOCK HEIGHT • WALLET ADDRESS)
                           </div>
                           <div className="text-[9.5px] text-[#94A3B8]">
-                            Setiap transaksi whale real-time dapat dilacak langsung melalui Hash (TX),
-                            Nomor Block / Slot, dan Alamat Wallet di Block Explorer resmi.
+                            Integrasi transaksi on-chain live lintas Solana, BSC, Hyperliquid/HyperEVM, Robinhood Chain & Ethereum.
                           </div>
                         </div>
                         <span className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-[9.5px] font-extrabold">
-                          ● ON-CHAIN RPC VERIFIED ({whaleTxs.length} TXs)
+                          ● ON-CHAIN RPC VERIFIED ({filteredTape.length}/{whaleTxs.length} TXs)
                         </span>
                       </div>
-                      {whaleTxs.map((w) => (
+                      <div className="flex flex-wrap items-center gap-1 pb-1">
+                        {[
+                          { id: 'ALL', label: 'ALL CHAINS' },
+                          { id: 'SOLANA', label: 'SOLANA' },
+                          { id: 'BSC', label: 'BSC / BINANCE' },
+                          { id: 'HYPERLIQUID', label: 'HYPERLIQUID / HYPEREVM' },
+                          { id: 'ROBINHOOD', label: 'ROBINHOOD' },
+                          { id: 'ETHEREUM', label: 'ETHEREUM' },
+                          { id: 'ARBITRUM', label: 'ARBITRUM' },
+                        ].map((cf) => (
+                          <button
+                            key={cf.id}
+                            onClick={() => setTapeChainFilter(cf.id)}
+                            className={`px-2 py-0.5 text-[9.5px] font-bold border ${
+                              tapeChainFilter === cf.id
+                                ? 'bg-[#17253A] text-[#00E5FF] border-[#00E5FF]'
+                                : 'bg-[#080B11] text-[#94A3B8] border-[#1E2736] hover:text-white'
+                            }`}
+                          >
+                            {cf.label}
+                          </button>
+                        ))}
+                      </div>
+                      {filteredTape.map((w) => (
                         <div
                           key={w.id}
                           className="p-2.5 bg-[#0A0E17] border border-[#1A2436] hover:border-[#00E5FF]/50 space-y-1.5"
@@ -2087,7 +2369,8 @@ export function App() {
                         </div>
                       ))}
                     </div>
-                  )}
+                    );
+                  })()}
 
                   {activeSubTab === 'AGENT_BRAIN' && (
                     <div className="flex flex-col h-full bg-[#06080C] p-2.5 overflow-y-auto space-y-1.5 text-[10.5px]">
@@ -2557,70 +2840,475 @@ export function App() {
               </div>
             </div>
 
+            {/* MULTI-CHAIN DEXSCREENER & HYPERLIQUID ALL-TOKEN EXPLORER (SOLANA • BSC • HYPERLIQUID • ROBINHOOD • ETHEREUM) */}
             <div className="border border-[#1E2736] bg-[#080B11]">
-              <div className="grid grid-cols-8 px-3 py-2 bg-[#0D131E] border-b border-[#1E2736] text-[10.5px] font-extrabold text-[#94A3B8]">
-                <span>PAIR / POOL</span>
+              <div className="p-3 bg-[#0B111D] border-b border-[#1E2736] space-y-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <div className="text-xs font-extrabold text-[#FF9F1C] uppercase">
+                      DEXSCREENER MULTI-CHAIN ALL-TOKEN SCANNER & REAL-TIME ON-CHAIN TX FEED
+                    </div>
+                    <div className="text-[10px] text-[#94A3B8]">
+                      Terindeks Live: <strong className="text-white">{dexUniverseStats?.totalIndexedPools ?? dexPools.length}</strong> Pools/Markets •{' '}
+                      <strong className="text-[#00E5FF]">{dexUniverseStats?.hlPerpCount ?? 235}</strong> Hyperliquid Perp +{' '}
+                      <strong className="text-[#00E676]">{dexUniverseStats?.hlSpotPairsCount ?? 351}</strong> HL Spot Pairs ({dexUniverseStats?.hlSpotTokensCount ?? 516} Token)
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5 text-[9.5px] font-mono">
+                    {(liveBlocks.solanaSlot || 0) > 0 && <span className="px-1.5 py-0.5 bg-[#09121C] border border-[#1E2B40] text-[#00E676]">SOL #{liveBlocks.solanaSlot!.toLocaleString()}</span>}
+                    {(liveBlocks.bscMainnet || 0) > 0 && <span className="px-1.5 py-0.5 bg-[#09121C] border border-[#1E2B40] text-[#FF9F1C]">BSC #{liveBlocks.bscMainnet!.toLocaleString()}</span>}
+                    {(liveBlocks.hyperEvmBlock || 0) > 0 && <span className="px-1.5 py-0.5 bg-[#09121C] border border-[#1E2B40] text-[#00E5FF]">HYPEREVM #{liveBlocks.hyperEvmBlock!.toLocaleString()}</span>}
+                    {(liveBlocks.robinhoodBlock || 0) > 0 && <span className="px-1.5 py-0.5 bg-[#09121C] border border-[#1E2B40] text-[#D500F9]">ROBINHOOD #{liveBlocks.robinhoodBlock!.toLocaleString()}</span>}
+                    {(liveBlocks.ethereumL1 || 0) > 0 && <span className="px-1.5 py-0.5 bg-[#09121C] border border-[#1E2B40] text-[#CBD5E1]">ETH #{liveBlocks.ethereumL1!.toLocaleString()}</span>}
+                  </div>
+                </div>
+
+                {/* Chain Selector Pills & Live Token/Contract Search */}
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-1">
+                    {(
+                      [
+                        { id: 'all', label: 'ALL CHAINS', count: dexUniverseStats?.totalIndexedPools ?? dexPools.length },
+                        { id: 'solana', label: 'SOLANA', count: dexUniverseStats?.chainPoolCounts?.solana ?? 0 },
+                        { id: 'bsc', label: 'BSC (BINANCE)', count: dexUniverseStats?.chainPoolCounts?.bsc ?? 0 },
+                        { id: 'hyperliquid', label: 'HYPERLIQUID / HYPEREVM', count: dexUniverseStats?.chainPoolCounts?.hyperliquid ?? 0 },
+                        { id: 'robinhood', label: 'ROBINHOOD CHAIN', count: dexUniverseStats?.chainPoolCounts?.robinhood ?? 0 },
+                        { id: 'ethereum', label: 'ETHEREUM', count: dexUniverseStats?.chainPoolCounts?.ethereum ?? 0 },
+                      ] as const
+                    ).map((ch) => (
+                      <button
+                        key={ch.id}
+                        onClick={() => setDexChainFilter(ch.id)}
+                        className={`px-2 py-1 text-[10px] font-extrabold border transition-colors ${
+                          dexChainFilter === ch.id
+                            ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
+                            : 'bg-[#06090F] text-[#CBD5E1] border-[#1E2B40] hover:border-[#00E5FF]/60 hover:text-white'
+                        }`}
+                      >
+                        {ch.label} ({ch.count})
+                      </button>
+                    ))}
+                  </div>
+
+                  <form
+                    onSubmit={(e) => {
+                      e.preventDefault();
+                      loadDexUniverse(dexChainFilter, dexSearchQuery);
+                    }}
+                    className="flex items-center gap-1.5"
+                  >
+                    <input
+                      type="text"
+                      value={dexSearchQuery}
+                      onChange={(e) => setDexSearchQuery(e.target.value)}
+                      placeholder="Cari token / simbol / kontrak 0x atau Solana mint..."
+                      className="w-64 sm:w-80 bg-[#05070B] border border-[#243249] focus:border-[#FF9F1C] px-2.5 py-1 text-[10.5px] text-white placeholder-[#64748B] focus:outline-none"
+                    />
+                    <button
+                      type="submit"
+                      disabled={isLoadingDexUniverse}
+                      className="px-2.5 py-1 bg-[#FF9F1C] hover:bg-[#FFB03B] text-black font-extrabold text-[10px]"
+                    >
+                      {isLoadingDexUniverse ? 'SCANNING...' : '🔍 SCAN ALL DEX'}
+                    </button>
+                    {dexSearchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDexSearchQuery('');
+                          loadDexUniverse(dexChainFilter, '');
+                        }}
+                        className="px-2 py-1 bg-[#161F30] text-[#CBD5E1] text-[10px] font-bold border border-[#243249]"
+                      >
+                        RESET
+                      </button>
+                    )}
+                  </form>
+                </div>
+              </div>
+
+              {/* Dedicated Live On-Chain / DEX / HL Market Chart + Swap Stream Workspace */}
+              {selectedDexChartPool && (() => {
+                const chartPx = selectedDexChartPool.priceUsd || 0;
+                const chartFmtPx =
+                  chartPx >= 100
+                    ? chartPx.toLocaleString()
+                    : chartPx >= 0.01
+                      ? chartPx.toFixed(4)
+                      : chartPx > 0
+                        ? chartPx.toPrecision(4)
+                        : '0';
+                const baseSym = (selectedDexChartPool.baseSymbol || selectedDexChartPool.symbol.split('/')[0] || 'TOK').trim();
+                const dynamicPair = buildMarketPairFromDexPool(selectedDexChartPool, dexChartCandles);
+                return (
+                  <div
+                    ref={dexChartPanelRef}
+                    className="p-3 bg-[#070B12] border-b-2 border-[#00E5FF] space-y-3"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1A2538] pb-2">
+                      <div className="flex flex-wrap items-center gap-2.5 min-w-0">
+                        <MarketTokenIcon
+                          symbol={baseSym}
+                          chainId={selectedDexChartPool.chainId}
+                          address={selectedDexChartPool.baseTokenAddress || selectedDexChartPool.fullPairAddress}
+                          imageUrl={selectedDexChartPool.tokenImageUrl}
+                          size={26}
+                        />
+                        <div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <span className="text-sm font-extrabold text-white">
+                              {selectedDexChartPool.symbol}
+                            </span>
+                            <span className="px-1.5 py-0.5 bg-[#121D30] border border-[#223552] text-[#00E5FF] text-[9.5px] font-extrabold">
+                              {selectedDexChartPool.chain} • {selectedDexChartPool.dexName}
+                            </span>
+                            <span className="px-1.5 py-0.5 bg-[#0F1B17] border border-[#00E676]/40 text-[#00E676] text-[9.5px] font-mono font-bold">
+                              FEED: {dexChartSource}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-[#64748B] font-mono truncate max-w-xl">
+                            Pool / Market: {selectedDexChartPool.fullPairAddress || selectedDexChartPool.pairAddress}
+                            {selectedDexChartPool.baseTokenAddress ? ` • Token: ${selectedDexChartPool.baseTokenAddress}` : ''}
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-3">
+                        <div className="text-right">
+                          <div className="text-sm font-extrabold text-white">${chartFmtPx}</div>
+                          <div
+                            className={`text-[10px] font-bold ${
+                              selectedDexChartPool.change24h >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+                            }`}
+                          >
+                            1H: {selectedDexChartPool.change1h >= 0 ? '+' : ''}{selectedDexChartPool.change1h.toFixed(2)}% • 24H: {selectedDexChartPool.change24h >= 0 ? '+' : ''}{selectedDexChartPool.change24h.toFixed(2)}%
+                          </div>
+                        </div>
+                        <div className="hidden sm:flex items-center gap-3 text-[10px] border-l border-[#1E2B40] pl-3">
+                          <div>
+                            <div className="text-[#64748B]">24H VOL</div>
+                            <div className="font-extrabold text-white">{formatDepthOrVol(selectedDexChartPool.volume24hUsd)}</div>
+                          </div>
+                          <div>
+                            <div className="text-[#64748B]">TVL / OI</div>
+                            <div className="font-extrabold text-[#FF9F1C]">{formatDepthOrVol(selectedDexChartPool.liquidityTvlUsd)}</div>
+                          </div>
+                          <div>
+                            <div className="text-[#64748B]">1H B / S</div>
+                            <div className="font-extrabold">
+                              <span className="text-[#00E676]">{selectedDexChartPool.buys1h}B</span> / <span className="text-[#FF1744]">{selectedDexChartPool.sells1h}S</span>
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            onClick={() => handlePinPoolToMainDesk(selectedDexChartPool)}
+                            className="px-2 py-1 bg-[#FF9F1C]/15 hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C] text-[9.5px] font-extrabold"
+                          >
+                            PIN KE DESK UTAMA →
+                          </button>
+                          {selectedDexChartPool.dexScreenerUrl && (
+                            <a
+                              href={selectedDexChartPool.dexScreenerUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="px-2 py-1 bg-[#121D30] text-[#00E5FF] border border-[#00E5FF]/50 text-[9.5px] font-bold"
+                            >
+                              DEXSCREENER ↗
+                            </a>
+                          )}
+                          <button
+                            onClick={() => {
+                              setSelectedDexChartPool(null);
+                              setDexChartCandles([]);
+                            }}
+                            className="px-2 py-1 bg-[#FF1744]/20 text-[#FF1744] border border-[#FF1744] text-[9.5px] font-extrabold"
+                          >
+                            TUTUP CHART ✕
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+                      <div className="lg:col-span-8 h-[390px] border border-[#1B2B44] bg-[#05080D] overflow-hidden flex flex-col">
+                        {dexChartCandles.length > 0 ? (
+                          <CandlestickOrderflowChart
+                            pair={dynamicPair}
+                            candles={dexChartCandles}
+                            timeframe={dexChartInterval}
+                            onTimeframeChange={(tf) => {
+                              setDexChartInterval(tf);
+                              loadDexPoolChart(selectedDexChartPool, tf, true);
+                            }}
+                            isLoadingCandles={isLoadingDexChart}
+                            candleSource={dexChartSource}
+                          />
+                        ) : (
+                          <div className="flex-1 flex flex-col items-center justify-center p-4 text-center space-y-2">
+                            <div className="text-xs font-extrabold text-[#00E5FF]">
+                              {isLoadingDexChart
+                                ? `Memuat OHLCV On-Chain Real untuk ${selectedDexChartPool.symbol} (${selectedDexChartPool.chain})...`
+                                : `Data candlestick OHLCV untuk pool ${selectedDexChartPool.symbol} (${selectedDexChartPool.chain}) sedang disinkronkan dari indexer (${dexChartSource}).`}
+                            </div>
+                            <div className="flex items-center gap-2">
+                              {(['1m', '5m', '15m', '1h', '4h', '1d'] as ChartInterval[]).map((tf) => (
+                                <button
+                                  key={tf}
+                                  onClick={() => {
+                                    setDexChartInterval(tf);
+                                    loadDexPoolChart(selectedDexChartPool, tf, true);
+                                  }}
+                                  className={`px-2 py-0.5 text-[10px] font-bold border ${
+                                    dexChartInterval === tf
+                                      ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
+                                      : 'bg-[#0B111D] text-[#94A3B8] border-[#1E2B40]'
+                                  }`}
+                                >
+                                  {tf}
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="lg:col-span-4 h-[390px] border border-[#1B2B44] bg-[#060911] flex flex-col">
+                        <div className="px-2.5 py-1.5 bg-[#0C1422] border-b border-[#1B2B44] flex items-center justify-between">
+                          <span className="text-[10px] font-extrabold text-[#FF9F1C]">
+                            LIVE ON-CHAIN TX STREAM ({selectedDexChartPool.baseSymbol})
+                          </span>
+                          <span className="text-[9.5px] text-[#00E676] font-mono">
+                            {inspectedPoolTrades.length} TXs
+                          </span>
+                        </div>
+                        <div className="flex-1 overflow-y-auto divide-y divide-[#131C2D] text-[10px] font-mono">
+                          {isLoadingPoolTrades ? (
+                            <div className="p-3 text-[#00E5FF] font-bold">Mengambil swap on-chain terbaru...</div>
+                          ) : inspectedPoolTrades.length === 0 ? (
+                            <div className="p-3 text-[#94A3B8]">
+                              Menunggu swap baru di indexer on-chain untuk pool ini.
+                            </div>
+                          ) : (
+                            inspectedPoolTrades.slice(0, 40).map((tr, i) => (
+                              <div
+                                key={`chart-tr-${tr.id}-${i}`}
+                                className="grid grid-cols-12 px-2 py-1.5 items-center gap-1 hover:bg-[#0C1526]"
+                              >
+                                <span className="col-span-2 text-[#94A3B8] truncate">{tr.timestamp}</span>
+                                <span
+                                  className={`col-span-2 font-extrabold ${
+                                    tr.kind === 'buy' ? 'text-[#00E676]' : 'text-[#FF1744]'
+                                  }`}
+                                >
+                                  {tr.kind === 'buy' ? 'BUY' : 'SELL'}
+                                </span>
+                                <span className="col-span-3 text-right font-extrabold text-[#FF9F1C]">
+                                  ${Number(tr.volumeUsd || 0).toLocaleString()}
+                                </span>
+                                <span className="col-span-3 text-right text-white truncate">
+                                  ${Number(tr.priceUsd || 0) < 0.01 ? Number(tr.priceUsd || 0).toPrecision(4) : Number(tr.priceUsd || 0).toLocaleString()}
+                                </span>
+                                <a
+                                  href={tr.explorerTxUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="col-span-2 text-right text-[#00E5FF] font-bold hover:underline"
+                                >
+                                  TX ↗
+                                </a>
+                              </div>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Selected Pool Live On-Chain Swap Transactions Inspector (Standalone when Chart Closed) */}
+              {inspectedDexPool && !selectedDexChartPool && (
+                <div className="p-3 bg-[#0A1322] border-b-2 border-[#00E5FF] space-y-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="px-2 py-0.5 bg-[#00E5FF] text-black font-extrabold text-[10px]">
+                        LIVE ON-CHAIN TX STREAM
+                      </span>
+                      <span className="text-xs font-extrabold text-white">
+                        {inspectedDexPool.symbol}
+                      </span>
+                      <span className="text-[10px] text-[#FF9F1C] font-bold">
+                        {inspectedDexPool.chain} • {inspectedDexPool.dexName} • $
+                        {inspectedDexPool.priceUsd < 0.01
+                          ? inspectedDexPool.priceUsd.toPrecision(4)
+                          : inspectedDexPool.priceUsd.toLocaleString()}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {inspectedDexPool.dexScreenerUrl && (
+                        <a
+                          href={inspectedDexPool.dexScreenerUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="px-2 py-0.5 bg-[#121D30] text-[#00E5FF] border border-[#00E5FF]/50 text-[9.5px] font-bold"
+                        >
+                          DEXSCREENER ↗
+                        </a>
+                      )}
+                      <button
+                        onClick={() => setInspectedDexPool(null)}
+                        className="px-2 py-0.5 bg-[#FF1744]/20 text-[#FF1744] border border-[#FF1744] text-[9.5px] font-extrabold"
+                      >
+                        TUTUP ✕
+                      </button>
+                    </div>
+                  </div>
+
+                  {isLoadingPoolTrades ? (
+                    <div className="text-[10.5px] text-[#00E5FF] py-2 font-bold">
+                      Mengambil transaksi on-chain live dari block terbaru...
+                    </div>
+                  ) : inspectedPoolTrades.length === 0 ? (
+                    <div className="text-[10.5px] text-[#94A3B8] py-2">
+                      Belum ada swap terbaru tercatat di indexer publik untuk pool ini. Gunakan tab{' '}
+                      <strong className="text-white">ON-CHAIN WHALE TAPE</strong> untuk stream RPC langsung.
+                    </div>
+                  ) : (
+                    <div className="max-h-56 overflow-y-auto border border-[#1B2B44] bg-[#060911] divide-y divide-[#131C2D] text-[10px] font-mono">
+                      {inspectedPoolTrades.slice(0, 35).map((tr, i) => (
+                        <div
+                          key={`${tr.id}-${i}`}
+                          className="grid grid-cols-12 px-2.5 py-1.5 items-center gap-2 hover:bg-[#0C1526]"
+                        >
+                          <span className="col-span-2 text-[#94A3B8]">{tr.timestamp}</span>
+                          <span
+                            className={`col-span-1 font-extrabold ${
+                              tr.kind === 'buy' ? 'text-[#00E676]' : 'text-[#FF1744]'
+                            }`}
+                          >
+                            {tr.kind === 'buy' ? 'BUY' : 'SELL'}
+                          </span>
+                          <span className="col-span-2 text-right font-extrabold text-[#FF9F1C]">
+                            ${Number(tr.volumeUsd || 0).toLocaleString()}
+                          </span>
+                          <span className="col-span-2 text-right text-white">
+                            ${Number(tr.priceUsd || 0) < 0.01 ? Number(tr.priceUsd || 0).toPrecision(4) : Number(tr.priceUsd || 0).toLocaleString()}
+                          </span>
+                          <span className="col-span-2 text-[#64748B]">
+                            Blk #{Number(tr.blockNumber || 0).toLocaleString()}
+                          </span>
+                          <span className="col-span-2 truncate text-[#CBD5E1]" title={tr.walletAddress}>
+                            {tr.walletAddress ? `${tr.walletAddress.slice(0, 6)}...${tr.walletAddress.slice(-4)}` : '-'}
+                          </span>
+                          <a
+                            href={tr.explorerTxUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="col-span-1 text-right text-[#00E5FF] font-bold hover:underline"
+                          >
+                            TX ↗
+                          </a>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <div className="grid grid-cols-10 px-3 py-2 bg-[#0D131E] border-b border-[#1E2736] text-[10px] font-extrabold text-[#94A3B8]">
+                <span className="col-span-2">PAIR / TOKEN</span>
                 <span>CHAIN & DEX</span>
                 <span className="text-right">PRICE USD</span>
                 <span className="text-right">1H / 24H %</span>
                 <span className="text-right">24H VOLUME</span>
-                <span className="text-right">POOL TVL (LIQUIDITY)</span>
-                <span className="text-right">WHALE NET FLOW (1H)</span>
-                <span className="text-right">AGENT GATE STATUS</span>
+                <span className="text-right">TVL / OI</span>
+                <span className="text-right">TXNS (1H B/S)</span>
+                <span className="col-span-2 text-right">ON-CHAIN TX & CHART</span>
               </div>
-              <div className="divide-y divide-[#141C2B] text-xs">
-                {dexPools.map((pool, idx) => (
-                  <div
-                    key={`${pool.pairAddress}-${idx}`}
-                    className="grid grid-cols-8 px-3 py-2.5 items-center hover:bg-[#0E1522]"
-                  >
-                    <div>
-                      <div className="font-extrabold text-white">{pool.symbol}</div>
-                      <div className="text-[10px] text-[#64748B]">{pool.pairAddress}</div>
-                    </div>
-                    <div>
-                      <span className="px-1.5 py-0.5 bg-[#131C2E] text-[#00E5FF] text-[10px] font-bold">
-                        {pool.chain} • {pool.dexName}
-                      </span>
-                    </div>
-                    <div className="text-right font-bold text-white">
-                      ${pool.priceUsd.toLocaleString()}
-                    </div>
+              <div className="divide-y divide-[#141C2B] text-xs max-h-[540px] overflow-y-auto">
+                {(dexUniverseItems.length > 0 ? dexUniverseItems : dexPools).map((pool, idx) => {
+                  const fmtPx =
+                    pool.priceUsd >= 100
+                      ? pool.priceUsd.toLocaleString()
+                      : pool.priceUsd >= 0.01
+                        ? pool.priceUsd.toFixed(4)
+                        : pool.priceUsd > 0
+                          ? pool.priceUsd.toPrecision(4)
+                          : '0';
+                  return (
                     <div
-                      className={`text-right font-bold ${
-                        pool.change1h >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
-                      }`}
+                      key={`${pool.fullPairAddress || pool.pairAddress}-${pool.chainId || idx}-${idx}`}
+                      className="grid grid-cols-10 px-3 py-2 items-center hover:bg-[#0E1522] gap-1"
                     >
-                      {pool.change1h >= 0 ? '+' : ''}
-                      {pool.change1h}% / {pool.change24h}%
-                    </div>
-                    <div className="text-right text-[#F8FAFC] font-semibold">
-                      ${(pool.volume24hUsd / 1e6).toFixed(2)}M
-                    </div>
-                    <div className="text-right font-extrabold text-[#FF9F1C]">
-                      ${(pool.liquidityTvlUsd / 1e6).toFixed(2)}M
-                    </div>
-                    <div
-                      className={`text-right font-extrabold ${
-                        pool.whaleNetBuy1hUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
-                      }`}
-                    >
-                      {pool.whaleNetBuy1hUsd >= 0 ? '+' : '-'}$
-                      {(Math.abs(pool.whaleNetBuy1hUsd) / 1e6).toFixed(2)}M
-                    </div>
-                    <div className="text-right">
-                      {pool.passedLiquidityGate ? (
-                        <span className="px-2 py-0.5 bg-[#00E676]/20 text-[#00E676] border border-[#00E676] text-[10px] font-extrabold">
-                          ✓ APPROVED (DENSE)
+                      <div className="col-span-2 flex items-center gap-2 min-w-0">
+                        <MarketTokenIcon
+                          symbol={pool.baseSymbol || pool.symbol.split('/')[0].trim()}
+                          chainId={pool.chainId}
+                          address={pool.baseTokenAddress || pool.fullPairAddress}
+                          imageUrl={pool.tokenImageUrl}
+                          size={18}
+                        />
+                        <div className="min-w-0">
+                          <div className="font-extrabold text-white truncate">{pool.symbol}</div>
+                          <div className="text-[9.5px] text-[#64748B] truncate">
+                            {pool.pairAddress}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="min-w-0">
+                        <span className="px-1.5 py-0.5 bg-[#131C2E] text-[#00E5FF] text-[9.5px] font-bold inline-block truncate max-w-full">
+                          {pool.chain} • {pool.dexName}
                         </span>
-                      ) : (
-                        <span className="px-2 py-0.5 bg-[#FF1744]/20 text-[#FF1744] border border-[#FF1744] text-[10px] font-extrabold">
-                          ✕ BLOCKED (ILLIQUID)
-                        </span>
-                      )}
+                      </div>
+                      <div className="text-right font-bold text-white">${fmtPx}</div>
+                      <div
+                        className={`text-right font-bold text-[10.5px] ${
+                          pool.change24h >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+                        }`}
+                      >
+                        {pool.change1h >= 0 ? '+' : ''}
+                        {pool.change1h.toFixed(1)}% / {pool.change24h >= 0 ? '+' : ''}
+                        {pool.change24h.toFixed(2)}%
+                      </div>
+                      <div className="text-right text-[#F8FAFC] font-semibold">
+                        {formatDepthOrVol(pool.volume24hUsd)}
+                      </div>
+                      <div className="text-right font-extrabold text-[#FF9F1C]">
+                        {formatDepthOrVol(pool.liquidityTvlUsd)}
+                      </div>
+                      <div className="text-right text-[10px]">
+                        <span className="text-[#00E676] font-bold">{pool.buys1h}B</span> /{' '}
+                        <span className="text-[#FF1744] font-bold">{pool.sells1h}S</span>
+                      </div>
+                      <div className="col-span-2 flex items-center justify-end gap-1">
+                        <button
+                          onClick={() => handleInspectPoolTrades(pool)}
+                          className="px-1.5 py-0.5 bg-[#141F33] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/60 text-[9.5px] font-extrabold"
+                        >
+                          TX LIVE
+                        </button>
+                        <button
+                          onClick={() => handleOpenDexPoolChart(pool)}
+                          className="px-1.5 py-0.5 bg-[#00E5FF]/15 hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/70 text-[9.5px] font-extrabold"
+                        >
+                          CHART
+                        </button>
+                        {pool.dexScreenerUrl && (
+                          <a
+                            href={pool.dexScreenerUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="px-1.5 py-0.5 bg-[#0D1420] hover:text-white text-[#94A3B8] border border-[#243249] text-[9.5px] font-bold"
+                            title="Buka di DexScreener / Explorer"
+                          >
+                            ↗
+                          </a>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           </div>

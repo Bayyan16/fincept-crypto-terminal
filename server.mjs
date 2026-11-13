@@ -2,13 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import {
-  getRealCandles,
-  getRealMarketSnapshot,
-  getRealAggregatedOrderbook,
-  verifyAndFetchAccountBalance,
-  executeRealExchangeOrder,
-} from './backend/exchangeGateway.mjs';
+import { handleGatewayApiRoute } from './backend/exchangeGateway.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -59,67 +53,27 @@ const server = http.createServer(async (req, res) => {
 
   // 1. Online Backend API Routes (/api/*)
   if (urlObj.pathname.startsWith('/api/')) {
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
     try {
-      if (urlObj.pathname === '/api/health' && req.method === 'GET') {
-        res.writeHead(200);
-        res.end(
-          JSON.stringify({
-            ok: true,
-            service: 'fincept-whale-quant-online-gateway',
-            timestamp: new Date().toISOString(),
-          })
-        );
+      const result = await handleGatewayApiRoute(
+        urlObj.pathname,
+        urlObj.searchParams,
+        req.method,
+        () => readJsonBody(req),
+        'PROD_GATEWAY'
+      );
+      if (result.contentType) {
+        res.setHeader('Content-Type', result.contentType);
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        res.writeHead(result.status);
+        res.end(result.payload);
         return;
       }
-
-      if (urlObj.pathname === '/api/live/snapshot' && req.method === 'GET') {
-        const snap = await getRealMarketSnapshot();
-        res.writeHead(200);
-        res.end(JSON.stringify(snap));
-        return;
-      }
-
-      if (urlObj.pathname === '/api/live/candles' && req.method === 'GET') {
-        const hlCoin = urlObj.searchParams.get('hlCoin') || 'BTC';
-        const binanceSymbol = urlObj.searchParams.get('binanceSymbol') || 'BTCUSDT';
-        const interval = urlObj.searchParams.get('interval') || '15m';
-        const limit = Number(urlObj.searchParams.get('limit') || '140');
-        const candleRes = await getRealCandles(hlCoin, binanceSymbol, interval, limit);
-        res.writeHead(200);
-        res.end(JSON.stringify(candleRes));
-        return;
-      }
-
-      if (urlObj.pathname === '/api/live/orderbook' && req.method === 'GET') {
-        const hlCoin = urlObj.searchParams.get('hlCoin') || 'BTC';
-        const binanceSymbol = urlObj.searchParams.get('binanceSymbol') || 'BTCUSDT';
-        const book = await getRealAggregatedOrderbook(hlCoin, binanceSymbol);
-        res.writeHead(200);
-        res.end(JSON.stringify(book));
-        return;
-      }
-
-      if (urlObj.pathname === '/api/account/verify' && req.method === 'POST') {
-        const body = await readJsonBody(req);
-        const result = await verifyAndFetchAccountBalance(body);
-        res.writeHead(200);
-        res.end(JSON.stringify(result));
-        return;
-      }
-
-      if (urlObj.pathname === '/api/execute/order' && req.method === 'POST') {
-        const body = await readJsonBody(req);
-        const result = await executeRealExchangeOrder(body);
-        res.writeHead(200);
-        res.end(JSON.stringify(result));
-        return;
-      }
-
-      res.writeHead(404);
-      res.end(JSON.stringify({ ok: false, error: 'API Endpoint not found' }));
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
+      res.writeHead(result.status);
+      res.end(JSON.stringify(result.payload));
       return;
     } catch (err) {
+      res.setHeader('Content-Type', 'application/json; charset=utf-8');
       res.writeHead(500);
       res.end(
         JSON.stringify({

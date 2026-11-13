@@ -1,4 +1,16 @@
 import crypto from 'node:crypto';
+import {
+  refreshMultiChainDexUniverse,
+  fetchMultiChainLiveSwaps,
+  getLiveScannerBlocks,
+  queryDexUniverse,
+  searchDexUniverseLive,
+  fetchSpecificPoolTrades,
+  fetchDexPoolOhlcv,
+  resolveTokenIcon,
+} from './multiChainDexScanner.mjs';
+
+export { queryDexUniverse, searchDexUniverseLive, fetchSpecificPoolTrades, resolveTokenIcon };
 
 /**
  * FINCEPT REAL-MONEY & ON-CHAIN MULTI-DEX / MULTI-CEX GATEWAY V6.0
@@ -238,8 +250,15 @@ async function fetchJupiterLiveQuote(symbol = 'SOL', tradeUsd = 25000, refPrice 
 /**
  * 1. Fetch Real Historical & Live OHLCV Candlesticks (Hyperliquid L1 candleSnapshot + Binance Klines)
  */
-export async function getRealCandles(hlCoin = 'BTC', binanceSymbol = 'BTCUSDT', interval = '15m', limit = 140) {
-  const cacheKey = `${hlCoin}:${interval}:${limit}`;
+export async function getRealCandles(
+  hlCoin = 'BTC',
+  binanceSymbol = 'BTCUSDT',
+  interval = '15m',
+  limit = 140,
+  chain = '',
+  poolAddress = ''
+) {
+  const cacheKey = `${hlCoin}:${chain}:${poolAddress}:${interval}:${limit}`;
   const cachedEntry = cachedCandlesMap.get(cacheKey);
   if (cachedEntry && Date.now() - cachedEntry.ts < 3500) {
     return cachedEntry.data;
@@ -249,6 +268,47 @@ export async function getRealCandles(hlCoin = 'BTC', binanceSymbol = 'BTCUSDT', 
     cachedCandlesMap.set(cacheKey, { ts: Date.now(), data: payload });
     return payload;
   };
+
+  let sparseOnChainBackup = null;
+  if (poolAddress && chain) {
+    const dexCandles = await fetchDexPoolOhlcv({ chain, poolAddress, interval, limit });
+    if (dexCandles && dexCandles.length >= 8) {
+      const highWindow = Math.max(...dexCandles.map((c) => c.high));
+      const lowWindow = Math.min(...dexCandles.map((c) => c.low));
+      const recentCvd15m =
+        dexCandles.length >= 4
+          ? dexCandles[dexCandles.length - 1].cvd - dexCandles[Math.max(0, dexCandles.length - 5)].cvd
+          : dexCandles[dexCandles.length - 1].cvd;
+      const srcTag = poolAddress.startsWith('hl-perp-')
+        ? 'HYPERLIQUID_L1_PERP'
+        : poolAddress.startsWith('hl-spot-')
+          ? 'HYPERLIQUID_L1_SPOT'
+          : `ONCHAIN_DEX_${chain.toUpperCase()}`;
+      return cacheAndReturn({
+        ok: true,
+        source: srcTag,
+        interval,
+        candles: dexCandles,
+        highWindow,
+        lowWindow,
+        recentCvd15m: Math.round(recentCvd15m),
+      });
+    }
+    if (dexCandles && dexCandles.length >= 2) {
+      sparseOnChainBackup = dexCandles;
+    }
+  }
+
+  // Normalize wrapped DEX base tokens (WETH -> ETH, WBTC -> BTC, etc.) for CEX/HL candle fallback
+  const wrappedAliasMap = { WETH: 'ETH', WBTC: 'BTC', WSOL: 'SOL', WBNB: 'BNB', WHYPE: 'HYPE' };
+  const resolvedHlCoin = wrappedAliasMap[String(hlCoin || '').toUpperCase()] || hlCoin;
+  const cexBase = resolvedHlCoin.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase();
+  const resolvedBinanceSymbol =
+    binanceSymbol && binanceSymbol !== 'BTCUSDT'
+      ? binanceSymbol
+      : wrappedAliasMap[String(hlCoin || '').toUpperCase()] || resolvedHlCoin.toUpperCase() === 'BTC'
+        ? `${resolvedHlCoin.toUpperCase()}USDT`
+        : `${cexBase}USDT`;
 
   const intervalMsMap = {
     '1m': 60_000,
@@ -268,7 +328,7 @@ export async function getRealCandles(hlCoin = 'BTC', binanceSymbol = 'BTCUSDT', 
     body: JSON.stringify({
       type: 'candleSnapshot',
       req: {
-        coin: hlCoin,
+        coin: resolvedHlCoin,
         interval,
         startTime,
         endTime,
@@ -366,7 +426,7 @@ export async function getRealCandles(hlCoin = 'BTC', binanceSymbol = 'BTCUSDT', 
 
   const binRes = await fetchJsonWithTimeout(
     `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(
-      binanceSymbol
+      resolvedBinanceSymbol
     )}&interval=${encodeURIComponent(interval)}&limit=${limit}`
   );
 
@@ -376,7 +436,7 @@ export async function getRealCandles(hlCoin = 'BTC', binanceSymbol = 'BTCUSDT', 
 
   const binSpotRes = await fetchJsonWithTimeout(
     `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(
-      binanceSymbol
+      resolvedBinanceSymbol
     )}&interval=${encodeURIComponent(interval)}&limit=${limit}`
   );
 
@@ -385,7 +445,7 @@ export async function getRealCandles(hlCoin = 'BTC', binanceSymbol = 'BTCUSDT', 
   }
 
   // Gate.io Spot Candlesticks fallback (works reliably on networks where Binance/Bybit/OKX are ISP-throttled)
-  const gatePair = `${hlCoin}_USDT`;
+  const gatePair = `${resolvedHlCoin}_USDT`;
   const gateRes = await fetchJsonWithTimeout(
     `https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=${encodeURIComponent(
       gatePair
@@ -424,6 +484,21 @@ export async function getRealCandles(hlCoin = 'BTC', binanceSymbol = 'BTCUSDT', 
       source: 'GATEIO_SPOT',
       interval,
       candles,
+      highWindow,
+      lowWindow,
+      recentCvd15m: Math.round(recentCvd15m),
+    });
+  }
+
+  if (sparseOnChainBackup && sparseOnChainBackup.length >= 2) {
+    const highWindow = Math.max(...sparseOnChainBackup.map((c) => c.high));
+    const lowWindow = Math.min(...sparseOnChainBackup.map((c) => c.low));
+    const recentCvd15m = sparseOnChainBackup[sparseOnChainBackup.length - 1]?.cvd || 0;
+    return cacheAndReturn({
+      ok: true,
+      source: `ONCHAIN_SWAPS_${String(chain || 'DEX').toUpperCase()}`,
+      interval,
+      candles: sparseOnChainBackup,
       highWindow,
       lowWindow,
       recentCvd15m: Math.round(recentCvd15m),
@@ -512,7 +587,7 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
       'https://api.dexscreener.com/latest/dex/tokens/So11111111111111111111111111111111111111112,JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN,4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R'
     ),
     fetchJsonWithTimeout(
-      'https://api-v3.raydium.io/pools/info/list?poolType=all&poolSortField=volume24h&sortType=desc&pageSize=12&page=1'
+      'https://api-v3.raydium.io/pools/info/list?poolType=all&poolSortField=volume24h&sortType=desc&pageSize=24&page=1'
     ),
     fetchJupiterLiveQuote(jupSym, jupUsd, jupRef),
     fetchEvmLatestBlock(['https://arb1.arbitrum.io/rpc', 'https://arbitrum-one-rpc.publicnode.com']),
@@ -1049,8 +1124,45 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
     }
   }
 
-  // Sort real trades by largest notional or most recent
-  realOnChainTrades.sort((a, b) => b.sizeUsd - a.sizeUsd);
+  // Refresh full Multi-Chain DEX Universe (Solana, BSC, Hyperliquid/HyperEVM, Robinhood, Ethereum)
+  // sequentially BEFORE fetching live swaps so universePoolMap is populated on cold start.
+  const universeSummary = await refreshMultiChainDexUniverse({ hlPerpRes: hlMetaRes, raydiumRes });
+  const multiChainSwaps = await fetchMultiChainLiveSwaps();
+  const scannerBlocks = getLiveScannerBlocks();
+
+  if (Array.isArray(multiChainSwaps) && multiChainSwaps.length > 0) {
+    const existingIds = new Set(realOnChainTrades.map((x) => x.fullTxHash || x.id));
+    for (const sw of multiChainSwaps) {
+      const k = sw.fullTxHash || sw.id;
+      if (!existingIds.has(k)) {
+        existingIds.add(k);
+        realOnChainTrades.push(sw);
+      }
+    }
+  }
+
+  // Balance multi-chain representation so Solana, BSC, Hyperliquid/HyperEVM, Robinhood, Ethereum & Arbitrum
+  // all stay visibly represented while preserving highest notional significance
+  const tradesByChainBucket = new Map();
+  for (const t of realOnChainTrades) {
+    const bKey = String(t.chainId || t.chainName || t.exchange || 'OTHER').toLowerCase();
+    if (!tradesByChainBucket.has(bKey)) tradesByChainBucket.set(bKey, []);
+    tradesByChainBucket.get(bKey).push(t);
+  }
+  const balancedTrades = [];
+  const usedTradeIds = new Set();
+  for (const [, list] of tradesByChainBucket.entries()) {
+    list.sort((a, b) => (b.blockNumber || 0) - (a.blockNumber || 0) || b.sizeUsd - a.sizeUsd);
+    for (const item of list.slice(0, 12)) {
+      balancedTrades.push(item);
+      usedTradeIds.add(item.id);
+    }
+  }
+  const remainingTrades = realOnChainTrades
+    .filter((t) => !usedTradeIds.has(t.id))
+    .sort((a, b) => b.sizeUsd - a.sizeUsd);
+  realOnChainTrades.length = 0;
+  realOnChainTrades.push(...balancedTrades, ...remainingTrades);
 
   // Parse Real Raydium V3 Pools (Solana CLMM & Standard AMM)
   const realRaydiumPools = [];
@@ -1143,8 +1255,16 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
     }
   }
 
-  // Merge Raydium V3 CLMM pools and DexScreener pools into unified DEX pool list
-  const combinedDexPools = [...realRaydiumPools.slice(0, 6), ...realDexPools].slice(0, 16);
+  // Merge multi-chain DexScreener/GeckoTerminal/Hyperliquid universe with flagship Raydium/Solana pools (ALL 5 Chains)
+  const universePools = Array.isArray(universeSummary?.featuredPools) ? universeSummary.featuredPools : [];
+  const mergedDexPoolMap = new Map();
+  for (const p of [...universePools, ...realRaydiumPools, ...realDexPools]) {
+    const key = `${p.chainId || p.chain}:${(p.fullPairAddress || p.pairAddress).toLowerCase()}`;
+    if (!mergedDexPoolMap.has(key)) {
+      mergedDexPoolMap.set(key, p);
+    }
+  }
+  const combinedDexPools = [...mergedDexPoolMap.values()].slice(0, 90);
 
   // Extract HLP Institutional Vault Summary & Positions across Parent + Strategy Child Vaults
   const hlpStates = Array.isArray(hlpVaultRes) ? hlpVaultRes : [];
@@ -1451,14 +1571,17 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
       arbitrumL2: liveArbBlock,
       bscMainnet: liveBscBlock,
       solanaSlot: liveSolanaSlot,
+      hyperEvmBlock: scannerBlocks.hyperEvmBlock,
+      robinhoodBlock: scannerBlocks.robinhoodBlock,
     },
+    dexUniverseStats: universeSummary?.dexUniverseStats || null,
     hlpVaultSummary,
     hlAssets,
     realWhalePositions: realWhalePositions.slice(0, 24),
     realDexPools: combinedDexPools,
     realRaydiumPools,
     jupiterRoutes: cachedJupiterRoutes,
-    realOnChainTrades: realOnChainTrades.slice(0, 75),
+    realOnChainTrades: realOnChainTrades.slice(0, 160),
     realChordLinks,
     realAgentSignals,
   };
@@ -1471,27 +1594,34 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
  * Combines: Hyperliquid L1 + Binance Perp + Bybit V5 + OKX V5 + Raydium V3 CLMM + Jupiter V1 Live Quotes!
  */
 export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol = 'BTCUSDT') {
-  const cachedBookEntry = cachedBookMap.get(hlCoin);
+  const wrappedAliasMap = { WETH: 'ETH', WBTC: 'BTC', WSOL: 'SOL', WBNB: 'BNB', WHYPE: 'HYPE' };
+  const resolvedHlCoin = wrappedAliasMap[String(hlCoin || '').toUpperCase()] || hlCoin;
+  const resolvedBinSymbol =
+    binanceSymbol && binanceSymbol !== 'BTCUSDT'
+      ? binanceSymbol
+      : `${resolvedHlCoin.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase()}USDT`;
+
+  const cachedBookEntry = cachedBookMap.get(resolvedHlCoin);
   if (cachedBookEntry && Date.now() - cachedBookEntry.ts < 2500) {
     return cachedBookEntry.data;
   }
 
-  const okxInstId = `${hlCoin}-USDT-SWAP`;
-  const gatePair = `${hlCoin}_USDT`;
+  const okxInstId = `${resolvedHlCoin}-USDT-SWAP`;
+  const gatePair = `${resolvedHlCoin.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase()}_USDT`;
   const [hlBookRes, binBookRes, bybitBookRes, okxBookRes, gateBookRes] = await Promise.all([
     fetchJsonWithTimeout('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'l2Book', coin: hlCoin }),
+      body: JSON.stringify({ type: 'l2Book', coin: resolvedHlCoin }),
     }),
     fetchJsonWithTimeout(
-      `https://fapi.binance.com/fapi/v1/depth?symbol=${encodeURIComponent(binanceSymbol)}&limit=10`,
+      `https://fapi.binance.com/fapi/v1/depth?symbol=${encodeURIComponent(resolvedBinSymbol)}&limit=10`,
       {},
       2200
     ),
     fetchJsonWithTimeout(
       `https://api.bybit.com/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(
-        binanceSymbol
+        resolvedBinSymbol
       )}&limit=10`,
       {},
       2200
@@ -1501,7 +1631,7 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
       {},
       2200
     ),
-    hlCoin !== 'HYPE'
+    resolvedHlCoin !== 'HYPE'
       ? fetchJsonWithTimeout(
           `https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${encodeURIComponent(gatePair)}&limit=8`,
           {},
@@ -1555,7 +1685,7 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
   };
 
   // 2. Binance Futures, Bybit V5, OKX V5, & Gate.io Spot L2 Levels (guarded within 2% of refMidPrice so unrelated tickers never mix)
-  if (hlCoin !== 'HYPE') {
+  if (resolvedHlCoin !== 'HYPE') {
     if (binBookRes.ok) appendBookLevels(binBookRes.data?.bids, binBookRes.data?.asks, 'BINANCE', 5);
     if (bybitBookRes.ok) appendBookLevels(bybitBookRes.data?.result?.b, bybitBookRes.data?.result?.a, 'BYBIT', 4);
     const okxBook = Array.isArray(okxBookRes?.data?.data) ? okxBookRes.data.data[0] : null;
@@ -1565,7 +1695,7 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
     // Binance Spot L2 fallback for spot-only tokens like RAYUSDT when HL & Futures return no book
     if (rawBids.length === 0 || rawAsks.length === 0) {
       const binSpotBookRes = await fetchJsonWithTimeout(
-        `https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(binanceSymbol)}&limit=10`,
+        `https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(resolvedBinSymbol)}&limit=10`,
         {},
         2200
       );
@@ -1576,7 +1706,7 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
   }
 
   // 4. Inject Real Jupiter V1 On-Chain Executable Liquidity Levels (for SOL, JUP, RAY)
-  const jupQuote = cachedJupiterRoutes[hlCoin];
+  const jupQuote = cachedJupiterRoutes[resolvedHlCoin];
   if (jupQuote && !refMidPrice && jupQuote.effectiveAskPx > 0) {
     refMidPrice = jupQuote.effectiveAskPx;
   }
@@ -1680,7 +1810,7 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
           ? 'BEARISH_ABSORPTION'
           : 'NONE',
   };
-  cachedBookMap.set(hlCoin, { ts: Date.now(), data: bookPayload });
+  cachedBookMap.set(resolvedHlCoin, { ts: Date.now(), data: bookPayload });
   return bookPayload;
 }
 
@@ -2326,4 +2456,93 @@ export async function executeRealExchangeOrder(payload) {
     ok: false,
     error: `Untuk eksekusi Real Money di ${exchange}, pastikan Wallet / API Key aktif dan tanda tangan disetujui.`,
   };
+}
+
+/**
+ * Shared HTTP API Router for both Vite Dev Server (5173) and Production Gateway (8080)
+ */
+export async function handleGatewayApiRoute(pathname, searchParams, method, readBody, mode = 'PROD_GATEWAY') {
+  if (pathname === '/api/health' && method === 'GET') {
+    return {
+      status: 200,
+      payload: {
+        ok: true,
+        service: 'fincept-whale-quant-online-gateway',
+        mode,
+        timestamp: new Date().toISOString(),
+      },
+    };
+  }
+
+  if (pathname === '/api/live/snapshot' && method === 'GET') {
+    const snap = await getRealMarketSnapshot();
+    return { status: 200, payload: snap };
+  }
+
+  if (pathname === '/api/live/candles' && method === 'GET') {
+    const hlCoin = searchParams.get('hlCoin') || 'BTC';
+    const binanceSymbol = searchParams.get('binanceSymbol') || `${hlCoin.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase()}USDT`;
+    const interval = searchParams.get('interval') || '15m';
+    const limit = Number(searchParams.get('limit') || '140');
+    const chain = searchParams.get('chain') || '';
+    const poolAddress = searchParams.get('poolAddress') || '';
+    const candleRes = await getRealCandles(hlCoin, binanceSymbol, interval, limit, chain, poolAddress);
+    return { status: 200, payload: candleRes };
+  }
+
+  if (pathname === '/api/live/token-icon' && method === 'GET') {
+    const symbol = searchParams.get('symbol') || 'TOK';
+    const chain = searchParams.get('chain') || 'solana';
+    const addr = searchParams.get('addr') || '';
+    return resolveTokenIcon({ symbol, chain, addr });
+  }
+
+  if (pathname === '/api/live/orderbook' && method === 'GET') {
+    const hlCoin = searchParams.get('hlCoin') || 'BTC';
+    const binanceSymbol = searchParams.get('binanceSymbol') || 'BTCUSDT';
+    const book = await getRealAggregatedOrderbook(hlCoin, binanceSymbol);
+    return { status: 200, payload: book };
+  }
+
+  if (pathname === '/api/live/dex/universe' && method === 'GET') {
+    // Ensure initial population if requested before first snapshot
+    if (!cachedSnapshot) {
+      await refreshMultiChainDexUniverse();
+    }
+    const chain = searchParams.get('chain') || 'all';
+    const q = searchParams.get('q') || '';
+    const limit = Number(searchParams.get('limit') || '300');
+    return { status: 200, payload: queryDexUniverse({ chain, q, limit }) };
+  }
+
+  if (pathname === '/api/live/dex/search' && method === 'GET') {
+    if (!cachedSnapshot) {
+      await refreshMultiChainDexUniverse();
+    }
+    const q = searchParams.get('q') || '';
+    const chain = searchParams.get('chain') || 'all';
+    const result = await searchDexUniverseLive({ q, chain });
+    return { status: 200, payload: result };
+  }
+
+  if (pathname === '/api/live/dex/pool-trades' && method === 'GET') {
+    const chain = searchParams.get('chain') || 'solana';
+    const poolAddress = searchParams.get('poolAddress') || '';
+    const result = await fetchSpecificPoolTrades({ chain, poolAddress });
+    return { status: 200, payload: result };
+  }
+
+  if (pathname === '/api/account/verify' && method === 'POST') {
+    const body = await readBody();
+    const result = await verifyAndFetchAccountBalance(body);
+    return { status: 200, payload: result };
+  }
+
+  if (pathname === '/api/execute/order' && method === 'POST') {
+    const body = await readBody();
+    const result = await executeRealExchangeOrder(body);
+    return { status: 200, payload: result };
+  }
+
+  return { status: 404, payload: { ok: false, error: 'API Endpoint not found' } };
 }

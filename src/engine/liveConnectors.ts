@@ -2,6 +2,7 @@ import {
   CandlePoint,
   ChordFlowLink,
   DexScreenerPoolItem,
+  DexUniverseStats,
   ExchangeId,
   HlpVaultSummary,
   MarketPair,
@@ -887,7 +888,10 @@ export async function fetchBackendRealSnapshot(): Promise<{
     arbitrumL2?: number;
     bscMainnet?: number;
     solanaSlot?: number;
+    hyperEvmBlock?: number;
+    robinhoodBlock?: number;
   };
+  dexUniverseStats?: DexUniverseStats | null;
   hlAssets?: Record<
     string,
     {
@@ -999,16 +1003,24 @@ export async function fetchBackendRealOrderbook(
           spoofingAlert: null,
         };
       }
+      return null;
     }
   } catch {
-    // Fallback to Direct Browser-to-Hyperliquid L1 l2Book RPC below
+    // Only fall through if local backend proxy failed cleanly
+  }
+
+  const HL_KNOWN_SET = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'ADA', 'TRX', 'AVAX', 'LINK', 'HYPE', 'SUI', 'JUP', 'ZEC']);
+  const wrappedAliasMap: Record<string, string> = { WETH: 'ETH', WBTC: 'BTC', WSOL: 'SOL', WBNB: 'BNB', WHYPE: 'HYPE' };
+  const safeHlCoin = wrappedAliasMap[hlCoin.toUpperCase()] || hlCoin;
+  if (!HL_KNOWN_SET.has(safeHlCoin.toUpperCase())) {
+    return null;
   }
 
   try {
     const hlBookRes = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ type: 'l2Book', coin: hlCoin }),
+      body: JSON.stringify({ type: 'l2Book', coin: safeHlCoin }),
     });
     if (hlBookRes.ok) {
       const bookData = await hlBookRes.json();

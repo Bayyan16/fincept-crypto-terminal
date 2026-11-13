@@ -16,6 +16,8 @@ interface WhaleChordVizProps {
     arbitrumL2?: number;
     bscMainnet?: number;
     solanaSlot?: number;
+    hyperEvmBlock?: number;
+    robinhoodBlock?: number;
   };
   activeSymbol: string;
   onSelectNodeFilter?: (nodeName: string | null) => void;
@@ -311,8 +313,17 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     const q = txSearchQuery.trim().toLowerCase();
     return recentWhales.filter((w) => {
       if (chainFilter !== 'ALL') {
+        const cid = (w.chainId || '').toUpperCase();
         const cName = (w.chainName || w.exchange || '').toUpperCase();
-        if (!cName.includes(chainFilter)) return false;
+        if (chainFilter === 'BNB') {
+          if (!cName.includes('BNB') && !cName.includes('BSC') && cid !== 'BSC') return false;
+        } else if (chainFilter === 'ROBINHOOD') {
+          if (!cName.includes('ROBIN') && cid !== 'ROBINHOOD') return false;
+        } else if (chainFilter === 'HYPERLIQUID') {
+          if (!cName.includes('HYPER') && cid !== 'HYPERLIQUID') return false;
+        } else if (!cName.includes(chainFilter) && cid !== chainFilter) {
+          return false;
+        }
       }
       if (!q) return true;
       return (
@@ -863,11 +874,12 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                 <span className="text-[#64748B] font-bold">FILTER CHAIN:</span>
                 {[
                   { id: 'ALL', label: 'ALL CHAINS' },
-                  { id: 'HYPERLIQUID', label: 'HL L1' },
+                  { id: 'SOLANA', label: 'SOLANA' },
+                  { id: 'BNB', label: 'BSC BEP20' },
+                  { id: 'HYPERLIQUID', label: 'HL / HYPEREVM' },
+                  { id: 'ROBINHOOD', label: 'ROBINHOOD' },
                   { id: 'ETHEREUM', label: 'ETH L1' },
                   { id: 'ARBITRUM', label: 'ARB L2' },
-                  { id: 'BNB', label: 'BSC BEP20' },
-                  { id: 'SOLANA', label: 'SOLANA' },
                 ].map((cf) => (
                   <button
                     key={cf.id}
@@ -1271,7 +1283,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
             {/* SUB-TAB 3: LIVE MULTI-CHAIN BLOCK HEIGHTS & AI DECISION MATRIX */}
             {streamSubTab === 'BLOCK_MATRIX' && (
               <div className="flex-1 overflow-y-auto p-2.5 space-y-2 text-[10px]">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 font-mono">
+                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 font-mono">
                   <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
                     <div className="text-[8.5px] text-[#94A3B8]">ETHEREUM MAINNET (ERC20)</div>
                     <div className="text-xs font-extrabold text-[#00E5FF] mt-0.5">
@@ -1307,6 +1319,24 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                         : 'Syncing RPC...'}
                     </div>
                     <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (3s block)</div>
+                  </div>
+                  <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
+                    <div className="text-[8.5px] text-[#94A3B8]">HYPEREVM / HYPERLIQUID (#999)</div>
+                    <div className="text-xs font-extrabold text-[#00E5FF] mt-0.5">
+                      {liveBlocks?.hyperEvmBlock
+                        ? `Block #${liveBlocks.hyperEvmBlock.toLocaleString()}`
+                        : 'Syncing RPC...'}
+                    </div>
+                    <div className="text-[8.5px] text-[#00E676]">● HYPEREVM + HL L1 LIVE</div>
+                  </div>
+                  <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
+                    <div className="text-[8.5px] text-[#94A3B8]">ROBINHOOD CHAIN (#4663)</div>
+                    <div className="text-xs font-extrabold text-[#00E676] mt-0.5">
+                      {liveBlocks?.robinhoodBlock
+                        ? `Block #${liveBlocks.robinhoodBlock.toLocaleString()}`
+                        : 'Syncing Indexer...'}
+                    </div>
+                    <div className="text-[8.5px] text-[#00E676]">● ROBINHOOD ON-CHAIN LIVE</div>
                   </div>
                 </div>
 

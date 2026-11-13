@@ -83,6 +83,7 @@ export interface WhaleTransaction {
   sourceNode: string;
   targetNode: string;
   exchange: ExchangeId;
+  chainId?: 'solana' | 'bsc' | 'hyperliquid' | 'robinhood' | 'ethereum' | string;
   chainName?: string;
   blockNumber?: number;
   blockHash?: string;
@@ -259,16 +260,42 @@ export interface WalletConnectionState {
 
 export interface DexScreenerPoolItem {
   pairAddress: string;
+  fullPairAddress?: string;
   symbol: string;
+  baseSymbol?: string;
+  baseName?: string;
+  quoteSymbol?: string;
+  baseTokenAddress?: string;
+  quoteTokenAddress?: string;
+  chainId?: 'solana' | 'bsc' | 'hyperliquid' | 'robinhood' | 'ethereum' | string;
   chain: 'Solana' | 'Hyperliquid L1' | 'Arbitrum' | 'Ethereum' | 'Base' | string;
   dexName: string;
   priceUsd: number;
+  change5m?: number;
   change1h: number;
   change24h: number;
   volume24hUsd: number;
+  volume1hUsd?: number;
   liquidityTvlUsd: number;
+  fdvUsd?: number;
   buys1h: number;
   sells1h: number;
+  buys24h?: number;
+  sells24h?: number;
+  txns24h?: number;
   whaleNetBuy1hUsd: number;
   passedLiquidityGate: boolean;
+  dexScreenerUrl?: string;
+  explorerUrl?: string;
+  tokenImageUrl?: string;
+  sourceFeed?: string;
+}
+
+export interface DexUniverseStats {
+  totalIndexedPools: number;
+  hlPerpCount: number;
+  hlSpotPairsCount: number;
+  hlSpotTokensCount: number;
+  chainPoolCounts: Record<string, number>;
+  chainUniqueTokenCounts: Record<string, number>;
 }
