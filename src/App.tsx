@@ -43,6 +43,7 @@ import {
   verifyRealAccountWithBackend,
 } from './engine/walletAdapter';
 import { WhaleChordViz } from './components/WhaleChordViz';
+import { CoinIcon } from './components/CoinIcon';
 import {
   CandlestickOrderflowChart,
   ChartInterval,
@@ -1194,23 +1195,23 @@ export function App() {
     '0x71C...9A4E';
 
   return (
-    <div className="flex flex-col h-screen w-screen bg-[#050608] text-[#F8FAFC] font-mono overflow-hidden select-none">
+    <div className="flex flex-col min-h-screen lg:h-screen w-full max-w-full bg-[#050608] text-[#F8FAFC] font-mono overflow-x-hidden lg:overflow-hidden select-none">
       {/* 1. TOP FINCEPT COMMAND BAR & REAL-MONEY EXECUTION MODE SWITCHER */}
-      <header className="flex items-center justify-between px-3 py-1.5 bg-[#090C12] border-b border-[#1E2736]">
-        <div className="flex items-center gap-2.5">
-          <div className="flex items-center gap-1.5">
+      <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 py-1.5 bg-[#090C12] border-b border-[#1E2736] w-full min-w-0">
+        <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
+          <div className="flex items-center gap-1.5 shrink-0">
             <span className="px-1.5 py-0.5 bg-[#FF9F1C] text-black font-extrabold text-xs tracking-wider">
               FINCEPT
             </span>
-            <span className="text-xs font-extrabold tracking-widest text-[#F8FAFC] hidden sm:inline">
+            <span className="text-xs font-extrabold tracking-widest text-[#F8FAFC] hidden md:inline">
               WHALE QUANT TERMINAL
             </span>
           </div>
 
-          <span className="text-[#2D3A4F]">|</span>
+          <span className="text-[#2D3A4F] shrink-0 hidden sm:inline">|</span>
 
           {/* Command Bar Input */}
-          <form onSubmit={handleCommandSubmit} className="flex items-center">
+          <form onSubmit={handleCommandSubmit} className="flex items-center min-w-0 shrink-0">
             <div className="flex items-center bg-[#040609] border border-[#263246] focus-within:border-[#FF9F1C] px-2 py-0.5">
               <span className="text-[#FF9F1C] text-xs font-bold mr-1.5">&gt;</span>
               <input
@@ -1218,20 +1219,23 @@ export function App() {
                 value={commandInput}
                 onChange={(e) => setCommandInput(e.target.value)}
                 placeholder="Type /profile, /portfolio, /btc, /sol, /long..."
-                className="bg-transparent text-[11px] text-[#F8FAFC] placeholder-[#64748B] focus:outline-none w-48 lg:w-60"
+                className="bg-transparent text-[11px] text-[#F8FAFC] placeholder-[#64748B] focus:outline-none w-36 sm:w-44 xl:w-56"
               />
             </div>
           </form>
 
           {commandFeedback && (
-            <span className="text-[10px] text-[#00E5FF] font-semibold hidden 2xl:inline truncate max-w-xs">
+            <span
+              className="text-[10px] text-[#00E5FF] bg-[#06121E] border border-[#00E5FF]/25 px-2 py-0.5 font-semibold hidden 2xl:inline-block truncate min-w-0 max-w-sm"
+              title={commandFeedback}
+            >
               {commandFeedback}
             </span>
           )}
         </div>
 
         {/* Right Execution Mode Switcher, Flexible Network Selector, Profile & Portfolio Pill */}
-        <div className="flex items-center gap-1.5 text-[10px]">
+        <div className="flex flex-wrap items-center gap-1.5 text-[10px] max-w-full">
           <div className="flex items-center bg-[#040609] border border-[#1E2736] p-0.5">
             {(
               [
@@ -1243,7 +1247,7 @@ export function App() {
               <button
                 key={env.id}
                 onClick={() => setExecutionEnv(env.id)}
-                className={`px-2 py-0.5 font-extrabold transition-colors ${
+                className={`px-2 py-0.5 font-extrabold transition-colors whitespace-nowrap ${
                   executionEnv === env.id
                     ? env.id === 'REAL_MAINNET'
                       ? 'bg-[#FF1744] text-white'
@@ -1278,7 +1282,7 @@ export function App() {
           {/* Prominent Trader Profile & Portfolio Pill */}
           <button
             onClick={() => setActiveTopTab('PORTFOLIO_PROFILE')}
-            className={`px-2.5 py-1 font-extrabold text-[10px] border flex items-center gap-1.5 transition-colors ${
+            className={`px-2.5 py-1 font-extrabold text-[10px] border flex items-center gap-1.5 transition-colors whitespace-nowrap ${
               activeTopTab === 'PORTFOLIO_PROFILE'
                 ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
                 : 'bg-[#0C1424] hover:bg-[#162238] text-[#00E676] border-[#00E676]/60'
@@ -1286,18 +1290,18 @@ export function App() {
             title="Buka Menu Profile Wallet, Portofolio Multi-Chain & Pengaturan Jaringan"
           >
             <span>👤 PROFILE:</span>
-            <span className="text-white">
+            <span className={activeTopTab === 'PORTFOLIO_PROFILE' ? 'text-black' : 'text-white'}>
               {activeProfileAddress.startsWith('0x') && activeProfileAddress.length > 14
                 ? `${activeProfileAddress.slice(0, 6)}...${activeProfileAddress.slice(-4)}`
                 : activeProfileAddress.split(' ')[0]}
             </span>
-            <span className="text-[#FF9F1C]">|</span>
+            <span className={activeTopTab === 'PORTFOLIO_PROFILE' ? 'text-black/60' : 'text-[#FF9F1C]'}>|</span>
             <span>💼 ${formatDepthOrVol(totalPortfolioEquityUsd)}</span>
           </button>
 
           <button
             onClick={() => setIsWalletModalOpen(true)}
-            className={`px-2 py-1 font-extrabold text-[10px] border transition-colors ${
+            className={`px-2 py-1 font-extrabold text-[10px] border transition-colors whitespace-nowrap ${
               verifiedRealCount > 0
                 ? 'bg-[#00E676] text-black border-[#00E676]'
                 : 'bg-[#141B29] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border-[#FF9F1C]'
@@ -1309,7 +1313,7 @@ export function App() {
           {positions.length > 0 && (
             <button
               onClick={handleEmergencyFlattenAll}
-              className="px-2 py-1 bg-[#FF1744] hover:bg-[#ff4569] text-white font-extrabold text-[10px]"
+              className="px-2 py-1 bg-[#FF1744] hover:bg-[#ff4569] text-white font-extrabold text-[10px] whitespace-nowrap"
               title="Tutup semua posisi terbuka & hentikan bot seketika"
             >
               🚨 KILL SWITCH
@@ -1318,27 +1322,27 @@ export function App() {
         </div>
       </header>
 
-      {/* 2. PRIMARY NAVIGATION TABS & PAIR RIBBON */}
-      <div className="flex items-center justify-between px-3 py-1 bg-[#0B0F17] border-b border-[#1E2736] text-[11px]">
-        <div className="flex items-center gap-1 overflow-x-auto">
+      {/* 2. PRIMARY NAVIGATION TABS (Dedicated Full-Width Strip — Zero Overlap, Responsive Wrap) */}
+      <nav className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3 py-0.5 bg-[#0B0F17] border-b border-[#1E2736] text-[11px] w-full">
+        <div className="flex flex-wrap items-center gap-1 min-w-0">
           {(
             [
               { id: 'TERMINAL_DESK', label: '1) MULTI-EXCHANGE DESK' },
               { id: 'DEX_SCREENER', label: '2) DEXSCREENER & HYPERLIQUID POOLS' },
               { id: 'AGENT_SKILLS', label: '3) AGENT BRAIN & REAL-MONEY RISK' },
               { id: 'PORTFOLIO_LOG', label: '4) EXECUTION & SCRATCH AUDIT' },
-              { id: 'PORTFOLIO_PROFILE', label: '5) 👤 PORTFOLIO & PROFILE (WALLET & NETWORK)' },
+              { id: 'PORTFOLIO_PROFILE', label: '5) 👤 PORTFOLIO & PROFILE' },
             ] as const
           ).map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTopTab(tab.id)}
-              className={`px-2.5 py-1 font-extrabold tracking-wide whitespace-nowrap transition-colors ${
+              className={`px-3 py-1.5 font-extrabold tracking-wide whitespace-nowrap border-b-2 transition-colors ${
                 activeTopTab === tab.id
-                  ? 'bg-[#FF9F1C] text-black'
+                  ? 'bg-[#151D2B] text-[#FF9F1C] border-[#FF9F1C]'
                   : tab.id === 'PORTFOLIO_PROFILE'
-                    ? 'bg-[#0D1A2B] text-[#00E5FF] border border-[#00E5FF]/40 hover:bg-[#162942]'
-                    : 'text-[#CBD5E1] hover:bg-[#141C2B] hover:text-white'
+                    ? 'text-[#00E5FF] border-transparent hover:bg-[#101C2E] hover:border-[#00E5FF]/50'
+                    : 'text-[#CBD5E1] border-transparent hover:bg-[#121926] hover:text-white'
               }`}
             >
               {tab.label}
@@ -1346,29 +1350,58 @@ export function App() {
           ))}
         </div>
 
-        {/* Quick Market Pair Switcher (Top 10 CoinMarketCap + DEX Leaders) */}
-        <div className="flex items-center gap-1 overflow-x-auto pb-0.5">
+        <div className="hidden lg:flex items-center gap-2 shrink-0 text-[10px]">
+          <span className="px-2 py-0.5 bg-[#071510] border border-[#00E676]/40 text-[#00E676] font-extrabold whitespace-nowrap">
+            ● LIVE ON-CHAIN ({markets.length} MARKETS)
+          </span>
+        </div>
+      </nav>
+
+      {/* 3. SEAMLESS MULTI-MARKET WATCHLIST GRID (Zero Clipping Across All Zoom/Viewport Widths) */}
+      <div className="px-3 py-1 bg-[#070A0F] border-b border-[#1E2736] text-[10px] w-full">
+        <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 min-[2100px]:grid-cols-[repeat(14,minmax(0,1fr))] gap-1 w-full">
           {markets.map((m) => {
             const isSel = m.symbol === selectedSymbol;
+            const pct1d = Number.isFinite(m.change24h) ? m.change24h : 0;
+            const isUp = pct1d >= 0;
+            const priceLabel =
+              m.price >= 1000
+                ? Math.round(m.price).toLocaleString()
+                : m.price >= 100
+                  ? m.price.toFixed(1)
+                  : m.price >= 1
+                    ? m.price.toFixed(3)
+                    : m.price.toPrecision(4);
             return (
               <button
                 key={m.symbol}
                 onClick={() => setSelectedSymbol(m.symbol)}
-                className={`px-2 py-0.5 border text-[10px] flex items-center gap-1 shrink-0 transition-colors ${
+                className={`px-1.5 py-0.5 border flex items-center justify-between gap-1 min-w-0 transition-colors ${
                   isSel
-                    ? 'bg-[#161F30] border-[#00E5FF] text-[#F8FAFC] font-extrabold'
-                    : 'bg-[#070A0F] border-[#1A2230] text-[#94A3B8] hover:text-white'
+                    ? 'bg-[#131E30] border-[#00E5FF] text-[#F8FAFC] font-extrabold shadow-[inset_0_0_0_1px_rgba(0,229,255,0.2)]'
+                    : 'bg-[#0A0E15] border-[#192231] text-[#CBD5E1] hover:border-[#2E3D57] hover:text-white'
                 }`}
-                title={`CMC Rank #${m.cmcRank || '-'} • ${m.chainNetwork || m.primaryExchange}`}
+                title={`CMC Rank #${m.cmcRank || '-'} • ${m.symbol} • $${m.price.toLocaleString()} • 1D Change: ${isUp ? '+' : ''}${pct1d.toFixed(2)}%`}
               >
-                {m.cmcRank && m.cmcRank <= 10 && (
-                  <span className="text-[8.5px] px-1 bg-[#FF9F1C]/20 text-[#FF9F1C] font-extrabold">
-                    #{m.cmcRank}
+                <span className="flex items-center gap-1 min-w-0 truncate">
+                  <CoinIcon coin={m.baseAsset} size={13} />
+                  {m.cmcRank && m.cmcRank <= 10 && (
+                    <span className="text-[8px] px-0.5 bg-[#FF9F1C]/15 text-[#FF9F1C] font-extrabold shrink-0">
+                      #{m.cmcRank}
+                    </span>
+                  )}
+                  <span className="font-bold text-white truncate">{m.baseAsset}</span>
+                </span>
+                <span className="flex items-center gap-1 shrink-0">
+                  <span className="text-[#CBD5E1] font-semibold">${priceLabel}</span>
+                  <span
+                    className={`px-1 text-[8.5px] font-extrabold ${
+                      isUp ? 'bg-[#00E676]/15 text-[#00E676]' : 'bg-[#FF1744]/15 text-[#FF1744]'
+                    }`}
+                  >
+                    {isUp ? '▲+' : '▼-'}
+                    {Math.abs(pct1d).toFixed(2)}%
                   </span>
-                )}
-                <span>{m.baseAsset}</span>
-                <span className={m.change24h >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}>
-                  ${m.price > 100 ? m.price.toLocaleString() : m.price}
                 </span>
               </button>
             );
@@ -1376,10 +1409,11 @@ export function App() {
         </div>
       </div>
 
-      {/* 3. ACTIVE INSTRUMENT TICKER, POSITION SIZER & AUTONOMOUS AGENT CONTROLS */}
-      <div className="flex flex-wrap items-center justify-between px-3 py-1.5 bg-[#070A0F] border-b border-[#1E2736] text-[11px] gap-2">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-2">
+      {/* 4. ACTIVE INSTRUMENT TICKER, POSITION SIZER & AUTONOMOUS AGENT CONTROLS */}
+      <div className="flex flex-wrap items-center justify-between px-3 py-1.5 bg-[#06090F] border-b border-[#1E2736] text-[11px] gap-2 w-full">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+          <div className="flex items-center gap-2 shrink-0">
+            <CoinIcon coin={activePair.baseAsset} size={18} />
             {activePair.cmcRank && (
               <span className="px-1.5 py-0.5 text-[9.5px] font-extrabold bg-[#FF9F1C] text-black">
                 CMC #{activePair.cmcRank}
@@ -1391,20 +1425,24 @@ export function App() {
             </span>
           </div>
 
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-1.5 shrink-0">
             <span className="text-sm font-extrabold text-white">
               ${activePair.price.toLocaleString()}
             </span>
             <span
-              className={`font-bold ${
-                activePair.change24h >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+              className={`px-1.5 py-0.5 text-[10px] font-extrabold ${
+                activePair.change24h >= 0
+                  ? 'bg-[#00E676]/15 text-[#00E676]'
+                  : 'bg-[#FF1744]/15 text-[#FF1744]'
               }`}
+              title="Perubahan persentase 1 hari (24H)"
             >
-              {activePair.change24h >= 0 ? '▲' : '▼'} {Math.abs(activePair.change24h)}%
+              1D {activePair.change24h >= 0 ? '▲+' : '▼-'}
+              {Math.abs(activePair.change24h).toFixed(2)}%
             </span>
           </div>
 
-          <div className="hidden xl:flex items-center gap-3 text-[10.5px] text-[#94A3B8]">
+          <div className="hidden lg:flex flex-wrap items-center gap-3 text-[10.5px] text-[#94A3B8]">
             {activePair.marketCapUsd && (
               <span>
                 MCAP:{' '}
@@ -1428,7 +1466,7 @@ export function App() {
         </div>
 
         {/* Real-Money Order Sizing & Execution Controls */}
-        <div className="flex items-center gap-1.5">
+        <div className="flex flex-wrap items-center gap-1.5 max-w-full">
           <div className="flex items-center bg-[#040609] border border-[#1E2736] px-1.5 py-0.5 text-[10px]">
             <span className="text-[#94A3B8] mr-1">SIZE $:</span>
             <input
@@ -1498,16 +1536,16 @@ export function App() {
       </div>
 
       {/* 4. MAIN WORKSPACE CONTENT */}
-      <main className="flex-1 overflow-hidden">
+      <main className="flex-1 min-h-0 overflow-y-auto lg:overflow-hidden">
         {activeTopTab === 'TERMINAL_DESK' && (
-          <div className="grid grid-cols-12 h-full divide-x divide-[#1E2736]">
+          <div className="grid grid-cols-12 h-full divide-y lg:divide-y-0 lg:divide-x divide-[#1E2736]">
             {/* LEFT & CENTER PANE (7 Columns) */}
             <div
               ref={leftPaneRef}
-              className="col-span-12 lg:col-span-7 flex flex-col h-full overflow-hidden bg-[#06080C]"
+              className="col-span-12 lg:col-span-7 flex flex-col lg:h-full overflow-hidden bg-[#06080C]"
             >
-              <div className="flex items-center justify-between px-3 py-1 bg-[#0A0E15] border-b border-[#1E2736] text-[10.5px]">
-                <div className="flex items-center gap-4">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1 bg-[#0A0E15] border-b border-[#1E2736] text-[10.5px]">
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 min-w-0">
                   {(
                     [
                       { id: 'OVERVIEW', label: 'OVERVIEW & CHART' },
@@ -1724,13 +1762,26 @@ export function App() {
                               <button
                                 key={m.symbol}
                                 onClick={() => setSelectedSymbol(m.symbol)}
-                                className={`px-1.5 py-0.5 text-[9.5px] font-bold border ${
+                                className={`px-1.5 py-0.5 text-[9.5px] font-bold border inline-flex items-center gap-1 ${
                                   m.symbol === activePair.symbol
                                     ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
                                     : 'bg-[#0D131F] text-[#94A3B8] border-[#1E2736] hover:text-white'
                                 }`}
                               >
-                                {m.baseAsset}
+                                <CoinIcon coin={m.baseAsset} size={12} />
+                                <span>{m.baseAsset}</span>
+                                <span
+                                  className={
+                                    m.symbol === activePair.symbol
+                                      ? 'text-black/80 font-extrabold'
+                                      : m.change24h >= 0
+                                        ? 'text-[#00E676]'
+                                        : 'text-[#FF1744]'
+                                  }
+                                >
+                                  {m.change24h >= 0 ? '+' : ''}
+                                  {m.change24h.toFixed(2)}%
+                                </span>
                               </button>
                             ))}
                           </div>
@@ -2451,6 +2502,7 @@ export function App() {
                       <span className="px-1.5 py-0.5 bg-[#FF9F1C]/20 text-[#FF9F1C] font-extrabold text-[10px]">
                         #{m.cmcRank || '-'}
                       </span>
+                      <CoinIcon coin={m.baseAsset} size={18} />
                       <div>
                         <div className="font-extrabold text-white">{m.symbol}</div>
                         <div className="text-[9.5px] text-[#64748B]">{m.baseAsset} / {m.quoteAsset}</div>
@@ -2465,12 +2517,12 @@ export function App() {
                       ${m.price > 100 ? m.price.toLocaleString() : m.price}
                     </div>
                     <div
-                      className={`text-right font-bold ${
+                      className={`text-right font-extrabold ${
                         m.change24h >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
                       }`}
                     >
-                      {m.change24h >= 0 ? '+' : ''}
-                      {m.change24h}%
+                      {m.change24h >= 0 ? '▲ +' : '▼ -'}
+                      {Math.abs(m.change24h).toFixed(2)}%
                     </div>
                     <div className="text-right text-[#CBD5E1] font-semibold">
                       {m.marketCapUsd ? formatDepthOrVol(m.marketCapUsd) : '-'}
