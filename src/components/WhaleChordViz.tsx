@@ -1,21 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ChordFlowLink, WhaleTransaction } from '../types/terminal';
-
-interface WhalePositionItem {
-  coin: string;
-  symbol: string;
-  side: 'LONG' | 'SHORT';
-  sizeCoins: number;
-  positionValueUsd: number;
-  entryPrice: number;
-  unrealizedPnlUsd: number;
-  walletLabel: string;
-}
+import {
+  ChordFlowLink,
+  HlpVaultSummary,
+  WhalePositionItem,
+  WhaleTransaction,
+} from '../types/terminal';
 
 interface WhaleChordVizProps {
   links: ChordFlowLink[];
   recentWhales: WhaleTransaction[];
   whalePositions?: WhalePositionItem[];
+  hlpVaultSummary?: HlpVaultSummary | null;
   liveBlocks?: {
     ethereumL1?: number;
     arbitrumL2?: number;
@@ -39,16 +34,16 @@ interface NodeMeta {
 const ALL_NODES: NodeMeta[] = [
   { id: 'WHALE CORE', short: 'WHALE CORE HUB', tag: 'CORE HUB', angleDeg: 0, pipelineCol: 1, pipelineRow: 2 },
   { id: 'HYPERLIQUID', short: 'Hyperliquid L1', tag: 'PERP DEX', angleDeg: -90, pipelineCol: 2, pipelineRow: 0 },
-  { id: 'PHANTOM SOL', short: 'Phantom (SOL)', tag: 'WALLET', angleDeg: -54, pipelineCol: 0, pipelineRow: 0 },
-  { id: 'JUPITER DEX', short: 'Jupiter / Raydium', tag: 'DEX POOL', angleDeg: -18, pipelineCol: 2, pipelineRow: 1 },
-  { id: 'TRUST EVM', short: 'Trust Wallet', tag: 'WALLET', angleDeg: 18, pipelineCol: 0, pipelineRow: 1 },
-  { id: 'BINANCE', short: 'Binance Perp', tag: 'CEX', angleDeg: 54, pipelineCol: 2, pipelineRow: 2 },
-  { id: 'BYBIT', short: 'Bybit Unified', tag: 'CEX', angleDeg: 90, pipelineCol: 2, pipelineRow: 3 },
-  { id: 'OKX', short: 'OKX Engine', tag: 'CEX', angleDeg: 126, pipelineCol: 2, pipelineRow: 4 },
-  { id: 'DEXSCREENER', short: 'DexScreener LP', tag: 'SCANNER', angleDeg: 162, pipelineCol: 0, pipelineRow: 2 },
-  { id: 'HLP VAULT', short: 'HLP Vaults', tag: 'LIQUIDITY', angleDeg: 198, pipelineCol: 0, pipelineRow: 3 },
-  { id: 'JUMP CRYPTO', short: 'Jump / MMs', tag: 'INSTITUTION', angleDeg: 234, pipelineCol: 0, pipelineRow: 4 },
-  { id: 'WINTERMUTE MM', short: 'Wintermute MM', tag: 'MM ENGINE', angleDeg: -126, pipelineCol: 1, pipelineRow: 0 },
+  { id: 'PHANTOM SOL', short: 'Phantom (SOL)', tag: 'WALLET', angleDeg: -57, pipelineCol: 0, pipelineRow: 0 },
+  { id: 'JUPITER DEX', short: 'Jupiter / Raydium', tag: 'DEX POOL', angleDeg: -24, pipelineCol: 2, pipelineRow: 1 },
+  { id: 'TRUST EVM', short: 'Trust Wallet', tag: 'WALLET', angleDeg: 9, pipelineCol: 0, pipelineRow: 1 },
+  { id: 'BINANCE', short: 'Binance Perp', tag: 'CEX', angleDeg: 42, pipelineCol: 2, pipelineRow: 2 },
+  { id: 'BYBIT', short: 'Bybit Unified', tag: 'CEX', angleDeg: 75, pipelineCol: 2, pipelineRow: 3 },
+  { id: 'OKX', short: 'OKX Engine', tag: 'CEX', angleDeg: 108, pipelineCol: 2, pipelineRow: 4 },
+  { id: 'DEXSCREENER', short: 'DexScreener LP', tag: 'SCANNER', angleDeg: 141, pipelineCol: 0, pipelineRow: 2 },
+  { id: 'HLP VAULT', short: 'HLP Vaults', tag: 'LIQUIDITY', angleDeg: 174, pipelineCol: 0, pipelineRow: 3 },
+  { id: 'JUMP CRYPTO', short: 'Jump / MMs', tag: 'INSTITUTION', angleDeg: 207, pipelineCol: 0, pipelineRow: 4 },
+  { id: 'WINTERMUTE MM', short: 'Wintermute MM', tag: 'MM ENGINE', angleDeg: 240, pipelineCol: 1, pipelineRow: 0 },
 ];
 
 type LayoutMode = 'RADIAL' | 'PIPELINE';
@@ -57,7 +52,7 @@ type StreamSubTab = 'TX_STREAM' | 'VAULT_POSITIONS' | 'BLOCK_MATRIX';
 function computeDefaultPositions(mode: LayoutMode): Record<string, { x: number; y: number }> {
   const cx = 280;
   const cy = 205;
-  const radius = 162;
+  const radius = 152;
   const pos: Record<string, { x: number; y: number }> = {};
 
   ALL_NODES.forEach((n) => {
@@ -90,6 +85,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
   links,
   recentWhales,
   whalePositions = [],
+  hlpVaultSummary = null,
   liveBlocks,
   activeSymbol,
   onSelectNodeFilter,
@@ -367,7 +363,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
   const cx = 280;
   const cy = 205;
-  const radius = 162;
+  const radius = 152;
 
   return (
     <div
@@ -662,7 +658,16 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
               const boxW = isHub ? 82 : 66;
               const boxH = isHub ? 34 : 26;
-              const labelYOffset = coord.y < cy ? -21 : 27;
+              const dxFromCenter = coord.x - cx;
+              const dyFromCenter = coord.y - cy;
+              const isNearEquator = layoutMode === 'RADIAL' && Math.abs(dyFromCenter) < 35;
+              const labelXOffset = isNearEquator ? (dxFromCenter < 0 ? -38 : 38) : 0;
+              const labelYOffset = isNearEquator ? 3 : dyFromCenter < 0 ? -19 : 24;
+              const labelAnchor: 'middle' | 'end' | 'start' = isNearEquator
+                ? dxFromCenter < 0
+                  ? 'end'
+                  : 'start'
+                : 'middle';
 
               return (
                 <g
@@ -711,10 +716,10 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                   </text>
                   {!isHub && (
                     <text
-                      x={coord.x}
+                      x={coord.x + labelXOffset}
                       y={coord.y + labelYOffset}
-                      textAnchor="middle"
-                      className={`text-[9.5px] font-extrabold pointer-events-none ${
+                      textAnchor={labelAnchor}
+                      className={`text-[9px] font-extrabold pointer-events-none ${
                         isSelected
                           ? 'fill-[#00E5FF]'
                           : isHyperliquid
@@ -861,6 +866,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                   { id: 'HYPERLIQUID', label: 'HL L1' },
                   { id: 'ETHEREUM', label: 'ETH L1' },
                   { id: 'ARBITRUM', label: 'ARB L2' },
+                  { id: 'BNB', label: 'BSC BEP20' },
                   { id: 'SOLANA', label: 'SOLANA' },
                 ].map((cf) => (
                   <button
@@ -923,16 +929,32 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                   <div>
                     <span className="text-[#64748B]">BLOCK / SLOT:</span>{' '}
                     <strong className="text-[#FF9F1C]">
-                      #{inspectedTx.blockNumber?.toLocaleString() || '541,928,310'}
+                      #{inspectedTx.blockNumber ? inspectedTx.blockNumber.toLocaleString() : 'LIVE'}
                     </strong>{' '}
-                    <span className="text-[#00E676]">[VERIFIED ON-CHAIN]</span>
+                    <span className="text-[#00E676]">
+                      [{inspectedTx.isLiveVerified ? 'LIVE RPC VERIFIED' : 'ON-CHAIN'}]
+                    </span>
+                    {inspectedTx.blockTimestamp && (
+                      <div className="text-[8.5px] text-[#94A3B8]">
+                        UTC: {inspectedTx.blockTimestamp}
+                      </div>
+                    )}
                   </div>
                   <div>
                     <span className="text-[#64748B]">SIZE & PRICE:</span>{' '}
                     <strong className="text-white">
-                      {inspectedTx.sizeCoins ? `${inspectedTx.sizeCoins} Coins ` : ''}($
-                      {inspectedTx.sizeUsd.toLocaleString()}) @ ${inspectedTx.price.toLocaleString()}
+                      {inspectedTx.sizeCoins ? `${inspectedTx.sizeCoins} ${inspectedTx.tokenSymbol || 'Coins'} ` : ''}
+                      (${inspectedTx.sizeUsd.toLocaleString()}) @ ${inspectedTx.price.toLocaleString()}
                     </strong>
+                    <div className="text-[8.5px] text-[#00E5FF]">
+                      Method: {inspectedTx.methodName || inspectedTx.action}
+                      {typeof inspectedTx.gasFeeUsd === 'number' &&
+                        ` • Gas: $${inspectedTx.gasFeeUsd.toFixed(4)}`}
+                      {typeof inspectedTx.gasPriceGwei === 'number' && inspectedTx.gasPriceGwei > 0
+                        ? ` (${inspectedTx.gasPriceGwei} Gwei)`
+                        : ''}
+                      {typeof inspectedTx.nonce === 'number' ? ` • Nonce #${inspectedTx.nonce}` : ''}
+                    </div>
                   </div>
                   <div className="col-span-2 flex items-center justify-between gap-1">
                     <div className="truncate">
@@ -1026,9 +1048,16 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                       >
                         {/* Col 1: Time + Block + Chain */}
                         <div className="col-span-2 pr-1">
-                          <div className="text-[#CBD5E1] font-bold">{w.timestamp}</div>
+                          <div className="text-[#CBD5E1] font-bold flex items-center gap-1">
+                            <span>{w.timestamp}</span>
+                            {w.isLiveVerified && (
+                              <span className="text-[7.5px] px-1 bg-[#00E676]/15 text-[#00E676] font-extrabold">
+                                LIVE
+                              </span>
+                            )}
+                          </div>
                           <div className="text-[8.5px] text-[#00E5FF] truncate">
-                            #{w.blockNumber || 541928310} •{' '}
+                            #{w.blockNumber ? w.blockNumber.toLocaleString() : 'LIVE'} •{' '}
                             {(w.chainName || w.exchange).replace(' Mainnet', '')}
                           </div>
                         </div>
@@ -1065,18 +1094,22 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                           </div>
                         </div>
 
-                        {/* Col 4: TX Hash + Direct Explorer Link */}
+                        {/* Col 4: TX Hash + Method/Gas + Direct Explorer Link */}
                         <div className="col-span-2 pr-1 min-w-0">
-                          <div className="text-[#CBD5E1] truncate">{w.txHash}</div>
-                          <div className="flex items-center gap-1 text-[8px]">
-                            <span className="text-[#00E5FF] hover:underline">🔍 Detail</span>
+                          <div className="text-[#CBD5E1] truncate" title={w.methodName || w.txHash}>
+                            {w.txHash}
+                          </div>
+                          <div className="flex items-center gap-1 text-[8px] truncate">
+                            <span className="text-[#94A3B8] truncate">
+                              {w.methodName ? w.methodName.slice(0, 12) : '🔍 Detail'}
+                            </span>
                             {w.explorerTxUrl && (
                               <a
                                 href={w.explorerTxUrl}
                                 target="_blank"
                                 rel="noreferrer"
                                 onClick={(e) => e.stopPropagation()}
-                                className="text-[#00E676] hover:underline font-bold"
+                                className="text-[#00E676] hover:underline font-bold shrink-0"
                               >
                                 ↗ Explorer
                               </a>
@@ -1125,84 +1158,112 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
             {/* SUB-TAB 2: HLP INSTITUTIONAL VAULT & WHALE OPEN POSITIONS */}
             {streamSubTab === 'VAULT_POSITIONS' && (
               <div className="flex-1 flex flex-col overflow-hidden">
-                <div className="grid grid-cols-12 px-2.5 py-1 bg-[#0A0F1A] border-b border-[#1A253A] text-[8.5px] font-extrabold text-[#94A3B8] uppercase shrink-0">
-                  <span className="col-span-2">COIN / PAIR</span>
-                  <span className="col-span-2">SIDE</span>
-                  <span className="col-span-3">INSTITUTIONAL WALLET / VAULT</span>
-                  <span className="col-span-2 text-right">ENTRY PRICE</span>
-                  <span className="col-span-2 text-right">POSITION VALUE</span>
-                  <span className="col-span-1 text-right">uPnL $</span>
-                </div>
-                <div className="flex-1 overflow-y-auto divide-y divide-[#111826] font-mono text-[9.5px]">
-                  {(whalePositions.length > 0
-                    ? whalePositions
-                    : [
-                        {
-                          coin: 'BTC',
-                          symbol: 'BTC-PERP',
-                          side: 'LONG' as const,
-                          sizeCoins: 142.8,
-                          positionValueUsd: 10540000,
-                          entryPrice: 73410.0,
-                          unrealizedPnlUsd: 58420,
-                          walletLabel: 'HLP Institutional Vault (0xdfc2...f303)',
-                        },
-                        {
-                          coin: 'ETH',
-                          symbol: 'ETH-PERP',
-                          side: 'LONG' as const,
-                          sizeCoins: 2840.5,
-                          positionValueUsd: 6318000,
-                          entryPrice: 2212.4,
-                          unrealizedPnlUsd: 34120,
-                          walletLabel: 'HLP Institutional Vault (0xdfc2...f303)',
-                        },
-                        {
-                          coin: 'SOL',
-                          symbol: 'SOL-PERP',
-                          side: 'LONG' as const,
-                          sizeCoins: 31200.0,
-                          positionValueUsd: 4637000,
-                          entryPrice: 146.8,
-                          unrealizedPnlUsd: 57720,
-                          walletLabel: 'HLP Institutional Vault (0xdfc2...f303)',
-                        },
-                      ]
-                  ).map((wp, idx) => (
-                    <div
-                      key={`${wp.symbol}-${idx}`}
-                      onClick={() => onSelectSymbol && onSelectSymbol(wp.symbol)}
-                      className="grid grid-cols-12 px-2.5 py-1.5 items-center hover:bg-[#0E1626] cursor-pointer"
-                    >
-                      <span className="col-span-2 font-extrabold text-white">{wp.symbol}</span>
-                      <span className="col-span-2">
-                        <span
-                          className={`px-1.5 py-0.2 text-[8.5px] font-extrabold ${
-                            wp.side === 'LONG'
-                              ? 'bg-[#00E676] text-black'
-                              : 'bg-[#FF1744] text-white'
-                          }`}
-                        >
-                          {wp.side}
-                        </span>
+                {hlpVaultSummary && (
+                  <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#080E1A] border-b border-[#1A253A] text-[9px] font-mono gap-2 shrink-0">
+                    <span className="text-[#FF9F1C] font-extrabold">
+                      HLP VAULT ({hlpVaultSummary.vaultAddress.slice(0, 8)}...
+                      {hlpVaultSummary.vaultAddress.slice(-4)})
+                    </span>
+                    <div className="flex items-center gap-3">
+                      <span className="text-[#94A3B8]">
+                        Account:{' '}
+                        <strong className="text-white">
+                          ${(hlpVaultSummary.accountValueUsd / 1e6).toFixed(2)}M
+                        </strong>
                       </span>
-                      <span className="col-span-3 text-[#00E5FF] truncate">{wp.walletLabel}</span>
-                      <span className="col-span-2 text-right text-[#CBD5E1]">
-                        ${wp.entryPrice.toLocaleString()}
+                      <span className="text-[#94A3B8]">
+                        Total OI:{' '}
+                        <strong className="text-[#00E5FF]">
+                          ${(hlpVaultSummary.totalNotionalPosUsd / 1e6).toFixed(2)}M
+                        </strong>
                       </span>
-                      <span className="col-span-2 text-right font-extrabold text-[#FF9F1C]">
-                        ${(wp.positionValueUsd / 1e6).toFixed(2)}M
-                      </span>
-                      <span
-                        className={`col-span-1 text-right font-bold ${
-                          wp.unrealizedPnlUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
-                        }`}
-                      >
-                        {wp.unrealizedPnlUsd >= 0 ? '+' : ''}$
-                        {(wp.unrealizedPnlUsd / 1000).toFixed(1)}K
+                      <span className="text-[#94A3B8]">
+                        Margin Used:{' '}
+                        <strong className="text-[#00E676]">
+                          ${(hlpVaultSummary.totalMarginUsedUsd / 1e6).toFixed(2)}M
+                        </strong>
                       </span>
                     </div>
-                  ))}
+                  </div>
+                )}
+                <div className="grid grid-cols-12 px-2.5 py-1 bg-[#0A0F1A] border-b border-[#1A253A] text-[8.5px] font-extrabold text-[#94A3B8] uppercase shrink-0">
+                  <span className="col-span-2">COIN & LEV</span>
+                  <span className="col-span-2">SIDE / MARGIN</span>
+                  <span className="col-span-3">ENTRY → MARK / LIQ</span>
+                  <span className="col-span-2 text-right">SIZE (COINS)</span>
+                  <span className="col-span-2 text-right">NOTIONAL $</span>
+                  <span className="col-span-1 text-right">uPnL / ROE</span>
+                </div>
+                <div className="flex-1 overflow-y-auto divide-y divide-[#111826] font-mono text-[9.5px]">
+                  {whalePositions.length === 0 ? (
+                    <div className="p-4 text-center text-[10px] text-[#94A3B8]">
+                      Menunggu sinkronisasi posisi on-chain live dari Hyperliquid L1 HLP Vault...
+                    </div>
+                  ) : (
+                    whalePositions.map((wp, idx) => (
+                      <div
+                        key={`${wp.symbol}-${idx}`}
+                        onClick={() => onSelectSymbol && onSelectSymbol(wp.symbol)}
+                        className="grid grid-cols-12 px-2.5 py-1.5 items-center hover:bg-[#0E1626] cursor-pointer"
+                      >
+                        <div className="col-span-2">
+                          <div className="font-extrabold text-white">{wp.symbol}</div>
+                          <div className="text-[8px] text-[#00E5FF]">
+                            {wp.leverage ? `${wp.leverage}x ${wp.leverageType || 'cross'}` : 'HLP Vault'}
+                          </div>
+                        </div>
+                        <div className="col-span-2">
+                          <span
+                            className={`px-1.5 py-0.2 text-[8.5px] font-extrabold ${
+                              wp.side === 'LONG'
+                                ? 'bg-[#00E676] text-black'
+                                : 'bg-[#FF1744] text-white'
+                            }`}
+                          >
+                            {wp.side}
+                          </span>
+                          {typeof wp.marginUsedUsd === 'number' && wp.marginUsedUsd > 0 && (
+                            <div className="text-[8px] text-[#94A3B8] mt-0.5">
+                              Mgn: ${(wp.marginUsedUsd / 1000).toFixed(1)}K
+                            </div>
+                          )}
+                        </div>
+                        <div className="col-span-3 text-[8.5px]">
+                          <div className="text-[#CBD5E1]">
+                            E: ${wp.entryPrice.toLocaleString()}
+                            {wp.markPrice ? ` → $${wp.markPrice.toLocaleString()}` : ''}
+                          </div>
+                          <div className="text-[#FF9F1C]">
+                            Liq: {wp.liquidationPrice && wp.liquidationPrice > 0 ? `$${wp.liquidationPrice.toLocaleString()}` : 'Cross Safe'}
+                          </div>
+                        </div>
+                        <span className="col-span-2 text-right text-[#CBD5E1]">
+                          {wp.sizeCoins.toLocaleString(undefined, { maximumFractionDigits: 2 })} {wp.coin}
+                        </span>
+                        <span className="col-span-2 text-right font-extrabold text-[#FF9F1C]">
+                          ${wp.positionValueUsd >= 1_000_000
+                            ? `${(wp.positionValueUsd / 1e6).toFixed(2)}M`
+                            : `${(wp.positionValueUsd / 1000).toFixed(1)}K`}
+                        </span>
+                        <div
+                          className={`col-span-1 text-right font-bold ${
+                            wp.unrealizedPnlUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+                          }`}
+                        >
+                          <div>
+                            {wp.unrealizedPnlUsd >= 0 ? '+' : ''}$
+                            {(wp.unrealizedPnlUsd / 1000).toFixed(1)}K
+                          </div>
+                          {typeof wp.roePct === 'number' && (
+                            <div className="text-[8px]">
+                              {wp.roePct >= 0 ? '+' : ''}
+                              {wp.roePct}%
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))
+                  )}
                 </div>
               </div>
             )}
@@ -1214,30 +1275,38 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                   <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
                     <div className="text-[8.5px] text-[#94A3B8]">ETHEREUM MAINNET (ERC20)</div>
                     <div className="text-xs font-extrabold text-[#00E5FF] mt-0.5">
-                      Block #{(liveBlocks?.ethereumL1 || 21948512).toLocaleString()}
+                      {liveBlocks?.ethereumL1
+                        ? `Block #${liveBlocks.ethereumL1.toLocaleString()}`
+                        : 'Syncing RPC...'}
                     </div>
-                    <div className="text-[8.5px] text-[#00E676]">● RPC SYNCED (12s block)</div>
+                    <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (12s block)</div>
                   </div>
                   <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
                     <div className="text-[8.5px] text-[#94A3B8]">ARBITRUM ONE (L2 BRIDGE)</div>
                     <div className="text-xs font-extrabold text-[#FF9F1C] mt-0.5">
-                      Block #{(liveBlocks?.arbitrumL2 || 315429810).toLocaleString()}
+                      {liveBlocks?.arbitrumL2
+                        ? `Block #${liveBlocks.arbitrumL2.toLocaleString()}`
+                        : 'Syncing RPC...'}
                     </div>
-                    <div className="text-[8.5px] text-[#00E676]">● RPC SYNCED (250ms block)</div>
+                    <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (250ms block)</div>
                   </div>
                   <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
                     <div className="text-[8.5px] text-[#94A3B8]">SOLANA MAINNET (JUP/RAY)</div>
                     <div className="text-xs font-extrabold text-[#00E676] mt-0.5">
-                      Slot #{(liveBlocks?.solanaSlot || 325891402).toLocaleString()}
+                      {liveBlocks?.solanaSlot
+                        ? `Slot #${liveBlocks.solanaSlot.toLocaleString()}`
+                        : 'Syncing RPC...'}
                     </div>
-                    <div className="text-[8.5px] text-[#00E676]">● RPC SYNCED (400ms slot)</div>
+                    <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (400ms slot)</div>
                   </div>
                   <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
                     <div className="text-[8.5px] text-[#94A3B8]">BNB SMART CHAIN (BEP20)</div>
                     <div className="text-xs font-extrabold text-[#F8FAFC] mt-0.5">
-                      Block #{(liveBlocks?.bscMainnet || 47291840).toLocaleString()}
+                      {liveBlocks?.bscMainnet
+                        ? `Block #${liveBlocks.bscMainnet.toLocaleString()}`
+                        : 'Syncing RPC...'}
                     </div>
-                    <div className="text-[8.5px] text-[#00E676]">● RPC SYNCED (3s block)</div>
+                    <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (3s block)</div>
                   </div>
                 </div>
 

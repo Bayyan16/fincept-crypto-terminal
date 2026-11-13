@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AgentBrainDecision,
   AgentPosition,
@@ -7,9 +7,11 @@ import {
   ClosedTradeLog,
   DexScreenerPoolItem,
   ExecutionEnvironment,
+  HlpVaultSummary,
   MarketPair,
   OrderbookState,
   WalletConnectionState,
+  WhalePositionItem,
   WhaleTransaction,
 } from './types/terminal';
 import {
@@ -67,7 +69,8 @@ export function App() {
     buildAggregatedOrderbook(INITIAL_MARKETS[0])
   );
   const [whaleTxs, setWhaleTxs] = useState<WhaleTransaction[]>(INITIAL_WHALE_TRANSACTIONS);
-  const [whalePositions, setWhalePositions] = useState<any[]>([]);
+  const [whalePositions, setWhalePositions] = useState<WhalePositionItem[]>([]);
+  const [hlpVaultSummary, setHlpVaultSummary] = useState<HlpVaultSummary | null>(null);
   const [liveBlocks, setLiveBlocks] = useState<{
     ethereumL1?: number;
     arbitrumL2?: number;
@@ -110,6 +113,65 @@ export function App() {
   const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
   const [nodeFilter, setNodeFilter] = useState<string | null>(null);
   const [clockStr, setClockStr] = useState('LIVE');
+
+  // Resizable Active Positions Lower Dock (Drag Up/Down between Chart & Table)
+  const [positionsDockHeightPx, setPositionsDockHeightPx] = useState<number>(215);
+  const [isResizingPositionsDock, setIsResizingPositionsDock] = useState<boolean>(false);
+  const positionsResizeStartRef = useRef<{ startY: number; startHeight: number }>({
+    startY: 0,
+    startHeight: 215,
+  });
+  const leftPaneRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isResizingPositionsDock) return;
+
+    const prevCursor = document.body.style.cursor;
+    const prevUserSelect = document.body.style.userSelect;
+    document.body.style.cursor = 'ns-resize';
+    document.body.style.userSelect = 'none';
+
+    const handleGlobalMove = (e: MouseEvent) => {
+      const deltaY = positionsResizeStartRef.current.startY - e.clientY;
+      const paneH = leftPaneRef.current?.clientHeight || 680;
+      const maxH = Math.max(260, paneH - 120);
+      const nextH = Math.max(
+        40,
+        Math.min(maxH, positionsResizeStartRef.current.startHeight + deltaY)
+      );
+      setPositionsDockHeightPx(Math.round(nextH));
+    };
+
+    const handleGlobalUp = () => {
+      setIsResizingPositionsDock(false);
+    };
+
+    window.addEventListener('mousemove', handleGlobalMove);
+    window.addEventListener('mouseup', handleGlobalUp);
+    return () => {
+      document.body.style.cursor = prevCursor;
+      document.body.style.userSelect = prevUserSelect;
+      window.removeEventListener('mousemove', handleGlobalMove);
+      window.removeEventListener('mouseup', handleGlobalUp);
+    };
+  }, [isResizingPositionsDock]);
+
+  const handlePositionsResizeMouseDown = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsResizingPositionsDock(true);
+    positionsResizeStartRef.current = {
+      startY: e.clientY,
+      startHeight: positionsDockHeightPx,
+    };
+  };
+
+  const setPresetPositionsHeight = (mode: 'MIN' | 'SPLIT' | 'MAX') => {
+    const paneH = leftPaneRef.current?.clientHeight || 680;
+    if (mode === 'MIN') setPositionsDockHeightPx(40);
+    else if (mode === 'SPLIT') setPositionsDockHeightPx(215);
+    else setPositionsDockHeightPx(Math.max(360, paneH - 135));
+  };
   const [liveFeedMode, setLiveFeedMode] = useState<{
     hyperliquid: 'LIVE' | 'SIM_STREAM';
     binance: 'LIVE' | 'SIM_STREAM';
@@ -337,6 +399,10 @@ export function App() {
 
         if (snap.liveBlocks) {
           setLiveBlocks(snap.liveBlocks);
+        }
+
+        if (snap.hlpVaultSummary) {
+          setHlpVaultSummary(snap.hlpVaultSummary);
         }
 
         if (snap.realWhalePositions && snap.realWhalePositions.length > 0) {
@@ -1436,7 +1502,10 @@ export function App() {
         {activeTopTab === 'TERMINAL_DESK' && (
           <div className="grid grid-cols-12 h-full divide-x divide-[#1E2736]">
             {/* LEFT & CENTER PANE (7 Columns) */}
-            <div className="col-span-12 lg:col-span-7 flex flex-col h-full overflow-hidden bg-[#06080C]">
+            <div
+              ref={leftPaneRef}
+              className="col-span-12 lg:col-span-7 flex flex-col h-full overflow-hidden bg-[#06080C]"
+            >
               <div className="flex items-center justify-between px-3 py-1 bg-[#0A0E15] border-b border-[#1E2736] text-[10.5px]">
                 <div className="flex items-center gap-4">
                   {(
@@ -2079,9 +2148,23 @@ export function App() {
                 </div>
               </div>
 
-              {/* Lower Dock: Active Autonomous Positions (Max 3 Low-Risk Slots + Post-TP Auto-Hunter) */}
-              <div className="h-[215px] flex flex-col bg-[#06090E] overflow-hidden">
-                <div className="flex flex-wrap items-center justify-between px-3 py-1 bg-[#0B1018] border-b border-[#1E2736] text-[10.5px] gap-2">
+              {/* Lower Dock: Resizable Active Autonomous Positions (Drag Handle + Up/Down Presets) */}
+              <div
+                style={{ height: `${positionsDockHeightPx}px` }}
+                className={`border-t-2 border-[#00E5FF]/60 bg-[#06090E] flex flex-col shrink-0 overflow-hidden ${
+                  isResizingPositionsDock ? '' : 'transition-[height] duration-75'
+                }`}
+              >
+                {/* DRAG HANDLE BAR (Pull Up to expand table / Push Down to expand chart) */}
+                <div
+                  onMouseDown={handlePositionsResizeMouseDown}
+                  className="h-2.5 bg-[#0D1524] hover:bg-[#00E5FF]/30 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group shrink-0 select-none"
+                  title="Tarik ke atas untuk memperbesar tabel Active Positions, atau tarik ke bawah untuk memperluas area Chart"
+                >
+                  <div className="w-16 h-1 rounded-full bg-[#334155] group-hover:bg-[#00E5FF] transition-colors" />
+                </div>
+
+                <div className="flex flex-wrap items-center justify-between px-3 py-1 bg-[#0B1018] border-b border-[#1E2736] text-[10.5px] gap-2 shrink-0">
                   <div className="flex items-center gap-2">
                     <span className="text-[#00E5FF] font-extrabold uppercase">
                       ACTIVE POSITIONS ({positions.length}/{maxConcurrentPositions} MAX LOW-RISK SLOTS)
@@ -2093,12 +2176,12 @@ export function App() {
                         {hunterCountdownSec ?? 3}s...
                       </span>
                     ) : (
-                      <span className="text-[10px] text-[#94A3B8]">
+                      <span className="text-[10px] text-[#94A3B8] hidden xl:inline">
                         (Auto-Breakeven Lock + Post-TP Continuous Low-Risk Hunter)
                       </span>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1.5 flex-wrap">
                     {positions.length < maxConcurrentPositions && nextLowRiskCandidate && (
                       <button
                         onClick={executeAutonomousLowRiskSlot}
@@ -2108,13 +2191,47 @@ export function App() {
                         ⚡ FILL SLOT #{positions.length + 1}/{maxConcurrentPositions} ({nextLowRiskCandidate.market.symbol})
                       </button>
                     )}
-                    <span className="text-[#00E676] font-extrabold">
+                    <span className="text-[#00E676] font-extrabold mr-1">
                       OPEN PnL: +${totalUnrealizedPnl.toFixed(2)} | REALIZED: +$
                       {totalRealizedPnl.toFixed(2)}
                     </span>
+                    <button
+                      onClick={() => setPresetPositionsHeight('MIN')}
+                      className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
+                        positionsDockHeightPx <= 55
+                          ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
+                          : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
+                      }`}
+                      title="Kecilkan tabel posisi ke bawah agar chart lebih luas"
+                    >
+                      ▼ KECIL
+                    </button>
+                    <button
+                      onClick={() => setPresetPositionsHeight('SPLIT')}
+                      className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
+                        positionsDockHeightPx > 55 && positionsDockHeightPx < 320
+                          ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
+                          : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
+                      }`}
+                      title="Ukuran standar"
+                    >
+                      ▬ NORMAL
+                    </button>
+                    <button
+                      onClick={() => setPresetPositionsHeight('MAX')}
+                      className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
+                        positionsDockHeightPx >= 320
+                          ? 'bg-[#00E676] text-black border-[#00E676]'
+                          : 'bg-[#111927] text-[#00E676] border-[#00E676]/50 hover:bg-[#00E676] hover:text-black'
+                      }`}
+                      title="Naikkan tabel posisi ke atas untuk melihat lebih banyak baris"
+                    >
+                      ▲ NAIKKAN PENUH
+                    </button>
                   </div>
                 </div>
 
+                {positionsDockHeightPx > 48 && (
                 <div className="flex-1 overflow-y-auto divide-y divide-[#131B29] text-[10.5px]">
                   {positions.map((pos) => (
                     <div
@@ -2216,6 +2333,7 @@ export function App() {
                     </div>
                   ))}
                 </div>
+                )}
               </div>
             </div>
 
@@ -2231,6 +2349,7 @@ export function App() {
                     : whaleTxs
                 }
                 whalePositions={whalePositions}
+                hlpVaultSummary={hlpVaultSummary}
                 liveBlocks={liveBlocks}
                 activeSymbol={activePair.symbol}
                 onSelectNodeFilter={setNodeFilter}

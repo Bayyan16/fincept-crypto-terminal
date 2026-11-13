@@ -41,6 +41,19 @@ export default defineConfig({
           try {
             const urlObj = new URL(req.url, 'http://localhost:5173');
 
+            if (urlObj.pathname === '/api/health' && req.method === 'GET') {
+              res.statusCode = 200;
+              res.end(
+                JSON.stringify({
+                  ok: true,
+                  service: 'fincept-whale-quant-terminal',
+                  mode: 'VITE_DEV_GATEWAY',
+                  timestamp: new Date().toISOString(),
+                })
+              );
+              return;
+            }
+
             if (urlObj.pathname === '/api/live/snapshot' && req.method === 'GET') {
               const snap = await getRealMarketSnapshot();
               res.statusCode = 200;

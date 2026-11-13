@@ -72,7 +72,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const w = Math.max(360, Math.round(entry.contentRect.width));
-        const h = Math.max(220, Math.round(entry.contentRect.height));
+        const h = Math.max(110, Math.round(entry.contentRect.height));
         setDims({ width: w, height: h });
       }
     });
@@ -537,7 +537,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
       {/* 3. Main Interactive Chart SVG (Supports 2D Free Panning + Price Axis Dragging + Non-Passive Wheel Zoom) */}
       <div
         ref={containerRef}
-        className="relative flex-1 bg-[#05070B] min-h-[245px] overflow-hidden"
+        className="relative flex-1 bg-[#05070B] min-h-[110px] overflow-hidden"
         style={{ touchAction: 'none' }}
       >
         {isLoadingCandles && (

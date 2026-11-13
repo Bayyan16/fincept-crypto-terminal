@@ -3,9 +3,11 @@ import {
   ChordFlowLink,
   DexScreenerPoolItem,
   ExchangeId,
+  HlpVaultSummary,
   MarketPair,
   OrderbookLevel,
   OrderbookState,
+  WhalePositionItem,
   WhaleTransaction,
 } from '../types/terminal';
 
@@ -295,7 +297,7 @@ export const INITIAL_MARKETS: MarketPair[] = [
     baseAsset: 'HYPE',
     quoteAsset: 'USDC',
     hlCoin: 'HYPE',
-    binanceSymbol: 'ETHUSDT',
+    binanceSymbol: 'HYPEUSDT',
     cmcRank: 11,
     marketCapUsd: 11800000000,
     chainNetwork: 'Hyperliquid L1 Native',
@@ -899,16 +901,8 @@ export async function fetchBackendRealSnapshot(): Promise<{
       fundingRate: number;
     }
   >;
-  realWhalePositions?: Array<{
-    coin: string;
-    symbol: string;
-    side: 'LONG' | 'SHORT';
-    sizeCoins: number;
-    positionValueUsd: number;
-    entryPrice: number;
-    unrealizedPnlUsd: number;
-    walletLabel: string;
-  }>;
+  hlpVaultSummary?: HlpVaultSummary;
+  realWhalePositions?: WhalePositionItem[];
   realDexPools?: DexScreenerPoolItem[];
   realRaydiumPools?: any[];
   jupiterRoutes?: Record<string, any>;
@@ -926,6 +920,7 @@ export async function fetchBackendRealSnapshot(): Promise<{
           raydiumConnected: Boolean(data.raydiumConnected),
           jupiterConnected: Boolean(data.jupiterConnected),
           liveBlocks: data.liveBlocks,
+          hlpVaultSummary: data.hlpVaultSummary,
           hlAssets: data.hlAssets,
           realWhalePositions: data.realWhalePositions,
           realDexPools: data.realDexPools,

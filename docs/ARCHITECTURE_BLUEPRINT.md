@@ -104,3 +104,4 @@ Memetakan aliran dana dari *wallet* raksasa untuk mengetahui ke mana *smart mone
   3. **Market Sentiment & Regime Score (`0–100`)**: Tekanan *CVD*, *Funding Rate*, dan struktur harga terhadap *EMA-20*.
 - **Keputusan Otomatis 4-Arah**: `HOLD_FLOATING_LOSS` (tahan *floating loss* selama pertahanan *whale* & *orderbook* masih kuat), `RIDE_PROFIT_TRAIL`, `AUTO_TAKE_PROFIT_NOW`, atau `AUTO_CUT_INVALIDATED`.
 - **Direct-to-Hot-Wallet Profit Settlement**: Setiap profit yang terealisasi otomatis langsung masuk/disinkronkan ke *Hot Wallet* pengguna (**Trust Wallet** / **Phantom Wallet**) tanpa perlu proses *withdraw* manual dari terminal.
+

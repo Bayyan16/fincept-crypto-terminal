@@ -44,7 +44,7 @@ export interface OrderbookLevel {
   size: number;
   totalUsd: number;
   cumulativeUsd: number;
-  exchange: ExchangeId;
+  exchange: ExchangeId | 'GATEIO';
   isWhaleWall?: boolean;
 }
 
@@ -76,6 +76,7 @@ export interface CandlePoint {
 export interface WhaleTransaction {
   id: string;
   timestamp: string;
+  blockTimestamp?: string;
   walletLabel: string;
   walletAddress: string;
   counterpartyAddress?: string;
@@ -84,6 +85,11 @@ export interface WhaleTransaction {
   exchange: ExchangeId;
   chainName?: string;
   blockNumber?: number;
+  blockHash?: string;
+  nonce?: number;
+  txIndex?: number;
+  methodName?: string;
+  tokenSymbol?: string;
   symbol: string;
   action:
     | 'OPEN LONG PERP'
@@ -105,6 +111,37 @@ export interface WhaleTransaction {
   explorerTxUrl?: string;
   explorerWalletUrl?: string;
   gasFeeUsd?: number;
+  gasPriceGwei?: number;
+  gasLimit?: number;
+  isLiveVerified?: boolean;
+}
+
+export interface WhalePositionItem {
+  coin: string;
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  sizeCoins: number;
+  positionValueUsd: number;
+  entryPrice: number;
+  markPrice?: number;
+  unrealizedPnlUsd: number;
+  leverage?: number;
+  leverageType?: string;
+  liquidationPrice?: number;
+  marginUsedUsd?: number;
+  roePct?: number;
+  cumFundingUsd?: number;
+  walletAddress?: string;
+  explorerUrl?: string;
+  walletLabel: string;
+}
+
+export interface HlpVaultSummary {
+  vaultAddress: string;
+  accountValueUsd: number;
+  totalMarginUsedUsd: number;
+  withdrawableUsd: number;
+  totalNotionalPosUsd: number;
 }
 
 export interface ChordFlowLink {
