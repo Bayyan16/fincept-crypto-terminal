@@ -86,5 +86,11 @@ export default defineConfig({
   server: {
     port: 5173,
     host: true,
+    watch: {
+      // Editor atomic-save tmp dirs (e.g. .index.css.<pid>.<rand>.tmpdir) can trip
+      // chokidar's Windows watcher with EBUSY; ignore them so the dev server
+      // never crashes on hot-reload.
+      ignored: ['**/*.tmp', '**/*.tmpdir/**', '**/artifacts/**', '**/playwright-report/**', '**/test-results/**'],
+    },
   },
 });

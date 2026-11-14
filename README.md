@@ -68,6 +68,18 @@ npm start
 ```
 Server produksi (`server.mjs`) akan melayani aplikasi *frontend* sekaligus seluruh *endpoint* API `/api/gateway/*` pada port `8080` (atau sesuai variabel lingkungan `PORT`).
 
+### 4. Menjalankan E2E Test (Playwright)
+Test end-to-end memvalidasi shell terminal, navigasi 5 tab, watchlist 14 market, command bar, orderbook 18-level, DEX Screener, resizable dock, modal wallet, serta regresi *smoothness* UI (transisi, animasi mount, dan dukungan `prefers-reduced-motion`).
+
+```bash
+npm run e2e              # semua project (desktop 1600px + tablet 900px)
+npm run e2e -- --project=desktop-chrome   # hanya desktop
+npm run e2e -- e2e/motion.spec.ts         # hanya satu file
+npm run e2e:report       # buka HTML report hasil terakhir
+```
+
+Catatan: test memakai Chrome/Edge yang sudah terpasang di sistem (`channel: 'chrome'`) sehingga tidak perlu mengunduh browser Playwright. Server dev (`npm run dev`) digunakan kembali bila sudah berjalan di port `5173`.
+
 ---
 
 ## 📂 Struktur Direktori

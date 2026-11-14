@@ -32,3 +32,8 @@ Thumbs.db
 *.sln
 *.sw?
 
+# Playwright e2e artifacts
+playwright-report/
+test-results/
+artifacts/
+

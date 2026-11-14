@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { WalletConnectionState, WalletCredentials } from '../types/terminal';
 import {
   connectBrowserExtensionWallet,
@@ -15,6 +15,40 @@ interface WalletConnectModalProps {
   onUpdateWallets: React.Dispatch<React.SetStateAction<WalletConnectionState[]>>;
 }
 
+/**
+ * Modal open/close animation + shared interaction styles. Keyframes are wrapped
+ * in `prefers-reduced-motion: no-preference` so reduced-motion users get an
+ * instant show/hide instead of the fade/scale transitions.
+ */
+const WALLET_MODAL_CSS = `
+  @media (prefers-reduced-motion: no-preference) {
+    @keyframes wmOverlayIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes wmOverlayOut { from { opacity: 1; } to { opacity: 0; } }
+    @keyframes wmPanelIn {
+      from { opacity: 0; transform: translateY(14px) scale(0.96); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes wmPanelOut {
+      from { opacity: 1; transform: translateY(0) scale(1); }
+      to { opacity: 0; transform: translateY(10px) scale(0.97); }
+    }
+    .wm-overlay-in { animation: wmOverlayIn 170ms ease-out both; }
+    .wm-overlay-out { animation: wmOverlayOut 170ms ease-in both; }
+    .wm-panel-in { animation: wmPanelIn 180ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+    .wm-panel-out { animation: wmPanelOut 170ms ease-in both; }
+  }
+  .wm-btn {
+    transition-property: color, background-color, border-color, box-shadow, transform, opacity;
+    transition-duration: 150ms;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+  .wm-btn:active { transform: scale(0.97); }
+  .wm-btn:focus-visible { outline: 2px solid #00E5FF; outline-offset: 2px; }
+  .wm-glow:hover { box-shadow: 0 0 14px rgba(0, 229, 255, 0.35); }
+  .wm-glow-green:hover { box-shadow: 0 0 14px rgba(0, 230, 118, 0.35); }
+  .wm-input:focus-visible { outline: 2px solid #00E5FF; outline-offset: 1px; }
+`;
+
 export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
   isOpen,
   onClose,
@@ -27,8 +61,24 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
     tone: 'SUCCESS' | 'ERROR' | 'INFO';
     text: string;
   } | null>(null);
+  // Two-phase visibility so the exit animation can play before unmounting.
+  const [visibility, setVisibility] = useState<'closed' | 'open' | 'closing'>('closed');
 
-  if (!isOpen) return null;
+  useEffect(() => {
+    if (isOpen) {
+      setVisibility('open');
+      return;
+    }
+    setVisibility((prev) => (prev === 'open' ? 'closing' : 'closed'));
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (visibility !== 'closing') return;
+    const t = window.setTimeout(() => setVisibility('closed'), 190);
+    return () => window.clearTimeout(t);
+  }, [visibility]);
+
+  if (visibility === 'closed') return null;
 
   const updateCredentialField = (
     id: WalletConnectionState['id'],
@@ -211,8 +261,20 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4">
-      <div className="w-full max-w-4xl bg-[#070A0F] border-2 border-[#FF9F1C] shadow-2xl flex flex-col max-h-[90vh]">
+    <>
+      <style>{WALLET_MODAL_CSS}</style>
+      <div
+        data-testid="wallet-modal-overlay"
+        className={`fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 ${
+          visibility === 'closing' ? 'wm-overlay-out' : 'wm-overlay-in'
+        }`}
+      >
+        <div
+          data-testid="wallet-modal-panel"
+          className={`w-full max-w-4xl bg-[#070A0F] border-2 border-[#FF9F1C] shadow-2xl flex flex-col max-h-[90vh] ${
+            visibility === 'closing' ? 'wm-panel-out' : 'wm-panel-in'
+          }`}
+        >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-2.5 bg-[#0D131D] border-b border-[#1E2736]">
           <div className="flex items-center gap-2">
@@ -222,8 +284,9 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
             </h2>
           </div>
           <button
+            data-testid="wallet-modal-close"
             onClick={onClose}
-            className="px-2.5 py-0.5 text-xs font-bold text-[#94A3B8] hover:text-white border border-[#1E2736]"
+            className="wm-btn px-2.5 py-0.5 text-xs font-bold text-[#94A3B8] hover:text-white hover:bg-[#FF1744]/20 border border-[#1E2736] hover:border-[#FF1744]"
           >
             ESC / CLOSE ✕
           </button>
@@ -265,12 +328,13 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
             return (
               <div
                 key={w.id}
-                className={`p-3 border ${
+                data-testid={`wallet-option-${w.id}`}
+                className={`p-3 border transition-colors duration-150 ${
                   w.verifiedReal
                     ? 'bg-[#081410] border-[#00E676]'
                     : w.connected
-                      ? 'bg-[#0B1018] border-[#1E2F45]'
-                      : 'bg-[#070A0E] border-[#161D2A]'
+                      ? 'bg-[#0B1018] border-[#1E2F45] hover:border-[#00E5FF]/50'
+                      : 'bg-[#070A0E] border-[#161D2A] hover:border-[#00E5FF]/40'
                 } flex flex-col justify-between gap-2.5`}
               >
                 <div className="flex items-start justify-between">
@@ -327,6 +391,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                           onChange={(e) =>
                             updateCredentialField(w.id, 'useTestnet', e.target.checked)
                           }
+                          className="wm-input accent-[#FF9F1C]"
                         />
                         Gunakan Testnet
                       </label>
@@ -351,7 +416,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                                 ? 'Contoh: 7xQpL92mN4vR8cK1wZ3yT9mK2...'
                                 : 'Contoh: 0xdfc24b077bc1425ad1dea75bcb6f8158e10df303'
                             }
-                            className="w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
+                            className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
                           />
                         </div>
                         {(w.id === 'trust' || w.id === 'hyperliquid_agent') && (
@@ -367,7 +432,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                                     key={net.chainId}
                                     type="button"
                                     onClick={() => handleSwitchChainInModal(net.chainId)}
-                                    className={`px-2 py-0.5 text-[9px] font-extrabold border transition-colors ${
+                                    className={`wm-btn px-2 py-0.5 text-[9px] font-extrabold border ${
                                       isActiveNet
                                         ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
                                         : 'bg-[#0C121D] text-[#94A3B8] border-[#1E2B40] hover:text-white'
@@ -392,7 +457,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                                 updateCredentialField(w.id, 'agentPrivateKey', e.target.value)
                               }
                               placeholder="0x... (Kosongkan jika tanda tangan langsung via ekstensi)"
-                              className="w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
+                              className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
                             />
                           </div>
                         )}
@@ -408,7 +473,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                             value={creds.apiKey || ''}
                             onChange={(e) => updateCredentialField(w.id, 'apiKey', e.target.value)}
                             placeholder="Paste API Key Trade-Only..."
-                            className="w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
+                            className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
                           />
                         </div>
                         <div>
@@ -422,7 +487,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                               updateCredentialField(w.id, 'apiSecret', e.target.value)
                             }
                             placeholder="Paste API Secret..."
-                            className="w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
+                            className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
                           />
                         </div>
                         {w.id === 'okx_api' && (
@@ -437,7 +502,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                                 updateCredentialField(w.id, 'passphrase', e.target.value)
                               }
                               placeholder="Paste OKX Passphrase..."
-                              className="w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
+                              className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
                             />
                           </div>
                         )}
@@ -449,7 +514,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                         <button
                           onClick={() => handleBrowserExtensionConnect(w)}
                           disabled={verifyingId === w.id}
-                          className="flex-1 py-1 bg-[#142238] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF] font-extrabold text-[10px]"
+                          className="wm-btn wm-glow flex-1 py-1 bg-[#142238] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF] font-extrabold text-[10px] disabled:opacity-60 disabled:cursor-not-allowed"
                         >
                           {verifyingId === w.id
                             ? 'CONNECTING...'
@@ -459,7 +524,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                       <button
                         onClick={() => handleVerifyRealCredentials(w)}
                         disabled={verifyingId === w.id}
-                        className="flex-1 py-1 bg-[#00E676] hover:bg-[#26ff92] text-black font-extrabold text-[10px]"
+                        className="wm-btn wm-glow-green flex-1 py-1 bg-[#00E676] hover:bg-[#26ff92] text-black font-extrabold text-[10px] disabled:opacity-60 disabled:cursor-not-allowed"
                       >
                         {verifyingId === w.id
                           ? 'VERIFYING...'
@@ -474,7 +539,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                   <button
                     onClick={() => handleToggleAutoSign(w.id)}
                     disabled={!w.connected}
-                    className={`px-2 py-1 text-[10px] font-bold border ${
+                    className={`wm-btn px-2 py-1 text-[10px] font-bold border disabled:cursor-not-allowed ${
                       w.connected && w.autoSignEnabled
                         ? 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]'
                         : 'bg-[#0D121B] text-[#64748B] border-[#1E2736]'
@@ -486,14 +551,14 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                   <div className="flex items-center gap-1.5">
                     <button
                       onClick={() => setExpandedId(isExpanded ? null : w.id)}
-                      className="px-2.5 py-1 text-[10px] font-extrabold bg-[#131B2A] text-[#00E5FF] border border-[#1E2F48] hover:bg-[#1C283E]"
+                      className="wm-btn px-2.5 py-1 text-[10px] font-extrabold bg-[#131B2A] text-[#00E5FF] border border-[#1E2F48] hover:bg-[#1C283E]"
                     >
                       {isExpanded ? 'HIDE CONFIG' : 'SETUP REAL KEY / WALLET'}
                     </button>
                     {w.connected && (
                       <button
                         onClick={() => handleDisconnect(w)}
-                        className="px-2 py-1 text-[10px] font-bold bg-[#1A1116] text-[#FF1744] border border-[#FF1744]/50 hover:bg-[#FF1744] hover:text-white"
+                        className="wm-btn px-2 py-1 text-[10px] font-bold bg-[#1A1116] text-[#FF1744] border border-[#FF1744]/50 hover:bg-[#FF1744] hover:text-white"
                       >
                         ✕
                       </button>
@@ -524,12 +589,13 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
           </div>
           <button
             onClick={onClose}
-            className="px-4 py-1 bg-[#FF9F1C] text-black font-extrabold text-xs"
+            className="wm-btn px-4 py-1 bg-[#FF9F1C] text-black font-extrabold text-xs hover:bg-[#FFB84D] hover:shadow-[0_0_14px_rgba(255,159,28,0.45)]"
           >
             SAVE & RETURN TO TERMINAL
           </button>
         </div>
+        </div>
       </div>
-    </div>
+    </>
   );
 };

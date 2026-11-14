@@ -132,6 +132,15 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     startHeight: 245,
   });
 
+  // rAF batching refs: collapse high-frequency pointer/wheel events into one
+  // state update per animation frame for buttery drag, pan & zoom.
+  const dragModeRef = useRef<'node' | 'pan' | null>(null);
+  const draggingNodeIdRef = useRef<string | null>(null);
+  const moveRafRef = useRef<number | null>(null);
+  const pendingMoveRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const wheelRafRef = useRef<number | null>(null);
+  const wheelAccRef = useRef<number>(1);
+
   // On-Chain Stream Sub-Tab, Chain Filter, Search & Inspector State
   const [streamSubTab, setStreamSubTab] = useState<StreamSubTab>('TX_STREAM');
   const [chainFilter, setChainFilter] = useState<string>('ALL');
@@ -143,7 +152,9 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
   const svgContainerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
-  // Native non-passive Wheel Zoom listener on the SVG container
+  // Native non-passive Wheel Zoom listener on the SVG container, rAF-batched so
+  // high-frequency trackpad deltas collapse into a single zoom update per frame
+  // (clamp 45% - 300% preserved).
   useEffect(() => {
     const el = svgContainerRef.current;
     if (!el) return;
@@ -152,12 +163,30 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
       e.preventDefault();
       e.stopPropagation();
       const factor = e.deltaY < 0 ? 1.12 : 0.89;
-      setZoom((prev) => Number(Math.max(0.45, Math.min(3.0, prev * factor)).toFixed(2)));
+      wheelAccRef.current *= factor;
+      if (wheelRafRef.current !== null) return;
+      wheelRafRef.current = requestAnimationFrame(() => {
+        wheelRafRef.current = null;
+        const acc = wheelAccRef.current;
+        wheelAccRef.current = 1;
+        if (acc !== 1) {
+          setZoom((prev) => Number(Math.max(0.45, Math.min(3.0, prev * acc)).toFixed(2)));
+        }
+      });
     };
 
     el.addEventListener('wheel', handleWheel, { passive: false });
     return () => el.removeEventListener('wheel', handleWheel);
   }, []);
+
+  // Cancel any pending rAF work when the component unmounts
+  useEffect(
+    () => () => {
+      if (moveRafRef.current !== null) cancelAnimationFrame(moveRafRef.current);
+      if (wheelRafRef.current !== null) cancelAnimationFrame(wheelRafRef.current);
+    },
+    []
+  );
 
   // Global MouseMove / MouseUp for smooth vertical resizing of the On-Chain Stream Drawer
   useEffect(() => {
@@ -219,6 +248,8 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     e.stopPropagation();
     const pos = nodePositions[nodeId] || { x: 280, y: 205 };
     setDraggingNodeId(nodeId);
+    draggingNodeIdRef.current = nodeId;
+    dragModeRef.current = 'node';
     dragStartRef.current = {
       clientX: e.clientX,
       clientY: e.clientY,
@@ -233,6 +264,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
   const handleCanvasMouseDown = (e: React.MouseEvent) => {
     if (draggingNodeId) return;
     setIsPanningCanvas(true);
+    dragModeRef.current = 'pan';
     dragStartRef.current = {
       clientX: e.clientX,
       clientY: e.clientY,
@@ -244,37 +276,56 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     };
   };
 
+  // Pointer moves are collapsed into one rAF tick per frame: no matter how many
+  // events the OS delivers, positions update at most once per frame.
   const handleMouseMove = (e: React.MouseEvent) => {
-    const dxScreen = e.clientX - dragStartRef.current.clientX;
-    const dyScreen = e.clientY - dragStartRef.current.clientY;
-    if (Math.abs(dxScreen) > 3 || Math.abs(dyScreen) > 3) {
-      dragStartRef.current.moved = true;
-    }
+    pendingMoveRef.current = { clientX: e.clientX, clientY: e.clientY };
+    if (moveRafRef.current !== null) return;
 
-    const svgEl = svgRef.current;
-    const rect = svgEl ? svgEl.getBoundingClientRect() : { width: 560, height: 410 };
-    const scaleX = 560 / Math.max(1, rect.width);
-    const scaleY = 410 / Math.max(1, rect.height);
+    moveRafRef.current = requestAnimationFrame(() => {
+      moveRafRef.current = null;
+      const p = pendingMoveRef.current;
+      if (!p) return;
+      pendingMoveRef.current = null;
 
-    if (draggingNodeId) {
-      const dxSvg = (dxScreen * scaleX) / zoom;
-      const dySvg = (dyScreen * scaleY) / zoom;
-      setNodePositions((prev) => ({
-        ...prev,
-        [draggingNodeId]: {
-          x: Math.round(Math.max(35, Math.min(525, dragStartRef.current.startNodeX + dxSvg))),
-          y: Math.round(Math.max(25, Math.round(Math.min(385, dragStartRef.current.startNodeY + dySvg)))),
-        },
-      }));
-    } else if (isPanningCanvas) {
-      setPan({
-        x: Math.round(dragStartRef.current.startPanX + dxScreen * scaleX),
-        y: Math.round(dragStartRef.current.startPanY + dyScreen * scaleY),
-      });
-    }
+      const mode = dragModeRef.current;
+      if (!mode) return;
+
+      const dxScreen = p.clientX - dragStartRef.current.clientX;
+      const dyScreen = p.clientY - dragStartRef.current.clientY;
+      if (Math.abs(dxScreen) > 3 || Math.abs(dyScreen) > 3) {
+        dragStartRef.current.moved = true;
+      }
+
+      const svgEl = svgRef.current;
+      const rect = svgEl ? svgEl.getBoundingClientRect() : { width: 560, height: 410 };
+      const scaleX = 560 / Math.max(1, rect.width);
+      const scaleY = 410 / Math.max(1, rect.height);
+
+      if (mode === 'node') {
+        const nodeId = draggingNodeIdRef.current;
+        if (!nodeId) return;
+        const dxSvg = (dxScreen * scaleX) / zoom;
+        const dySvg = (dyScreen * scaleY) / zoom;
+        setNodePositions((prev) => ({
+          ...prev,
+          [nodeId]: {
+            x: Math.round(Math.max(35, Math.min(525, dragStartRef.current.startNodeX + dxSvg))),
+            y: Math.round(Math.max(25, Math.round(Math.min(385, dragStartRef.current.startNodeY + dySvg)))),
+          },
+        }));
+      } else {
+        setPan({
+          x: Math.round(dragStartRef.current.startPanX + dxScreen * scaleX),
+          y: Math.round(dragStartRef.current.startPanY + dyScreen * scaleY),
+        });
+      }
+    });
   };
 
   const handleMouseUp = () => {
+    dragModeRef.current = null;
+    draggingNodeIdRef.current = null;
     setDraggingNodeId(null);
     setIsPanningCanvas(false);
   };
@@ -377,10 +428,36 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
   const radius = 152;
 
   return (
-    <div
-      ref={rootContainerRef}
-      className="flex flex-col h-full bg-[#06080C] border border-[#1E2736] select-none overflow-hidden"
-    >
+    <>
+      <style>{`
+        /* Shared button interaction feel: 150ms color transitions, press-down
+           scale feedback and a keyboard focus-visible ring. */
+        .fc-btn {
+          transition-property: color, background-color, border-color, box-shadow, transform, opacity;
+          transition-duration: 150ms;
+          transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .fc-btn:active { transform: scale(0.97); }
+        .fc-btn:focus-visible { outline: 2px solid #00E5FF; outline-offset: 1px; }
+
+        @media (prefers-reduced-motion: no-preference) {
+          @keyframes fcFadeSlideUp {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+          @keyframes fcFadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+          }
+          .fc-fade-slide-up { animation: fcFadeSlideUp 180ms cubic-bezier(0.22, 1, 0.36, 1) both; }
+          .fc-fade-in { animation: fcFadeIn 160ms ease-out both; }
+        }
+      `}</style>
+      <div
+        ref={rootContainerRef}
+        data-testid="whale-chord-viz"
+        className="flex flex-col h-full bg-[#06080C] border border-[#1E2736] select-none overflow-hidden"
+      >
       {/* 1. Top Header Bar */}
       <div className="flex flex-wrap items-center justify-between px-2.5 py-1.5 bg-[#0B0F17] border-b border-[#1E2736] gap-1 shrink-0">
         <div className="flex items-center gap-2">
@@ -396,7 +473,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
         <div className="flex items-center gap-1 text-[9.5px]">
           <button
             onClick={() => setFlowFilter('ALL')}
-            className={`px-1.5 py-0.5 border ${
+            className={`fc-btn px-1.5 py-0.5 border ${
               flowFilter === 'ALL'
                 ? 'bg-[#FF9F1C] text-black border-[#FF9F1C] font-extrabold'
                 : 'bg-[#090C10] text-[#94A3B8] border-[#1E2736] hover:text-white'
@@ -406,7 +483,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           </button>
           <button
             onClick={() => setFlowFilter('BULLISH')}
-            className={`px-1.5 py-0.5 border ${
+            className={`fc-btn px-1.5 py-0.5 border ${
               flowFilter === 'BULLISH'
                 ? 'bg-[#00E676] text-black border-[#00E676] font-extrabold'
                 : 'bg-[#090C10] text-[#94A3B8] border-[#1E2736] hover:text-white'
@@ -416,7 +493,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           </button>
           <button
             onClick={() => setFlowFilter('BEARISH')}
-            className={`px-1.5 py-0.5 border ${
+            className={`fc-btn px-1.5 py-0.5 border ${
               flowFilter === 'BEARISH'
                 ? 'bg-[#FF1744] text-white border-[#FF1744] font-extrabold'
                 : 'bg-[#090C10] text-[#94A3B8] border-[#1E2736] hover:text-white'
@@ -437,20 +514,22 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           <span className="text-[#475569]">|</span>
           <button
             onClick={() => switchLayoutMode('RADIAL')}
-            className={`px-1.5 py-0.2 border font-bold ${
+            data-testid="viz-layout-radial"
+            className={`fc-btn px-1.5 py-0.2 border font-bold ${
               layoutMode === 'RADIAL'
                 ? 'bg-[#162235] text-[#00E5FF] border-[#00E5FF]'
-                : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736]'
+                : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736] hover:text-white hover:border-[#00E5FF]/50'
             }`}
           >
             RADIAL CHORD
           </button>
           <button
             onClick={() => switchLayoutMode('PIPELINE')}
-            className={`px-1.5 py-0.2 border font-bold ${
+            data-testid="viz-layout-pipeline"
+            className={`fc-btn px-1.5 py-0.2 border font-bold ${
               layoutMode === 'PIPELINE'
                 ? 'bg-[#162235] text-[#00E5FF] border-[#00E5FF]'
-                : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736]'
+                : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736] hover:text-white hover:border-[#00E5FF]/50'
             }`}
           >
             3-TIER PIPELINE
@@ -461,7 +540,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
         <div className="flex items-center gap-1">
           <button
             onClick={() => setZoom((z) => Number(Math.max(0.45, z - 0.15).toFixed(2)))}
-            className="px-1.5 py-0.2 bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
+            className="fc-btn px-1.5 py-0.2 bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
             title="Zoom Out"
           >
             🔍-
@@ -475,19 +554,19 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
             className="w-14 accent-[#FF9F1C] cursor-pointer h-1"
             title="Zoom Scale"
           />
-          <span className="text-[#00E5FF] font-bold w-8 text-center">
+          <span data-testid="viz-zoom-indicator" className="text-[#00E5FF] font-bold w-8 text-center">
             {Math.round(zoom * 100)}%
           </span>
           <button
             onClick={() => setZoom((z) => Number(Math.min(3.0, z + 0.15).toFixed(2)))}
-            className="px-1.5 py-0.2 bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
+            className="fc-btn px-1.5 py-0.2 bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
             title="Zoom In"
           >
             🔍+
           </button>
           <button
             onClick={handleResetView}
-            className="px-1.5 py-0.2 bg-[#172133] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/50 font-bold"
+            className="fc-btn px-1.5 py-0.2 bg-[#172133] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/50 font-bold"
             title="Reset Posisi Node & Zoom"
           >
             RESET
@@ -502,12 +581,9 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
+        style={{ touchAction: 'none' }}
         className={`relative flex-1 flex items-center justify-center bg-[#040609] overflow-hidden min-h-[110px] ${
-          draggingNodeId
-            ? 'cursor-grabbing'
-            : isPanningCanvas
-            ? 'cursor-move'
-            : 'cursor-grab'
+          draggingNodeId || isPanningCanvas ? 'cursor-grabbing' : 'cursor-grab'
         }`}
       >
         <svg ref={svgRef} viewBox="0 0 560 410" className="w-full h-full">
@@ -683,64 +759,96 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
               return (
                 <g
                   key={n.id}
+                  data-testid={`viz-node-${n.id.replace(/\s+/g, '-')}`}
                   onMouseDown={(e) => handleNodeMouseDown(e, n.id)}
                   onClick={() => handleNodeClick(n.id)}
-                  onMouseEnter={() => setHoveredNode(n.id)}
+                  onMouseEnter={() => {
+                    if (!draggingNodeId) setHoveredNode(n.id);
+                  }}
                   onMouseLeave={() => setHoveredNode(null)}
                   className="cursor-grab active:cursor-grabbing"
                 >
-                  <rect
-                    x={coord.x - boxW / 2}
-                    y={coord.y - boxH / 2}
-                    width={boxW}
-                    height={boxH}
-                    rx={3}
-                    fill={
-                      isSelected || isHovered
-                        ? '#17253B'
-                        : isHub
-                        ? '#181207'
-                        : '#0D131F'
-                    }
-                    stroke={borderColor}
-                    strokeWidth={isSelected || isHovered || isHub ? '1.9' : '1.2'}
-                  />
-                  <text
-                    x={coord.x}
-                    y={coord.y - 2}
-                    textAnchor="middle"
-                    className={`font-extrabold pointer-events-none ${
-                      isHub
-                        ? 'fill-[#FF9F1C] text-[8.5px]'
-                        : 'fill-[#E2E8F0] text-[7.5px]'
-                    }`}
+                  {/* Inner transform group: transition is disabled while dragging so the
+                      node tracks the pointer 1:1; on release the ease-out "settle"
+                      animates the scale (and any final position drift) back in. */}
+                  <g
+                    style={{
+                      transform: `scale(${isDraggingThis ? 1.08 : isHovered ? 1.04 : 1})`,
+                      transformOrigin: `${coord.x}px ${coord.y}px`,
+                      transition: isDraggingThis
+                        ? 'none'
+                        : 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+                      filter: isDraggingThis
+                        ? 'drop-shadow(0 6px 12px rgba(0, 229, 255, 0.45))'
+                        : 'none',
+                    }}
                   >
-                    {n.tag}
-                  </text>
-                  <text
-                    x={coord.x}
-                    y={coord.y + 8}
-                    textAnchor="middle"
-                    className="fill-[#00E5FF] text-[7px] font-mono font-bold pointer-events-none"
-                  >
-                    ${(nodeVolUsd / 1e6).toFixed(1)}M
-                  </text>
-                  {!isHub && (
+                    {(isDraggingThis || isHovered) && (
+                      <rect
+                        x={coord.x - boxW / 2 - (isDraggingThis ? 4 : 2.5)}
+                        y={coord.y - boxH / 2 - (isDraggingThis ? 4 : 2.5)}
+                        width={boxW + (isDraggingThis ? 8 : 5)}
+                        height={boxH + (isDraggingThis ? 8 : 5)}
+                        rx={4}
+                        fill="none"
+                        stroke="#00E5FF"
+                        strokeWidth={isDraggingThis ? 1.6 : 1}
+                        strokeOpacity={isDraggingThis ? 0.5 : 0.28}
+                      />
+                    )}
+                    <rect
+                      x={coord.x - boxW / 2}
+                      y={coord.y - boxH / 2}
+                      width={boxW}
+                      height={boxH}
+                      rx={3}
+                      fill={
+                        isSelected || isHovered
+                          ? '#17253B'
+                          : isHub
+                          ? '#181207'
+                          : '#0D131F'
+                      }
+                      stroke={borderColor}
+                      strokeWidth={isSelected || isHovered || isHub ? '1.9' : '1.2'}
+                    />
                     <text
-                      x={coord.x + labelXOffset}
-                      y={coord.y + labelYOffset}
-                      textAnchor={labelAnchor}
-                      className={`text-[9px] font-extrabold pointer-events-none ${
-                        isSelected
-                          ? 'fill-[#00E5FF]'
-                          : isHyperliquid
-                          ? 'fill-[#00E676]'
-                          : 'fill-[#F8FAFC]'
+                      x={coord.x}
+                      y={coord.y - 2}
+                      textAnchor="middle"
+                      className={`font-extrabold pointer-events-none ${
+                        isHub
+                          ? 'fill-[#FF9F1C] text-[8.5px]'
+                          : 'fill-[#E2E8F0] text-[7.5px]'
                       }`}
                     >
-                      {n.short}
+                      {n.tag}
                     </text>
-                  )}
+                    <text
+                      x={coord.x}
+                      y={coord.y + 8}
+                      textAnchor="middle"
+                      className="fill-[#00E5FF] text-[7px] font-mono font-bold pointer-events-none"
+                    >
+                      ${(nodeVolUsd / 1e6).toFixed(1)}M
+                    </text>
+                    {!isHub && (
+                      <text
+                        x={coord.x + labelXOffset}
+                        y={coord.y + labelYOffset}
+                        textAnchor={labelAnchor}
+                        className={`text-[9px] font-extrabold pointer-events-none ${
+                          isSelected
+                            ? 'fill-[#00E5FF]'
+                            : isHyperliquid
+                            ? 'fill-[#00E676]'
+                            : 'fill-[#F8FAFC]'
+                        }`}
+                      >
+                        {n.short}
+                      </text>
+                    )}
+                  </g>
                 </g>
               );
             })}
@@ -754,7 +862,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
         {selectedNode && (
           <button
             onClick={() => handleNodeClick(selectedNode)}
-            className="absolute top-2 right-2 px-2 py-0.5 bg-[#161F30] border border-[#00E5FF] text-[#00E5FF] text-[10px] font-extrabold"
+            className="fc-btn absolute top-2 right-2 px-2 py-0.5 bg-[#161F30] hover:bg-[#00E5FF] hover:text-black border border-[#00E5FF] text-[#00E5FF] text-[10px] font-extrabold"
           >
             FILTER NODE: {selectedNode} ✕
           </button>
@@ -763,16 +871,28 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
       {/* 4. RESIZABLE ON-CHAIN BLOCKCHAIN STREAM DRAWER (DRAG HANDLE + EXPAND/COLLAPSE TABS) */}
       <div
+        data-testid="stream-drawer"
         style={{ height: `${streamHeightPx}px` }}
-        className="border-t-2 border-[#00E5FF]/60 bg-[#06090F] flex flex-col shrink-0 transition-[height] duration-75"
+        className={`fc-fade-slide-up border-t-2 border-[#00E5FF]/60 bg-[#06090F] flex flex-col shrink-0 ${
+          isResizingStream ? '' : 'transition-[height] duration-[170ms] ease-out'
+        }`}
       >
         {/* DRAG HANDLE BAR (Pull Up / Push Down freely) */}
         <div
+          data-testid="stream-resize-handle"
           onMouseDown={handleStreamResizeMouseDown}
-          className="h-2.5 bg-[#0D1524] hover:bg-[#00E5FF]/30 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group"
+          className={`h-2.5 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group transition-colors duration-150 ${
+            isResizingStream
+              ? 'bg-[#00E5FF]/40'
+              : 'bg-[#0D1524] hover:bg-[#00E5FF]/30'
+          }`}
           title="Tarik ke atas untuk memperlebar tabel transaksi On-Chain, atau tarik ke bawah untuk mengecilkan"
         >
-          <div className="w-16 h-1 rounded-full bg-[#334155] group-hover:bg-[#00E5FF] transition-colors" />
+          <div
+            className={`w-16 h-1 rounded-full transition-colors duration-150 ${
+              isResizingStream ? 'bg-[#00E5FF]' : 'bg-[#334155] group-hover:bg-[#00E5FF]'
+            }`}
+          />
         </div>
 
         {/* TAB BAR & HEIGHT CONTROLS (Can Expand Upwards or Shrink Downwards) */}
@@ -780,40 +900,43 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           {/* Sub-Tabs */}
           <div className="flex items-center gap-1 text-[9.5px]">
             <button
+              data-testid="stream-tab-ONCHAIN"
               onClick={() => {
                 setStreamSubTab('TX_STREAM');
                 if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
               }}
-              className={`px-2 py-0.5 font-extrabold border ${
+              className={`fc-btn px-2 py-0.5 font-extrabold border ${
                 streamSubTab === 'TX_STREAM'
                   ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
-                  : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white'
+                  : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#00E5FF]/50'
               }`}
             >
               ⛓️ ON-CHAIN STREAM ({filteredWhaleStream.length} TXs)
             </button>
             <button
+              data-testid="stream-tab-WHALE"
               onClick={() => {
                 setStreamSubTab('VAULT_POSITIONS');
                 if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
               }}
-              className={`px-2 py-0.5 font-extrabold border ${
+              className={`fc-btn px-2 py-0.5 font-extrabold border ${
                 streamSubTab === 'VAULT_POSITIONS'
                   ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
-                  : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white'
+                  : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#FF9F1C]/50'
               }`}
             >
               🐋 WHALE & HLP POSITIONS ({whalePositions.length || 6})
             </button>
             <button
+              data-testid="stream-tab-BLOCKS"
               onClick={() => {
                 setStreamSubTab('BLOCK_MATRIX');
                 if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
               }}
-              className={`px-2 py-0.5 font-extrabold border ${
+              className={`fc-btn px-2 py-0.5 font-extrabold border ${
                 streamSubTab === 'BLOCK_MATRIX'
                   ? 'bg-[#00E676] text-black border-[#00E676]'
-                  : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white'
+                  : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#00E676]/50'
               }`}
             >
               🧱 LIVE BLOCKS & AI MATRIX
@@ -827,11 +950,12 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
               value={txSearchQuery}
               onChange={(e) => setTxSearchQuery(e.target.value)}
               placeholder="Cari Hash 0x..., Block #, Wallet, Coin..."
-              className="w-40 px-2 py-0.5 bg-[#04070B] border border-[#243249] text-[9.5px] text-white focus:outline-none focus:border-[#00E5FF]"
+              className="w-40 px-2 py-0.5 bg-[#04070B] border border-[#243249] text-[9.5px] text-white focus:outline-none focus:border-[#00E5FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00E5FF]"
             />
             <button
+              data-testid="stream-size-small"
               onClick={() => setPresetStreamHeight('MIN')}
-              className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
+              className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${
                 streamHeightPx <= 55
                   ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
                   : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
@@ -841,8 +965,9 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
               ▼ KECIL
             </button>
             <button
+              data-testid="stream-size-normal"
               onClick={() => setPresetStreamHeight('SPLIT')}
-              className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
+              className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${
                 streamHeightPx > 55 && streamHeightPx < 360
                   ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
                   : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
@@ -852,8 +977,9 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
               ▬ NORMAL
             </button>
             <button
+              data-testid="stream-size-max"
               onClick={() => setPresetStreamHeight('MAX')}
-              className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
+              className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${
                 streamHeightPx >= 360
                   ? 'bg-[#00E676] text-black border-[#00E676]'
                   : 'bg-[#111927] text-[#00E676] border-[#00E676]/50 hover:bg-[#00E676] hover:text-black'
@@ -884,7 +1010,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                   <button
                     key={cf.id}
                     onClick={() => setChainFilter(cf.id)}
-                    className={`px-1.5 py-0.2 font-bold border ${
+                    className={`fc-btn px-1.5 py-0.2 font-bold border ${
                       chainFilter === cf.id
                         ? 'bg-[#17253A] text-[#00E5FF] border-[#00E5FF]'
                         : 'bg-[#06090F] text-[#94A3B8] border-[#1A2436] hover:text-white'
@@ -916,7 +1042,11 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
             {/* Selected Transaction Full On-Chain Audit Drawer */}
             {inspectedTx && (
-              <div className="p-2 bg-[#0B1322] border-b-2 border-[#00E5FF] text-[9.5px] space-y-1 shrink-0">
+              <div
+                key={inspectedTx.id}
+                data-testid="stream-audit-panel"
+                className="fc-fade-slide-up p-2 bg-[#0B1322] border-b-2 border-[#00E5FF] text-[9.5px] space-y-1 shrink-0"
+              >
                 <div className="flex items-center justify-between">
                   <span className="font-extrabold text-[#00E5FF] uppercase">
                     🔍 DETAIL AUDIT TRANSAKSI ON-CHAIN — {inspectedTx.symbol} (
@@ -930,7 +1060,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                     )}
                     <button
                       onClick={() => setInspectedTx(null)}
-                      className="px-1.5 py-0.2 bg-[#1E293B] text-white font-bold hover:bg-[#FF1744]"
+                      className="fc-btn px-1.5 py-0.2 bg-[#1E293B] text-white font-bold hover:bg-[#FF1744]"
                     >
                       TUTUP ✕
                     </button>
@@ -980,7 +1110,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                         onClick={() =>
                           handleCopyText('TX HASH', inspectedTx.fullTxHash || inspectedTx.txHash)
                         }
-                        className="px-1.5 py-0.2 bg-[#162032] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/40 font-bold"
+                        className="fc-btn px-1.5 py-0.2 bg-[#162032] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/40 font-bold"
                       >
                         COPY HASH
                       </button>
@@ -989,7 +1119,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                           href={inspectedTx.explorerTxUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="px-1.5 py-0.2 bg-[#00E676]/20 hover:bg-[#00E676] hover:text-black text-[#00E676] border border-[#00E676] font-bold"
+                          className="fc-btn px-1.5 py-0.2 bg-[#00E676]/20 hover:bg-[#00E676] hover:text-black text-[#00E676] border border-[#00E676] font-bold"
                         >
                           EXPLORER ↗
                         </a>
@@ -1013,7 +1143,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                     <div className="flex items-center gap-1 shrink-0">
                       <button
                         onClick={() => handleCopyText('WALLET', inspectedTx.walletAddress)}
-                        className="px-1.5 py-0.2 bg-[#162032] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/40 font-bold"
+                        className="fc-btn px-1.5 py-0.2 bg-[#162032] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/40 font-bold"
                       >
                         COPY WALLET
                       </button>
@@ -1022,7 +1152,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                           href={inspectedTx.explorerWalletUrl}
                           target="_blank"
                           rel="noreferrer"
-                          className="px-1.5 py-0.2 bg-[#FF9F1C]/20 hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C] font-bold"
+                          className="fc-btn px-1.5 py-0.2 bg-[#FF9F1C]/20 hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C] font-bold"
                         >
                           TRACK WALLET ↗
                         </a>
@@ -1035,7 +1165,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
             {/* SUB-TAB 1: STRUCTURED MULTI-COLUMN ON-CHAIN TRANSACTION TABLE */}
             {streamSubTab === 'TX_STREAM' && (
-              <div className="flex-1 flex flex-col overflow-hidden">
+              <div key="TX_STREAM" className="fc-fade-in flex-1 flex flex-col overflow-hidden">
                 {/* Sticky Table Column Header */}
                 <div className="grid grid-cols-12 px-2.5 py-1 bg-[#0A0F1A] border-b border-[#1A253A] text-[8.5px] font-extrabold text-[#94A3B8] uppercase shrink-0">
                   <span className="col-span-2">WAKTU & BLOCK #</span>
@@ -1121,7 +1251,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                                 target="_blank"
                                 rel="noreferrer"
                                 onClick={(e) => e.stopPropagation()}
-                                className="text-[#00E676] hover:underline font-bold shrink-0"
+                                className="fc-btn text-[#00E676] hover:underline font-bold shrink-0"
                               >
                                 ↗ Explorer
                               </a>
@@ -1169,7 +1299,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
             {/* SUB-TAB 2: HLP INSTITUTIONAL VAULT & WHALE OPEN POSITIONS */}
             {streamSubTab === 'VAULT_POSITIONS' && (
-              <div className="flex-1 flex flex-col overflow-hidden">
+              <div key="VAULT_POSITIONS" className="fc-fade-in flex-1 flex flex-col overflow-hidden">
                 {hlpVaultSummary && (
                   <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#080E1A] border-b border-[#1A253A] text-[9px] font-mono gap-2 shrink-0">
                     <span className="text-[#FF9F1C] font-extrabold">
@@ -1216,7 +1346,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                       <div
                         key={`${wp.symbol}-${idx}`}
                         onClick={() => onSelectSymbol && onSelectSymbol(wp.symbol)}
-                        className="grid grid-cols-12 px-2.5 py-1.5 items-center hover:bg-[#0E1626] cursor-pointer"
+                        className="grid grid-cols-12 px-2.5 py-1.5 items-center hover:bg-[#0E1626] cursor-pointer transition-colors duration-150"
                       >
                         <div className="col-span-2">
                           <div className="font-extrabold text-white">{wp.symbol}</div>
@@ -1282,7 +1412,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
             {/* SUB-TAB 3: LIVE MULTI-CHAIN BLOCK HEIGHTS & AI DECISION MATRIX */}
             {streamSubTab === 'BLOCK_MATRIX' && (
-              <div className="flex-1 overflow-y-auto p-2.5 space-y-2 text-[10px]">
+              <div key="BLOCK_MATRIX" className="fc-fade-in flex-1 overflow-y-auto p-2.5 space-y-2 text-[10px]">
                 <div className="grid grid-cols-2 md:grid-cols-3 gap-2 font-mono">
                   <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
                     <div className="text-[8.5px] text-[#94A3B8]">ETHEREUM MAINNET (ERC20)</div>
@@ -1372,6 +1502,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           </div>
         )}
       </div>
-    </div>
+      </div>
+    </>
   );
 };

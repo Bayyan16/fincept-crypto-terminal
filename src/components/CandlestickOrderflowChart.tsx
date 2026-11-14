@@ -66,6 +66,30 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     height: 380,
   });
 
+  // rAF batching refs: coalesce high-frequency pointermove & wheel events into at most one
+  // state update per animation frame so panning/zooming never blocks the main thread.
+  const latestRef = useRef<{
+    processMouseMove: (clientX: number, clientY: number) => void;
+    handleBarZoom: (deltaBars: number, anchorRatio?: number) => void;
+    handleVerticalZoom: (factorDelta: number) => void;
+    clampedVisibleCount: number;
+  }>({
+    processMouseMove: () => {},
+    handleBarZoom: () => {},
+    handleVerticalZoom: () => {},
+    clampedVisibleCount: 55,
+  });
+  const pendingMoveRef = useRef<{ clientX: number; clientY: number } | null>(null);
+  const moveRafRef = useRef<number | null>(null);
+  const wheelRafRef = useRef<number | null>(null);
+  const wheelAccumRef = useRef<{ hTicks: number; vFactor: number; anchorRatio: number }>({
+    hTicks: 0,
+    vFactor: 1,
+    anchorRatio: 0.85,
+  });
+  // Last hover position retained briefly so the crosshair fades out smoothly instead of popping
+  const lastCrosshairRef = useRef<{ index: number; mouseY: number } | null>(null);
+
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
@@ -140,9 +164,27 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
   }, []);
 
   // Native Non-Passive Wheel Listener on Chart Container so Browser Never Blocks Zoom In/Out!
+  // Wheel events are rAF-batched: high-frequency trackpad deltas accumulate for one frame and are
+  // applied in a single flush, so a render never runs on every individual wheel tick.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+
+    const flushWheel = () => {
+      wheelRafRef.current = null;
+      const { hTicks, vFactor, anchorRatio } = wheelAccumRef.current;
+      wheelAccumRef.current = { hTicks: 0, vFactor: 1, anchorRatio: 0.85 };
+      // Vertical zoom factors compose exactly (prev * 0.88 * 0.88 === prev * 0.88^2)
+      if (vFactor !== 1) latestRef.current.handleVerticalZoom(vFactor);
+      // Horizontal zoom keeps the identical 8..maxBars clamp inside handleBarZoom
+      if (hTicks !== 0) {
+        const step = Math.max(2, Math.round(latestRef.current.clampedVisibleCount * 0.14));
+        latestRef.current.handleBarZoom(
+          Math.sign(hTicks) * step * Math.abs(hTicks),
+          anchorRatio
+        );
+      }
+    };
 
     const onNativeWheel = (e: WheelEvent) => {
       e.preventDefault();
@@ -155,26 +197,29 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
       // If scrolling on the Right Price Axis OR holding Shift/Alt -> Zoom Vertical Price Scale
       if (isOverRightPriceAxis || e.shiftKey || e.altKey) {
         const factor = e.deltaY < 0 ? 0.88 : 1.14;
-        handleVerticalZoom(factor);
-        return;
+        wheelAccumRef.current.vFactor *= factor;
+      } else if (e.deltaY !== 0) {
+        // Otherwise -> Zoom Horizontal Bar Chart (Zoom In / Zoom Out) around cursor X position
+        const plotWidthPx = Math.max(100, rect.width - 86);
+        const anchorRatio = Math.max(0.1, Math.min(1.0, (relX - 10) / plotWidthPx));
+        wheelAccumRef.current.hTicks += e.deltaY < 0 ? -1 : 1;
+        wheelAccumRef.current.anchorRatio = anchorRatio;
       }
 
-      // Otherwise -> Zoom Horizontal Bar Chart (Zoom In / Zoom Out) around cursor X position
-      const plotWidthPx = Math.max(100, rect.width - 86);
-      const anchorRatio = Math.max(0.1, Math.min(1.0, (relX - 10) / plotWidthPx));
-      const step = Math.max(2, Math.round(clampedVisibleCount * 0.14));
-      if (e.deltaY < 0) {
-        // Scroll Up -> Zoom IN (Fewer, larger bars)
-        handleBarZoom(-step, anchorRatio);
-      } else if (e.deltaY > 0) {
-        // Scroll Down -> Zoom OUT (More bars)
-        handleBarZoom(step, anchorRatio);
+      if (wheelRafRef.current === null) {
+        wheelRafRef.current = requestAnimationFrame(flushWheel);
       }
     };
 
     el.addEventListener('wheel', onNativeWheel, { passive: false });
-    return () => el.removeEventListener('wheel', onNativeWheel);
-  }, [clampedVisibleCount, handleBarZoom, handleVerticalZoom]);
+    return () => {
+      el.removeEventListener('wheel', onNativeWheel);
+      if (wheelRafRef.current !== null) {
+        cancelAnimationFrame(wheelRafRef.current);
+        wheelRafRef.current = null;
+      }
+    };
+  }, []);
 
   // 2D Drag-to-Pan (Left/Right + Up/Down) & Right Price Axis Vertical Scale Drag
   const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -198,63 +243,111 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     }
   };
 
-  const handleMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-    if (!svgRef.current) return;
-    const rect = svgRef.current.getBoundingClientRect();
-    const relX = ((e.clientX - rect.left) / rect.width) * dims.width;
-    const relY = ((e.clientY - rect.top) / rect.height) * dims.height;
+  // Raw pointer processing (2D pan, price-axis scale drag, crosshair hover) — pure & frame-safe
+  const processMouseMove = useCallback(
+    (clientX: number, clientY: number) => {
+      if (!svgRef.current) return;
+      const rect = svgRef.current.getBoundingClientRect();
+      const relX = ((clientX - rect.left) / rect.width) * dims.width;
+      const relY = ((clientY - rect.top) / rect.height) * dims.height;
 
-    const padLeft = 10;
-    const padRight = 76;
-    const padTop = 14;
-    const padBottom = 46;
-    const plotW = Math.max(100, dims.width - padLeft - padRight);
-    const plotH = Math.max(100, dims.height - padTop - padBottom);
+      const padLeft = 10;
+      const padRight = 76;
+      const padTop = 14;
+      const padBottom = 46;
+      const plotW = Math.max(100, dims.width - padLeft - padRight);
+      const plotH = Math.max(100, dims.height - padTop - padBottom);
 
-    if (dragMode === 'PRICE_AXIS_SCALE') {
-      // Dragging Up/Down on the Right Price Axis stretches/compresses vertical price scale
-      const dyPixels = e.clientY - dragStartRef.current.clientY;
-      const scaleMultiplier = Math.exp(dyPixels * 0.006);
-      const nextScale = Math.max(
-        0.25,
-        Math.min(4.0, dragStartRef.current.startPriceScaleFactor * scaleMultiplier)
-      );
-      setPriceScaleFactor(Number(nextScale.toFixed(3)));
-      return;
+      if (dragMode === 'PRICE_AXIS_SCALE') {
+        // Dragging Up/Down on the Right Price Axis stretches/compresses vertical price scale
+        const dyPixels = clientY - dragStartRef.current.clientY;
+        const scaleMultiplier = Math.exp(dyPixels * 0.006);
+        const nextScale = Math.max(
+          0.25,
+          Math.min(4.0, dragStartRef.current.startPriceScaleFactor * scaleMultiplier)
+        );
+        setPriceScaleFactor(Number(nextScale.toFixed(3)));
+        return;
+      }
+
+      if (dragMode === 'CHART_2D_PAN') {
+        // 1) Horizontal Drag -> Pan Left/Right across bars
+        const dxPixels = clientX - dragStartRef.current.clientX;
+        const pixelsPerCandle = (rect.width * 0.86) / Math.max(1, clampedVisibleCount);
+        const candlesDelta = Math.round(dxPixels / Math.max(1.5, pixelsPerCandle));
+        setPanOffset(
+          Math.max(0, Math.min(maxPanOffset, dragStartRef.current.startPanOffset + candlesDelta))
+        );
+
+        // 2) Vertical Drag -> Pan Up/Down on Price Mark!
+        const dyPixels = clientY - dragStartRef.current.clientY;
+        const ratioDelta = (dyPixels / Math.max(120, rect.height - 60)) * priceScaleFactor;
+        const nextPricePan = Math.max(
+          -3.5,
+          Math.min(3.5, dragStartRef.current.startPricePanRatio + ratioDelta)
+        );
+        setPricePanRatio(Number(nextPricePan.toFixed(4)));
+        return;
+      }
+
+      if (relX >= padLeft && relX <= padLeft + plotW && visibleCandles.length > 0) {
+        const idx = Math.floor(((relX - padLeft) / plotW) * visibleCandles.length);
+        const clampedIdx = Math.max(0, Math.min(visibleCandles.length - 1, idx));
+        const clampedY = Math.max(padTop, Math.min(padTop + plotH, relY));
+        setHoverIndex(clampedIdx);
+        setMouseY(clampedY);
+        lastCrosshairRef.current = { index: clampedIdx, mouseY: clampedY };
+      } else {
+        setHoverIndex(null);
+        setMouseY(null);
+      }
+    },
+    [dims, dragMode, clampedVisibleCount, maxPanOffset, priceScaleFactor, visibleCandles.length]
+  );
+
+  // rAF-batched pointermove: coalesce high-frequency mousemove events to at most one update per frame
+  const handleMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    pendingMoveRef.current = { clientX: e.clientX, clientY: e.clientY };
+    if (moveRafRef.current === null) {
+      moveRafRef.current = requestAnimationFrame(() => {
+        moveRafRef.current = null;
+        const pending = pendingMoveRef.current;
+        pendingMoveRef.current = null;
+        if (pending) latestRef.current.processMouseMove(pending.clientX, pending.clientY);
+      });
     }
+  }, []);
 
-    if (dragMode === 'CHART_2D_PAN') {
-      // 1) Horizontal Drag -> Pan Left/Right across bars
-      const dxPixels = e.clientX - dragStartRef.current.clientX;
-      const pixelsPerCandle = (rect.width * 0.86) / Math.max(1, clampedVisibleCount);
-      const candlesDelta = Math.round(dxPixels / Math.max(1.5, pixelsPerCandle));
-      setPanOffset(
-        Math.max(0, Math.min(maxPanOffset, dragStartRef.current.startPanOffset + candlesDelta))
-      );
+  // Point rAF callbacks at the latest render's handlers/values without re-registering DOM listeners
+  useEffect(() => {
+    latestRef.current.processMouseMove = processMouseMove;
+    latestRef.current.handleBarZoom = handleBarZoom;
+    latestRef.current.handleVerticalZoom = handleVerticalZoom;
+    latestRef.current.clampedVisibleCount = clampedVisibleCount;
+  });
 
-      // 2) Vertical Drag -> Pan Up/Down on Price Mark!
-      const dyPixels = e.clientY - dragStartRef.current.clientY;
-      const ratioDelta = (dyPixels / Math.max(120, rect.height - 60)) * priceScaleFactor;
-      const nextPricePan = Math.max(
-        -3.5,
-        Math.min(3.5, dragStartRef.current.startPricePanRatio + ratioDelta)
-      );
-      setPricePanRatio(Number(nextPricePan.toFixed(4)));
-      return;
-    }
-
-    if (relX >= padLeft && relX <= padLeft + plotW && visibleCandles.length > 0) {
-      const idx = Math.floor(((relX - padLeft) / plotW) * visibleCandles.length);
-      setHoverIndex(Math.max(0, Math.min(visibleCandles.length - 1, idx)));
-      setMouseY(Math.max(padTop, Math.min(padTop + plotH, relY)));
-    } else {
-      setHoverIndex(null);
-      setMouseY(null);
-    }
-  };
+  // Cancel any pending rAF work on unmount
+  useEffect(() => {
+    return () => {
+      if (moveRafRef.current !== null) cancelAnimationFrame(moveRafRef.current);
+      if (wheelRafRef.current !== null) cancelAnimationFrame(wheelRafRef.current);
+    };
+  }, []);
 
   const handleMouseUpOrLeave = () => {
     setDragMode('NONE');
+  };
+
+  const handleMouseLeave = () => {
+    handleMouseUpOrLeave();
+    // Drop any pending rAF move so a stale position can't re-show the crosshair after leaving
+    pendingMoveRef.current = null;
+    if (moveRafRef.current !== null) {
+      cancelAnimationFrame(moveRafRef.current);
+      moveRafRef.current = null;
+    }
+    setHoverIndex(null);
+    setMouseY(null);
   };
 
   const handleResetView = () => {
@@ -337,8 +430,47 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     })
     .join(' ');
 
+  // Crosshair fade: keep the last known hover position rendered briefly so the 130ms opacity
+  // fade-out is visible; live hover data is used while the cursor is inside the plot area.
+  let crosshairActive = false;
+  let crosshairData: { index: number; mouseY: number } | null = null;
+  if (hoverIndex !== null && mouseY !== null && visibleCandles[hoverIndex]) {
+    crosshairData = { index: hoverIndex, mouseY };
+    crosshairActive = true;
+  } else if (lastCrosshairRef.current) {
+    crosshairData = lastCrosshairRef.current;
+  }
+
   return (
-    <div className="flex flex-col bg-[#06080C] border border-[#1E2736] h-full select-none">
+    <div
+      data-testid="candlestick-chart"
+      className="flex flex-col bg-[#06080C] border border-[#1E2736] h-full select-none"
+    >
+      {/* One-Shot Chart Mount/Timeframe Fade-Slide (replays only via the svg key, never on data ticks) */}
+      <style>{`
+        @media (prefers-reduced-motion: no-preference) {
+          @keyframes fincept-chart-enter {
+            from { opacity: 0; transform: translateY(8px); }
+            to { opacity: 1; transform: translateY(0); }
+          }
+          .fincept-chart-enter {
+            animation: fincept-chart-enter 180ms ease-out both;
+          }
+        }
+        .fincept-crosshair {
+          opacity: 0;
+          transition: opacity 130ms ease-out;
+        }
+        .fincept-crosshair.fincept-crosshair-visible {
+          opacity: 1;
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .fincept-crosshair {
+            transition: none;
+          }
+        }
+      `}</style>
+
       {/* 1. Top Toolbar: Timeframes + Bar Zoom Slider + 2D Pan Controls + Overlays */}
       <div className="flex flex-wrap items-center justify-between px-2 py-1 bg-[#090D14] border-b border-[#1E2736] gap-1.5">
         {/* Timeframe Selector */}
@@ -356,11 +488,14 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
           ).map((tf) => (
             <button
               key={tf.id}
+              data-testid={`chart-timeframe-${tf.id}`}
+              data-timeframe={tf.id}
+              aria-pressed={timeframe === tf.id}
               onClick={() => onTimeframeChange(tf.id)}
-              className={`px-1.5 py-0.5 font-extrabold transition-colors ${
+              className={`px-1.5 py-0.5 font-extrabold transition-all duration-150 active:scale-[0.97] ${
                 timeframe === tf.id
-                  ? 'bg-[#FF9F1C] text-black'
-                  : 'text-[#CBD5E1] hover:bg-[#151D2B]'
+                  ? 'bg-[#FF9F1C] text-black shadow-[0_0_8px_rgba(255,159,28,0.25)]'
+                  : 'text-[#CBD5E1] hover:bg-[#151D2B] hover:text-white'
               }`}
             >
               {tf.label}
@@ -371,8 +506,9 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
         {/* Interactive Bar Zoom Slider + 2D Pan (Left/Right/Up/Down) & Vertical Price Scale Controls */}
         <div className="flex items-center gap-1 text-[10px]">
           <button
+            data-testid="chart-zoom-in-btn"
             onClick={() => handleBarZoom(-10, 0.85)}
-            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#FF9F1C] hover:text-black text-[#00E5FF] border border-[#243044] font-extrabold"
+            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#FF9F1C] hover:text-black hover:shadow-[0_0_8px_rgba(255,159,28,0.35)] text-[#00E5FF] border border-[#243044] font-extrabold transition-all duration-150 active:scale-[0.97]"
             title="Zoom In Bar Chart (Perbesar Bar Candle)"
           >
             🔍+
@@ -380,21 +516,25 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
 
           {/* Direct Bar Zoom Slider (8 bars to 140 bars) */}
           <div className="hidden xl:flex items-center gap-1 px-1.5 py-0.5 bg-[#05080E] border border-[#1E2B40]">
-            <span className="text-[9px] text-[#94A3B8]">BARS:{clampedVisibleCount}</span>
+            <span className="text-[9px] text-[#94A3B8]" data-testid="chart-zoom-indicator">
+              BARS:{clampedVisibleCount}
+            </span>
             <input
               type="range"
               min={8}
               max={maxBars}
               value={clampedVisibleCount}
               onChange={(e) => setVisibleCount(Number(e.target.value))}
-              className="w-16 accent-[#FF9F1C] cursor-pointer h-1"
+              data-testid="chart-bars-slider"
+              className="w-16 accent-[#FF9F1C] cursor-pointer h-1 transition-[accent-color] duration-150"
               title="Geser untuk Zoom In / Zoom Out jumlah Bar Candle"
             />
           </div>
 
           <button
+            data-testid="chart-zoom-out-btn"
             onClick={() => handleBarZoom(10, 0.85)}
-            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#FF9F1C] hover:text-black text-[#00E5FF] border border-[#243044] font-extrabold"
+            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#FF9F1C] hover:text-black hover:shadow-[0_0_8px_rgba(255,159,28,0.35)] text-[#00E5FF] border border-[#243044] font-extrabold transition-all duration-150 active:scale-[0.97]"
             title="Zoom Out Bar Chart (Tampilkan Lebih Banyak Bar)"
           >
             🔍-
@@ -402,54 +542,61 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
 
           {/* 4-Way Pan Buttons (Left, Right, Up, Down) */}
           <button
+            data-testid="chart-pan-left-btn"
             onClick={() => setPanOffset((p) => Math.min(maxPanOffset, p + 10))}
-            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#00E5FF] hover:text-black text-[#CBD5E1] border border-[#243044] font-bold"
+            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#00E5FF] hover:text-black hover:shadow-[0_0_8px_rgba(0,229,255,0.35)] text-[#CBD5E1] border border-[#243044] font-bold transition-all duration-150 active:scale-[0.97]"
             title="Geser ke Kiri (Riwayat Candle)"
           >
             ◄
           </button>
           <button
+            data-testid="chart-pan-right-btn"
             onClick={() => setPanOffset((p) => Math.max(0, p - 10))}
-            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#00E5FF] hover:text-black text-[#CBD5E1] border border-[#243044] font-bold"
+            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#00E5FF] hover:text-black hover:shadow-[0_0_8px_rgba(0,229,255,0.35)] text-[#CBD5E1] border border-[#243044] font-bold transition-all duration-150 active:scale-[0.97]"
             title="Geser ke Kanan (Candle Terbaru)"
           >
             ►
           </button>
           <button
+            data-testid="chart-price-pan-up-btn"
             onClick={() => setPricePanRatio((r) => Number(Math.min(3.5, r + 0.18).toFixed(3)))}
-            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#00E676] hover:text-black text-[#00E676] border border-[#243044] font-bold"
+            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#00E676] hover:text-black hover:shadow-[0_0_8px_rgba(0,230,118,0.35)] text-[#00E676] border border-[#243044] font-bold transition-all duration-150 active:scale-[0.97]"
             title="Geser Mark Harga ke Atas (Drag Atas)"
           >
             ▲
           </button>
           <button
+            data-testid="chart-price-pan-down-btn"
             onClick={() => setPricePanRatio((r) => Number(Math.max(-3.5, r - 0.18).toFixed(3)))}
-            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#FF1744] hover:text-white text-[#FF1744] border border-[#243044] font-bold"
+            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#FF1744] hover:text-white hover:shadow-[0_0_8px_rgba(255,23,68,0.35)] text-[#FF1744] border border-[#243044] font-bold transition-all duration-150 active:scale-[0.97]"
             title="Geser Mark Harga ke Bawah (Drag Bawah)"
           >
             ▼
           </button>
           <button
+            data-testid="chart-yzoom-in-btn"
             onClick={() => handleVerticalZoom(0.82)}
-            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#243044] font-bold"
+            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#FF9F1C] hover:text-black hover:shadow-[0_0_8px_rgba(255,159,28,0.35)] text-[#FF9F1C] border border-[#243044] font-bold transition-all duration-150 active:scale-[0.97]"
             title="Perbesar Skala Vertikal Harga (Y-Zoom In)"
           >
             ↕+
           </button>
           <button
+            data-testid="chart-yzoom-out-btn"
             onClick={() => handleVerticalZoom(1.22)}
-            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#243044] font-bold"
+            className="px-1.5 py-0.5 bg-[#0E1420] hover:bg-[#FF9F1C] hover:text-black hover:shadow-[0_0_8px_rgba(255,159,28,0.35)] text-[#FF9F1C] border border-[#243044] font-bold transition-all duration-150 active:scale-[0.97]"
             title="Perkecil Skala Vertikal Harga (Y-Zoom Out)"
           >
             ↕-
           </button>
 
           <button
+            data-testid="chart-autofit-btn"
             onClick={handleResetView}
-            className={`px-1.5 py-0.5 font-extrabold border ${
+            className={`px-1.5 py-0.5 font-extrabold border transition-all duration-150 active:scale-[0.97] ${
               isManualYModified || clampedPanOffset > 0
-                ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
-                : 'bg-[#0E1420] text-[#00E5FF] border-[#243044] hover:bg-[#00E676] hover:text-black'
+                ? 'bg-[#FF9F1C] text-black border-[#FF9F1C] hover:shadow-[0_0_8px_rgba(255,159,28,0.45)]'
+                : 'bg-[#0E1420] text-[#00E5FF] border-[#243044] hover:bg-[#00E676] hover:text-black hover:shadow-[0_0_8px_rgba(0,230,118,0.35)]'
             }`}
             title="Reset Zoom & Auto-Fit Skala Harga (Atau Double-Click Chart)"
           >
@@ -460,31 +607,34 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
         {/* Overlays */}
         <div className="flex items-center gap-1 text-[9.5px]">
           <button
+            data-testid="chart-legend-ema20-btn"
             onClick={() => setShowEma(!showEma)}
-            className={`px-1.5 py-0.5 border ${
+            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${
               showEma
-                ? 'border-[#FF9F1C] text-[#FF9F1C] bg-[#FF9F1C]/10 font-bold'
-                : 'border-[#1E2736] text-[#64748B]'
+                ? 'border-[#FF9F1C] text-[#FF9F1C] bg-[#FF9F1C]/10 font-bold hover:shadow-[0_0_8px_rgba(255,159,28,0.35)]'
+                : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#FF9F1C]/50'
             }`}
           >
             EMA20
           </button>
           <button
+            data-testid="chart-legend-whale-walls-btn"
             onClick={() => setShowWhaleZones(!showWhaleZones)}
-            className={`px-1.5 py-0.5 border ${
+            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${
               showWhaleZones
-                ? 'border-[#00E5FF] text-[#00E5FF] bg-[#00E5FF]/10 font-bold'
-                : 'border-[#1E2736] text-[#64748B]'
+                ? 'border-[#00E5FF] text-[#00E5FF] bg-[#00E5FF]/10 font-bold hover:shadow-[0_0_8px_rgba(0,229,255,0.35)]'
+                : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#00E5FF]/50'
             }`}
           >
             WHALE WALLS
           </button>
           <button
+            data-testid="chart-legend-bot-levels-btn"
             onClick={() => setShowBotLevels(!showBotLevels)}
-            className={`px-1.5 py-0.5 border ${
+            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${
               showBotLevels
-                ? 'border-[#00E676] text-[#00E676] bg-[#00E676]/10 font-bold'
-                : 'border-[#1E2736] text-[#64748B]'
+                ? 'border-[#00E676] text-[#00E676] bg-[#00E676]/10 font-bold hover:shadow-[0_0_8px_rgba(0,230,118,0.35)]'
+                : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#00E676]/50'
             }`}
           >
             BOT SL/BE
@@ -548,22 +698,21 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
 
         <svg
           ref={svgRef}
+          key={`${pair.symbol}-${timeframe}`}
           viewBox={`0 0 ${width} ${height}`}
-          className={`w-full h-full ${
+          data-testid="chart-svg"
+          className={`w-full h-full fincept-chart-enter ${
             dragMode === 'PRICE_AXIS_SCALE'
               ? 'cursor-ns-resize'
               : dragMode === 'CHART_2D_PAN'
                 ? 'cursor-grabbing'
                 : 'cursor-grab'
           }`}
+          style={{ touchAction: 'none' }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUpOrLeave}
-          onMouseLeave={() => {
-            handleMouseUpOrLeave();
-            setHoverIndex(null);
-            setMouseY(null);
-          }}
+          onMouseLeave={handleMouseLeave}
           onDoubleClick={handleResetView}
         >
           <defs>
@@ -846,49 +995,56 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             </text>
           </g>
 
-          {/* Interactive Crosshair (Vertical + Horizontal + Axis Badges) */}
-          {hoverIndex !== null && visibleCandles[hoverIndex] && (
-            <g className="pointer-events-none">
-              <line
-                x1={padLeft + hoverIndex * stepX + stepX / 2}
-                y1={padTop}
-                x2={padLeft + hoverIndex * stepX + stepX / 2}
-                y2={height - 18}
-                stroke="#94A3B8"
-                strokeWidth="0.8"
-                strokeDasharray="2 2"
-              />
-              {mouseY !== null && mouseY >= padTop && mouseY <= padTop + plotH && (
-                <>
-                  <line
-                    x1={padLeft}
-                    y1={mouseY}
-                    x2={width - padRight}
-                    y2={mouseY}
-                    stroke="#94A3B8"
-                    strokeWidth="0.8"
-                    strokeDasharray="2 2"
-                  />
-                  <rect
-                    x={width - padRight + 1}
-                    y={mouseY - 7}
-                    width={padRight - 2}
-                    height={14}
-                    fill="#1E293B"
-                    stroke="#00E5FF"
-                    strokeWidth="0.8"
-                  />
-                  <text
-                    x={width - padRight + 5}
-                    y={mouseY + 3}
-                    className="fill-[#00E5FF] text-[9px] font-bold"
-                  >
-                    {formatPx(yToPrice(mouseY))}
-                  </text>
-                </>
-              )}
-            </g>
-          )}
+          {/* Interactive Crosshair (Vertical + Horizontal + Axis Badges) with 130ms Opacity Fade */}
+          <g
+            data-testid="chart-crosshair-tooltip"
+            className={`pointer-events-none fincept-crosshair${
+              crosshairActive ? ' fincept-crosshair-visible' : ''
+            }`}
+          >
+            {crosshairData && (
+              <>
+                <line
+                  x1={padLeft + crosshairData.index * stepX + stepX / 2}
+                  y1={padTop}
+                  x2={padLeft + crosshairData.index * stepX + stepX / 2}
+                  y2={height - 18}
+                  stroke="#94A3B8"
+                  strokeWidth="0.8"
+                  strokeDasharray="2 2"
+                />
+                {crosshairData.mouseY >= padTop && crosshairData.mouseY <= padTop + plotH && (
+                  <>
+                    <line
+                      x1={padLeft}
+                      y1={crosshairData.mouseY}
+                      x2={width - padRight}
+                      y2={crosshairData.mouseY}
+                      stroke="#94A3B8"
+                      strokeWidth="0.8"
+                      strokeDasharray="2 2"
+                    />
+                    <rect
+                      x={width - padRight + 1}
+                      y={crosshairData.mouseY - 7}
+                      width={padRight - 2}
+                      height={14}
+                      fill="#1E293B"
+                      stroke="#00E5FF"
+                      strokeWidth="0.8"
+                    />
+                    <text
+                      x={width - padRight + 5}
+                      y={crosshairData.mouseY + 3}
+                      className="fill-[#00E5FF] text-[9px] font-bold"
+                    >
+                      {formatPx(yToPrice(crosshairData.mouseY))}
+                    </text>
+                  </>
+                )}
+              </>
+            )}
+          </g>
         </svg>
       </div>
     </div>

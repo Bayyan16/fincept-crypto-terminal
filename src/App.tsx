@@ -93,6 +93,43 @@ function buildMarketPairFromDexPool(
   };
 }
 
+/**
+ * Live price display with a soft flash animation on every change so the
+ * terminal feels alive instead of snapping digits instantly.
+ */
+function LivePrice({
+  value,
+  format,
+  className = '',
+}: {
+  value: number;
+  format: (v: number) => string;
+  className?: string;
+}) {
+  const prevRef = useRef<number>(value);
+  const [flash, setFlash] = useState<'up' | 'down' | 'flat'>('flat');
+  useEffect(() => {
+    if (value !== prevRef.current) {
+      setFlash(value > prevRef.current ? 'up' : 'down');
+      prevRef.current = value;
+    }
+  }, [value]);
+  return (
+    <span
+      key={format(value)}
+      className={`inline-block tabular-nums ${
+        flash === 'up'
+          ? 'price-flash-up'
+          : flash === 'down'
+            ? 'price-flash-down'
+            : ''
+      } ${className}`}
+    >
+      {format(value)}
+    </span>
+  );
+}
+
 export function App() {
   const [markets, setMarkets] = useState<MarketPair[]>(INITIAL_MARKETS);
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTC-PERP');
@@ -1429,7 +1466,10 @@ export function App() {
     '0x71C...9A4E';
 
   return (
-    <div className="flex flex-col min-h-screen lg:h-screen w-full max-w-full bg-[#050608] text-[#F8FAFC] font-mono overflow-x-hidden lg:overflow-hidden select-none">
+    <div
+      data-testid="app-root"
+      className="flex flex-col min-h-screen lg:h-screen w-full max-w-full bg-[#050608] text-[#F8FAFC] font-mono overflow-x-hidden lg:overflow-hidden select-none antialiased"
+    >
       {/* 1. TOP FINCEPT COMMAND BAR & REAL-MONEY EXECUTION MODE SWITCHER */}
       <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 py-1.5 bg-[#090C12] border-b border-[#1E2736] w-full min-w-0">
         <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
@@ -1450,6 +1490,7 @@ export function App() {
               <span className="text-[#FF9F1C] text-xs font-bold mr-1.5">&gt;</span>
               <input
                 type="text"
+                data-testid="command-input"
                 value={commandInput}
                 onChange={(e) => setCommandInput(e.target.value)}
                 placeholder="Type /profile, /portfolio, /btc, /sol, /long..."
@@ -1460,7 +1501,7 @@ export function App() {
 
           {commandFeedback && (
             <span
-              className="text-[10px] text-[#00E5FF] bg-[#06121E] border border-[#00E5FF]/25 px-2 py-0.5 font-semibold hidden 2xl:inline-block truncate min-w-0 max-w-sm"
+              className="anim-fade text-[10px] text-[#00E5FF] bg-[#06121E] border border-[#00E5FF]/25 px-2 py-0.5 font-semibold hidden 2xl:inline-block truncate min-w-0 max-w-sm"
               title={commandFeedback}
             >
               {commandFeedback}
@@ -1535,6 +1576,7 @@ export function App() {
 
           <button
             onClick={() => setIsWalletModalOpen(true)}
+            data-testid="wallet-modal-trigger"
             className={`px-2 py-1 font-extrabold text-[10px] border transition-colors whitespace-nowrap ${
               verifiedRealCount > 0
                 ? 'bg-[#00E676] text-black border-[#00E676]'
@@ -1547,6 +1589,7 @@ export function App() {
           {positions.length > 0 && (
             <button
               onClick={handleEmergencyFlattenAll}
+              data-testid="kill-switch"
               className="px-2 py-1 bg-[#FF1744] hover:bg-[#ff4569] text-white font-extrabold text-[10px] whitespace-nowrap"
               title="Tutup semua posisi terbuka & hentikan bot seketika"
             >
@@ -1570,8 +1613,9 @@ export function App() {
           ).map((tab) => (
             <button
               key={tab.id}
+              data-testid={`top-tab-${tab.id}`}
               onClick={() => setActiveTopTab(tab.id)}
-              className={`px-3 py-1.5 font-extrabold tracking-wide whitespace-nowrap border-b-2 transition-colors ${
+              className={`px-3 py-1.5 font-extrabold tracking-wide whitespace-nowrap border-b-2 transition-all duration-150 active:scale-[0.98] ${
                 activeTopTab === tab.id
                   ? 'bg-[#151D2B] text-[#FF9F1C] border-[#FF9F1C]'
                   : tab.id === 'PORTFOLIO_PROFILE'
@@ -1598,22 +1642,15 @@ export function App() {
             const isSel = m.symbol === selectedSymbol;
             const pct1d = Number.isFinite(m.change24h) ? m.change24h : 0;
             const isUp = pct1d >= 0;
-            const priceLabel =
-              m.price >= 1000
-                ? Math.round(m.price).toLocaleString()
-                : m.price >= 100
-                  ? m.price.toFixed(1)
-                  : m.price >= 1
-                    ? m.price.toFixed(3)
-                    : m.price.toPrecision(4);
             return (
               <button
                 key={m.symbol}
+                data-testid={`market-${m.symbol}`}
                 onClick={() => {
                   setCustomDeskPool(null);
                   setSelectedSymbol(m.symbol);
                 }}
-                className={`px-1.5 py-0.5 border flex items-center justify-between gap-1 min-w-0 transition-colors ${
+                className={`px-1.5 py-0.5 border flex items-center justify-between gap-1 min-w-0 transition-all duration-150 hover:-translate-y-px active:scale-[0.97] ${
                   isSel
                     ? 'bg-[#131E30] border-[#00E5FF] text-[#F8FAFC] font-extrabold shadow-[inset_0_0_0_1px_rgba(0,229,255,0.2)]'
                     : 'bg-[#0A0E15] border-[#192231] text-[#CBD5E1] hover:border-[#2E3D57] hover:text-white'
@@ -1630,7 +1667,21 @@ export function App() {
                   <span className="font-bold text-white truncate">{m.baseAsset}</span>
                 </span>
                 <span className="flex items-center gap-1 shrink-0">
-                  <span className="text-[#CBD5E1] font-semibold">${priceLabel}</span>
+                  <span className="text-[#CBD5E1] font-semibold">
+                    $
+                    <LivePrice
+                      value={m.price}
+                      format={(v) =>
+                        v >= 1000
+                          ? Math.round(v).toLocaleString()
+                          : v >= 100
+                            ? v.toFixed(1)
+                            : v >= 1
+                              ? v.toFixed(3)
+                              : v.toPrecision(4)
+                      }
+                    />
+                  </span>
                   <span
                     className={`px-1 text-[8.5px] font-extrabold ${
                       isUp ? 'bg-[#00E676]/15 text-[#00E676]' : 'bg-[#FF1744]/15 text-[#FF1744]'
@@ -1674,7 +1725,19 @@ export function App() {
 
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="text-sm font-extrabold text-white">
-              ${activePair.price >= 100 ? activePair.price.toLocaleString() : activePair.price >= 0.01 ? activePair.price.toFixed(4) : activePair.price > 0 ? activePair.price.toPrecision(4) : '0'}
+              $
+              <LivePrice
+                value={activePair.price}
+                format={(v) =>
+                  v >= 100
+                    ? v.toLocaleString()
+                    : v >= 0.01
+                      ? v.toFixed(4)
+                      : v > 0
+                        ? v.toPrecision(4)
+                        : '0'
+                }
+              />
             </span>
             <span
               className={`px-1.5 py-0.5 text-[10px] font-extrabold ${
@@ -1785,7 +1848,10 @@ export function App() {
       {/* 4. MAIN WORKSPACE CONTENT */}
       <main className="flex-1 min-h-0 overflow-y-auto lg:overflow-hidden">
         {activeTopTab === 'TERMINAL_DESK' && (
-          <div className="grid grid-cols-12 h-full divide-y lg:divide-y-0 lg:divide-x divide-[#1E2736]">
+          <div
+            key="TERMINAL_DESK"
+            className="anim-panel grid grid-cols-12 h-full divide-y lg:divide-y-0 lg:divide-x divide-[#1E2736]"
+          >
             {/* LEFT & CENTER PANE (7 Columns) */}
             <div
               ref={leftPaneRef}
@@ -1803,8 +1869,9 @@ export function App() {
                   ).map((st) => (
                     <button
                       key={st.id}
+                      data-testid={`subtab-${st.id}`}
                       onClick={() => setActiveSubTab(st.id)}
-                      className={`py-0.5 font-extrabold border-b-2 transition-colors ${
+                      className={`py-0.5 font-extrabold border-b-2 transition-all duration-150 active:scale-[0.96] ${
                         activeSubTab === st.id
                           ? 'border-[#FF9F1C] text-[#FF9F1C]'
                           : 'border-transparent text-[#94A3B8] hover:text-white'
@@ -1936,16 +2003,18 @@ export function App() {
                 {/* Center Real-Market Candlestick Chart / Sub-Tabs */}
                 <div className="col-span-6 flex flex-col min-h-0 overflow-hidden">
                   {activeSubTab === 'OVERVIEW' && (
-                    <CandlestickOrderflowChart
-                      pair={activePair}
-                      candles={currentCandles}
-                      timeframe={chartTimeframe}
-                      onTimeframeChange={setChartTimeframe}
-                      activePosition={activePosition}
-                      orderbook={orderbook}
-                      isLoadingCandles={isLoadingCandles}
-                      candleSource={candleSource}
-                    />
+                    <div key="OVERVIEW" className="anim-fade flex flex-col h-full min-h-0">
+                      <CandlestickOrderflowChart
+                        pair={activePair}
+                        candles={currentCandles}
+                        timeframe={chartTimeframe}
+                        onTimeframeChange={setChartTimeframe}
+                        activePosition={activePosition}
+                        orderbook={orderbook}
+                        isLoadingCandles={isLoadingCandles}
+                        candleSource={candleSource}
+                      />
+                    </div>
                   )}
 
                   {activeSubTab === 'ORDERBOOK_L2' && (() => {
@@ -1979,7 +2048,7 @@ export function App() {
                     };
 
                     return (
-                      <div className="flex flex-col h-full bg-[#06080C] p-2.5 overflow-y-auto text-[10.5px] space-y-2">
+                      <div key="ORDERBOOK_L2" data-testid="orderbook-panel" className="anim-fade flex flex-col h-full bg-[#06080C] p-2.5 overflow-y-auto text-[10.5px] space-y-2">
                         {/* 1. CLEAR COIN / MARKET IDENTITY HEADER + 1-CLICK COIN SWITCHER */}
                         <div className="p-2 bg-[#0A0F1A] border border-[#1E2B42] flex flex-wrap items-center justify-between gap-2">
                           <div className="flex items-center gap-2.5">
@@ -2133,7 +2202,8 @@ export function App() {
                               {orderbook.bids.slice(0, 18).map((b, i) => (
                                 <div
                                   key={i}
-                                  className="relative grid grid-cols-12 py-0.5 items-center font-mono text-[10px] hover:bg-[#0E1624]"
+                                  data-testid="ob-bid-row"
+                                  className="relative grid grid-cols-12 py-0.5 items-center font-mono text-[10px] hover:bg-[#0E1624] transition-colors duration-150"
                                 >
                                   <div
                                     className="absolute right-0 top-0 bottom-0 bg-[#00E676]/15 pointer-events-none"
@@ -2184,7 +2254,8 @@ export function App() {
                               {orderbook.asks.slice(0, 18).map((a, i) => (
                                 <div
                                   key={i}
-                                  className="relative grid grid-cols-12 py-0.5 items-center font-mono text-[10px] hover:bg-[#0E1624]"
+                                  data-testid="ob-ask-row"
+                                  className="relative grid grid-cols-12 py-0.5 items-center font-mono text-[10px] hover:bg-[#0E1624] transition-colors duration-150"
                                 >
                                   <div
                                     className="absolute left-0 top-0 bottom-0 bg-[#FF1744]/15 pointer-events-none"
@@ -2250,7 +2321,7 @@ export function App() {
                       return cid === tapeChainFilter || cName.includes(tapeChainFilter);
                     });
                     return (
-                    <div className="flex flex-col h-full bg-[#06080C] p-2.5 overflow-y-auto space-y-2 text-[10.5px]">
+                    <div key="WHALE_TAPE" className="anim-fade flex flex-col h-full bg-[#06080C] p-2.5 overflow-y-auto space-y-2 text-[10.5px]">
                       <div className="flex flex-wrap items-center justify-between border-b border-[#1E2736] pb-1.5 gap-2">
                         <div>
                           <div className="text-[#00E5FF] font-extrabold uppercase">
@@ -2373,7 +2444,7 @@ export function App() {
                   })()}
 
                   {activeSubTab === 'AGENT_BRAIN' && (
-                    <div className="flex flex-col h-full bg-[#06080C] p-2.5 overflow-y-auto space-y-1.5 text-[10.5px]">
+                    <div key="AGENT_BRAIN" className="anim-fade flex flex-col h-full bg-[#06080C] p-2.5 overflow-y-auto space-y-1.5 text-[10.5px]">
                       <div className="text-[#FF9F1C] font-extrabold border-b border-[#1E2736] pb-1">
                         AUTONOMOUS AGENT REASONING & SKILL TELEMETRY
                       </div>
@@ -2485,13 +2556,15 @@ export function App() {
               {/* Lower Dock: Resizable Active Autonomous Positions (Drag Handle + Up/Down Presets) */}
               <div
                 style={{ height: `${positionsDockHeightPx}px` }}
+                data-testid="positions-dock"
                 className={`border-t-2 border-[#00E5FF]/60 bg-[#06090E] flex flex-col shrink-0 overflow-hidden ${
-                  isResizingPositionsDock ? '' : 'transition-[height] duration-75'
+                  isResizingPositionsDock ? '' : 'transition-[height] duration-200 ease-out'
                 }`}
               >
                 {/* DRAG HANDLE BAR (Pull Up to expand table / Push Down to expand chart) */}
                 <div
                   onMouseDown={handlePositionsResizeMouseDown}
+                  data-testid="positions-dock-handle"
                   className="h-2.5 bg-[#0D1524] hover:bg-[#00E5FF]/30 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group shrink-0 select-none"
                   title="Tarik ke atas untuk memperbesar tabel Active Positions, atau tarik ke bawah untuk memperluas area Chart"
                 >
@@ -2531,6 +2604,7 @@ export function App() {
                     </span>
                     <button
                       onClick={() => setPresetPositionsHeight('MIN')}
+                      data-testid="dock-preset-MIN"
                       className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
                         positionsDockHeightPx <= 55
                           ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
@@ -2542,6 +2616,7 @@ export function App() {
                     </button>
                     <button
                       onClick={() => setPresetPositionsHeight('SPLIT')}
+                      data-testid="dock-preset-SPLIT"
                       className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
                         positionsDockHeightPx > 55 && positionsDockHeightPx < 320
                           ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
@@ -2553,6 +2628,7 @@ export function App() {
                     </button>
                     <button
                       onClick={() => setPresetPositionsHeight('MAX')}
+                      data-testid="dock-preset-MAX"
                       className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
                         positionsDockHeightPx >= 320
                           ? 'bg-[#00E676] text-black border-[#00E676]'
@@ -2695,7 +2771,7 @@ export function App() {
 
         {/* TAB 2: DEXSCREENER, RAYDIUM V3 & JUPITER V1 ON-CHAIN HUB */}
         {activeTopTab === 'DEX_SCREENER' && (
-          <div className="p-4 h-full overflow-y-auto bg-[#06080C] space-y-4">
+          <div key="DEX_SCREENER" className="anim-panel p-4 h-full overflow-y-auto bg-[#06080C] space-y-4">
             <div className="flex items-center justify-between border-b border-[#1E2736] pb-2">
               <div>
                 <h2 className="text-sm font-extrabold text-[#FF9F1C] uppercase">
@@ -2899,6 +2975,7 @@ export function App() {
                   >
                     <input
                       type="text"
+                      data-testid="dex-search"
                       value={dexSearchQuery}
                       onChange={(e) => setDexSearchQuery(e.target.value)}
                       placeholder="Cari token / simbol / kontrak 0x atau Solana mint..."
@@ -3316,7 +3393,7 @@ export function App() {
 
         {/* TAB 3: AGENT BRAIN & REAL-MONEY RISK GUARD */}
         {activeTopTab === 'AGENT_SKILLS' && (
-          <div className="p-4 h-full overflow-y-auto bg-[#06080C] grid grid-cols-1 lg:grid-cols-2 gap-4">
+          <div key="AGENT_SKILLS" className="anim-panel p-4 h-full overflow-y-auto bg-[#06080C] grid grid-cols-1 lg:grid-cols-2 gap-4">
             <div className="p-4 bg-[#090D14] border border-[#1E2736] space-y-4">
               <div className="border-b border-[#1E2736] pb-2">
                 <h3 className="text-sm font-extrabold text-[#FF9F1C]">
@@ -3572,7 +3649,7 @@ export function App() {
 
         {/* TAB 4: EXECUTION & MICRO-LOSS SCRATCH AUDIT LOG */}
         {activeTopTab === 'PORTFOLIO_LOG' && (
-          <div className="p-4 h-full overflow-y-auto bg-[#06080C] space-y-4">
+          <div key="PORTFOLIO_LOG" className="anim-panel p-4 h-full overflow-y-auto bg-[#06080C] space-y-4">
             <div className="flex items-center justify-between border-b border-[#1E2736] pb-2">
               <div>
                 <h2 className="text-sm font-extrabold text-[#00E676] uppercase">
@@ -3659,7 +3736,7 @@ export function App() {
 
         {/* TAB 5: TRADER PROFILE, MULTI-CHAIN PORTFOLIO & FLEXIBLE NETWORK HUB */}
         {activeTopTab === 'PORTFOLIO_PROFILE' && (
-          <div className="p-4 h-full overflow-y-auto bg-[#06080C] space-y-4">
+          <div key="PORTFOLIO_PROFILE" className="anim-panel p-4 h-full overflow-y-auto bg-[#06080C] space-y-4">
             {/* Top Header Banner */}
             <div className="flex flex-wrap items-center justify-between border-b border-[#1E2736] pb-3 gap-2">
               <div>
