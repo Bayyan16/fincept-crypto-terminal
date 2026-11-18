@@ -1187,9 +1187,18 @@ const CHAIN_BADGE_COLORS = {
   ethereum: '#627EEA',
 };
 
+const KNOWN_TOKEN_ICON_URLS = {
+  PEOPLE: 'https://coin-images.coingecko.com/coins/images/20612/large/GN_UVm3d_400x400.jpg',
+  CANTO: 'https://coin-images.coingecko.com/coins/images/26959/large/canto-network.png',
+  MYRO: 'https://coin-images.coingecko.com/coins/images/32878/large/photo_2026-06-22_19-15-07.jpg',
+  RAY: 'https://assets.coincap.io/assets/icons/ray@2x.png',
+  JUP: 'https://static.jup.ag/jup/icon.png',
+};
+
 /**
  * Resolve ANY market/token icon cleanly (never returns >= 400).
- * Checks: Indexed DexScreener/Raydium/GT image -> Hyperliquid coins CDN -> SpotHQ PNG CDN -> Bespoke SVG Token Emblem.
+ * Checks: Indexed DexScreener/Raydium/GT image -> Curated Map -> Hyperliquid coins CDN ->
+ * CoinCap 2x PNG CDN -> SpotHQ PNG CDN -> Live CoinGecko/DexScreener Lookup -> Bespoke SVG Emblem.
  */
 export async function resolveTokenIcon({ symbol = 'TOK', chain = 'solana', addr = '' } = {}) {
   const cid = canonicalChainId(chain);
@@ -1206,22 +1215,31 @@ export async function resolveTokenIcon({ symbol = 'TOK', chain = 'solana', addr 
 
   const candidateUrls = [];
   const hintAddr = addr ? tokenImageHintMap.get(`${cid}:${String(addr).toLowerCase()}`) : null;
-  const hintSym = tokenImageHintMap.get(`sym:${cleanSym}`);
+  const hintSym = tokenImageHintMap.get(`sym:${cleanSym}`) || tokenImageHintMap.get(`sym:${strippedK}`);
   if (hintAddr) candidateUrls.push(hintAddr);
   if (hintSym && hintSym !== hintAddr) candidateUrls.push(hintSym);
 
+  if (KNOWN_TOKEN_ICON_URLS[cleanSym]) candidateUrls.push(KNOWN_TOKEN_ICON_URLS[cleanSym]);
+  if (KNOWN_TOKEN_ICON_URLS[strippedK]) candidateUrls.push(KNOWN_TOKEN_ICON_URLS[strippedK]);
+
   candidateUrls.push(`https://app.hyperliquid.xyz/coins/${strippedK}.svg`);
+  if (cleanSym !== strippedK) {
+    candidateUrls.push(`https://app.hyperliquid.xyz/coins/${cleanSym}.svg`);
+  }
   if (unwrapped !== strippedK) {
     candidateUrls.push(`https://app.hyperliquid.xyz/coins/${unwrapped}.svg`);
   }
   candidateUrls.push(
+    `https://assets.coincap.io/assets/icons/${unwrapped.toLowerCase()}@2x.png`
+  );
+  candidateUrls.push(
     `https://cdn.jsdelivr.net/gh/spothq/cryptocurrency-icons@master/32/color/${unwrapped.toLowerCase()}.png`
   );
 
-  for (const u of candidateUrls) {
+  const tryFetchImageBuffer = async (u, timeoutMs = 1800) => {
     try {
       const controller = new AbortController();
-      const t = setTimeout(() => controller.abort(), 1600);
+      const t = setTimeout(() => controller.abort(), timeoutMs);
       const r = await fetch(u, { signal: controller.signal });
       clearTimeout(t);
       const ct = (r.headers.get('content-type') || '').toLowerCase();
@@ -1229,13 +1247,46 @@ export async function resolveTokenIcon({ symbol = 'TOK', chain = 'solana', addr 
         const buf = Buffer.from(await r.arrayBuffer());
         if (buf.length > 40) {
           const outCt = ct.includes('svg') ? 'image/svg+xml' : ct.split(';')[0];
-          iconCacheMap.set(cacheKey, { contentType: outCt, data: buf, ts: Date.now() });
-          return { status: 200, contentType: outCt, payload: buf };
+          return { contentType: outCt, data: buf };
         }
       }
     } catch {
-      // Fall through cleanly to next icon source or custom emblem
+      // ignore
     }
+    return null;
+  };
+
+  for (const u of candidateUrls) {
+    const hit = await tryFetchImageBuffer(u, 1800);
+    if (hit) {
+      iconCacheMap.set(cacheKey, { ...hit, ts: Date.now() });
+      return { status: 200, contentType: hit.contentType, payload: hit.data };
+    }
+  }
+
+  // Dynamic CoinGecko Search fallback for any newly listed or exotic token
+  try {
+    const cgRes = await fetchJsonSafe(
+      `https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(strippedK)}`,
+      {},
+      2200
+    );
+    const coins = cgRes?.data?.coins;
+    if (Array.isArray(coins) && coins.length > 0) {
+      const exact =
+        coins.find((c) => String(c.symbol || '').toUpperCase() === strippedK) || coins[0];
+      const imgUrl = exact?.large || exact?.thumb;
+      if (imgUrl) {
+        registerTokenImageHint(cid, addr, strippedK, imgUrl);
+        const hit = await tryFetchImageBuffer(imgUrl, 2000);
+        if (hit) {
+          iconCacheMap.set(cacheKey, { ...hit, ts: Date.now() });
+          return { status: 200, contentType: hit.contentType, payload: hit.data };
+        }
+      }
+    }
+  } catch {
+    // ignore
   }
 
   // Deterministic crisp vector monogram SVG emblem with chain ring (always HTTP 200 OK)

@@ -92,10 +92,16 @@ test.describe('terminal desk', () => {
     await expect(page.getByTestId('chart-legend-bb-btn')).toBeVisible();
     await expect(page.getByTestId('chart-legend-pa-sr-btn')).toBeVisible();
 
-    // 2. All-Crypto Market Sector Explorer (beyond Top 10 CMC)
+    // 2. All-Crypto Market Sector Explorer (beyond Top 10 CMC) + Real Token Icon verification
     await page.getByTestId('watchlist-sector-AI_DEPIN').click();
-    await expect(page.getByTestId('market-TAO-PERP')).toBeVisible();
-    await page.getByTestId('market-TAO-PERP').click();
+    const taoBtn = page.getByTestId('market-TAO-PERP');
+    await expect(taoBtn).toBeVisible();
+    const taoImg = taoBtn.locator('img');
+    await expect(taoImg).toBeVisible();
+    await expect
+      .poll(async () => taoImg.evaluate((el: HTMLImageElement) => el.naturalWidth))
+      .toBeGreaterThan(0);
+    await taoBtn.click();
     await expect(page.getByText('TAO-PERP').first()).toBeVisible();
 
     // 3. 4-Agent Consensus Forum inside AGENT_BRAIN sub-tab

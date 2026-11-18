@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 
 interface CoinIconProps {
   coin: string;
@@ -25,13 +25,31 @@ const COIN_BG: Record<string, { bg: string; fg: string; ring?: string }> = {
   USDC: { bg: '#2775CA', fg: '#FFFFFF', ring: '#93C5FD' },
   USDT: { bg: '#26A17B', fg: '#FFFFFF', ring: '#6EE7B7' },
   USDG: { bg: '#111827', fg: '#D500F9', ring: '#D500F9' },
-  PEPE: { bg: '#15803D', fg: '#DCFCE7', ring: '#4ADE80' },
-  BONK: { bg: '#EA580C', fg: '#FEF3C7', ring: '#FACC15' },
-  CAKE: { bg: '#3B2314', fg: '#60EFFF', ring: '#F472B6' },
+  TON: { bg: '#0098EA', fg: '#FFFFFF' },
+  DOT: { bg: '#E6007A', fg: '#FFFFFF' },
+  NEAR: { bg: '#00EC97', fg: '#000000' },
+  APT: { bg: '#111827', fg: '#FFFFFF', ring: '#38BDF8' },
+  ARB: { bg: '#1D2939', fg: '#28A0F0', ring: '#28A0F0' },
+  OP: { bg: '#FF0420', fg: '#FFFFFF' },
+  INJ: { bg: '#0F172A', fg: '#00F2FE', ring: '#00F2FE' },
+  TIA: { bg: '#7B2BF9', fg: '#FFFFFF' },
+  SEI: { bg: '#9E1F1F', fg: '#FFFFFF' },
+  TAO: { bg: '#111827', fg: '#F8FAFC', ring: '#94A3B8' },
+  RENDER: { bg: '#E11D48', fg: '#FFFFFF' },
+  FET: { bg: '#1E1B4B', fg: '#818CF8', ring: '#818CF8' },
+  WLD: { bg: '#111827', fg: '#FFFFFF', ring: '#FFFFFF' },
   AAVE: { bg: '#2EBAC6', fg: '#FFFFFF', ring: '#B6509E' },
   UNI: { bg: '#FF007A', fg: '#FFFFFF' },
-  ARB: { bg: '#1D2939', fg: '#28A0F0', ring: '#28A0F0' },
+  PENDLE: { bg: '#0F172A', fg: '#38BDF8', ring: '#38BDF8' },
+  ONDO: { bg: '#1E293B', fg: '#F8FAFC', ring: '#60A5FA' },
+  ENA: { bg: '#090D16', fg: '#FFFFFF', ring: '#94A3B8' },
+  PEPE: { bg: '#15803D', fg: '#DCFCE7', ring: '#4ADE80' },
+  WIF: { bg: '#A16207', fg: '#FEF3C7', ring: '#F59E0B' },
+  BONK: { bg: '#EA580C', fg: '#FEF3C7', ring: '#FACC15' },
+  SHIB: { bg: '#DC2626', fg: '#FDE047', ring: '#FBBF24' },
+  LTC: { bg: '#345D9D', fg: '#FFFFFF' },
   PAXG: { bg: '#CA8A04', fg: '#FEF9C3', ring: '#FACC15' },
+  CAKE: { bg: '#3B2314', fg: '#60EFFF', ring: '#F472B6' },
 };
 
 function normalizeCoinSymbol(coin: string): string {
@@ -46,9 +64,13 @@ function normalizeCoinSymbol(coin: string): string {
 }
 
 /**
- * Crisp inline vector icon per cryptocurrency asset (zero external CDN latency).
+ * Vector fallback SVG glyph when offline or if all remote icon sources fail.
  */
-export const CoinIcon: React.FC<CoinIconProps> = ({ coin, size = 14, className = '' }) => {
+export const VectorCoinGlyph: React.FC<CoinIconProps> = ({
+  coin,
+  size = 14,
+  className = '',
+}) => {
   const sym = normalizeCoinSymbol(coin);
   const style = COIN_BG[sym] || { bg: '#1E293B', fg: '#38BDF8', ring: '#38BDF8' };
 
@@ -171,6 +193,34 @@ export const CoinIcon: React.FC<CoinIconProps> = ({ coin, size = 14, className =
             fill={style.fg}
           />
         );
+      case 'TON':
+        return (
+          <polygon
+            points="5.2,6.2 14.8,6.2 10,15.4"
+            fill="none"
+            stroke={style.fg}
+            strokeWidth="1.6"
+            strokeLinejoin="round"
+          />
+        );
+      case 'DOT':
+        return (
+          <g fill={style.fg}>
+            <circle cx="10" cy="5.2" r="1.5" />
+            <circle cx="10" cy="14.8" r="1.5" />
+            <circle cx="5.8" cy="7.6" r="1.5" />
+            <circle cx="14.2" cy="7.6" r="1.5" />
+            <circle cx="5.8" cy="12.4" r="1.5" />
+            <circle cx="14.2" cy="12.4" r="1.5" />
+          </g>
+        );
+      case 'NEAR':
+        return (
+          <path
+            d="M6.2 14.2V5.8h1.8l5.8 6.2V5.8h1.6v8.4h-1.8L7.8 8v6.2H6.2z"
+            fill={style.fg}
+          />
+        );
       case 'USDC':
       case 'USDT':
       case 'USDG':
@@ -218,6 +268,43 @@ export const CoinIcon: React.FC<CoinIconProps> = ({ coin, size = 14, className =
   );
 };
 
+/**
+ * Authentic multi-source cryptocurrency icon component:
+ * Loads the official token logo via `/api/live/token-icon` (Hyperliquid L1 SVG, CoinCap 2x PNG,
+ * DexScreener/CoinGecko indexed logos) with multi-tier fallback to direct CDNs and VectorCoinGlyph.
+ */
+export const CoinIcon: React.FC<CoinIconProps> = ({ coin, size = 14, className = '' }) => {
+  const sym = normalizeCoinSymbol(coin);
+  const [stage, setStage] = useState<number>(0);
+
+  useEffect(() => {
+    setStage(0);
+  }, [sym]);
+
+  const candidates = [
+    `/api/live/token-icon?symbol=${encodeURIComponent(sym)}&chain=hyperliquid`,
+    `https://app.hyperliquid.xyz/coins/${encodeURIComponent(sym)}.svg`,
+    `https://assets.coincap.io/assets/icons/${encodeURIComponent(sym.toLowerCase())}@2x.png`,
+  ];
+
+  if (stage >= candidates.length) {
+    return <VectorCoinGlyph coin={sym} size={size} className={className} />;
+  }
+
+  return (
+    <img
+      src={candidates[stage]}
+      alt={`${sym} icon`}
+      width={size}
+      height={size}
+      loading="lazy"
+      onError={() => setStage((s) => s + 1)}
+      className={`rounded-full shrink-0 object-cover bg-[#0B1220] border border-white/10 inline-block ${className}`}
+      style={{ width: size, height: size }}
+    />
+  );
+};
+
 interface MarketTokenIconProps {
   symbol: string;
   chainId?: string;
@@ -230,7 +317,7 @@ interface MarketTokenIconProps {
 /**
  * Full-coverage market & DEX token icon:
  * Renders real off-chain/on-chain logo via backend `/api/live/token-icon` (never 404),
- * with instant vector <CoinIcon /> while loading or on offline fallback.
+ * with multi-stage fallback to <CoinIcon />.
  */
 export const MarketTokenIcon: React.FC<MarketTokenIconProps> = ({
   symbol,
@@ -241,6 +328,11 @@ export const MarketTokenIcon: React.FC<MarketTokenIconProps> = ({
   className = '',
 }) => {
   const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    setFailed(false);
+  }, [symbol, chainId, address, imageUrl]);
+
   const src =
     imageUrl ||
     `/api/live/token-icon?symbol=${encodeURIComponent(symbol || 'TOK')}&chain=${encodeURIComponent(
@@ -259,9 +351,8 @@ export const MarketTokenIcon: React.FC<MarketTokenIconProps> = ({
       height={size}
       loading="lazy"
       onError={() => setFailed(true)}
-      className={`rounded-full shrink-0 object-cover bg-[#0B1220] border border-white/10 ${className}`}
+      className={`rounded-full shrink-0 object-cover bg-[#0B1220] border border-white/10 inline-block ${className}`}
       style={{ width: size, height: size }}
     />
   );
 };
-
