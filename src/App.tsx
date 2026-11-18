@@ -39,10 +39,12 @@ import {
   selectBestLowRiskHunterCandidate,
 } from './engine/agentSkills';
 import {
+  auditActivePositionsAccuracy,
   buildVerifiedMacroNewsFeed,
   formatSmartPrice,
   INITIAL_VERIFIED_NEWS,
   runMultiAgentForumConsensus,
+  runWalkForwardAccuracyBacktest,
 } from './engine/multiAgentForum';
 import { MultiAgentForumPanel } from './components/MultiAgentForumPanel';
 import {
@@ -364,9 +366,36 @@ export function App() {
         lastClosedSymbol,
         minLiquidityScoreGate,
         orderSizeUsdInput,
-        verifiedNews
+        verifiedNews,
+        candlesMap
       ),
-    [markets, positions, lastClosedSymbol, minLiquidityScoreGate, orderSizeUsdInput, verifiedNews]
+    [
+      markets,
+      positions,
+      lastClosedSymbol,
+      minLiquidityScoreGate,
+      orderSizeUsdInput,
+      verifiedNews,
+      candlesMap,
+    ]
+  );
+
+  const positionAudits = useMemo(
+    () =>
+      auditActivePositionsAccuracy(
+        positions,
+        markets,
+        candlesMap,
+        verifiedNews,
+        whaleTxs,
+        whalePositions
+      ),
+    [positions, markets, candlesMap, verifiedNews, whaleTxs, whalePositions]
+  );
+
+  const walkForwardOutcomes = useMemo(
+    () => runWalkForwardAccuracyBacktest(markets, candlesMap, orderSizeUsdInput),
+    [markets, candlesMap, orderSizeUsdInput]
   );
 
   const displayedWatchlistMarkets = useMemo(() => {
@@ -464,6 +493,45 @@ export function App() {
       clearInterval(interval);
     };
   }, [activePair.symbol, activePair.hlCoin, activePair.binanceSymbol, chartTimeframe, candleKey]);
+
+  // 1B. Batch Real OHLCV Candle Sync for Top Scanner Markets (Ensures Multi-Market TA uses 100% Real Exchange Candles)
+  useEffect(() => {
+    let mounted = true;
+    const syncBatchScannerCandles = async () => {
+      try {
+        const res = await fetch(
+          '/api/live/batch-candles?coins=BTC,ETH,SOL,HYPE,XRP,DOGE,SUI,TAO,kPEPE,ONDO,AAVE,ARB&interval=15m&limit=64'
+        );
+        if (!res.ok || !mounted) return;
+        const data = await res.json();
+        if (data?.ok && data.candlesByCoin && typeof data.candlesByCoin === 'object') {
+          setCandlesMap((prev) => {
+            const next = { ...prev };
+            for (const [coin, candles] of Object.entries(data.candlesByCoin)) {
+              if (Array.isArray(candles) && candles.length > 0) {
+                const cleanBase = coin.replace(/^k(?=[A-Z]{2,})/, '');
+                const sym = cleanBase === 'HYPE' ? 'HYPE-USDC' : `${cleanBase}-PERP`;
+                next[coin] = candles as CandlePoint[];
+                if (!next[`${sym}_15m`]) {
+                  next[`${sym}_15m`] = candles as CandlePoint[];
+                }
+              }
+            }
+            return next;
+          });
+        }
+      } catch {
+        // ignore transient error
+      }
+    };
+
+    syncBatchScannerCandles();
+    const timer = setInterval(syncBatchScannerCandles, 22_000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, []);
 
   // 2. Live Backend Gateway Snapshot Sync (Hyperliquid L1 + Binance 24h + HLP Whale Vault + DexScreener)
   useEffect(() => {
@@ -928,7 +996,8 @@ export function App() {
       lastClosedSymbol,
       minLiquidityScoreGate,
       orderSizeUsdInput,
-      verifiedNews
+      verifiedNews,
+      candlesMap
     );
     if (!candidate) return;
 
@@ -2582,6 +2651,8 @@ export function App() {
                         consensus={forumConsensus}
                         verifiedNews={verifiedNews}
                         topOpportunities={topMultiAgentOpportunities}
+                        positionAudits={positionAudits}
+                        walkForwardOutcomes={walkForwardOutcomes}
                         totalMarketsCount={markets.length}
                         onSelectSymbol={(sym) => {
                           setCustomDeskPool(null);
@@ -3549,6 +3620,8 @@ export function App() {
                 consensus={forumConsensus}
                 verifiedNews={verifiedNews}
                 topOpportunities={topMultiAgentOpportunities}
+                positionAudits={positionAudits}
+                walkForwardOutcomes={walkForwardOutcomes}
                 totalMarketsCount={markets.length}
                 onSelectSymbol={(sym) => {
                   setCustomDeskPool(null);

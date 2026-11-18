@@ -430,6 +430,60 @@ export interface SpecialistAgentVote {
   timestamp: string;
 }
 
+export interface PreTradeChecklistItem {
+  id: string;
+  label: string;
+  passed: boolean;
+  valueText: string;
+  agentOwner: SpecialistAgentId;
+}
+
+export interface PositionAccuracyAuditItem {
+  positionId: string;
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  exchange: ExchangeId;
+  leverage: number;
+  sizeUsd: number;
+  entryPrice: number;
+  currentPrice: number;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+  breakevenLocked: boolean;
+  unrealizedPnlUsd: number;
+  unrealizedPnlPct: number;
+  alignedAgentsCount: number;
+  checklistPassedCount: number;
+  isAccurateVerdict: boolean;
+  verdictStatus:
+    | 'TEPAT_PROFIT_AKTIF'
+    | 'TEPAT_BREAKEVEN_LOCKED'
+    | 'FLOATING_TERKENDALI_WHALE_SUPPORT'
+    | 'SALAH_INVALIDATED_AUTO_SCRATCH';
+  verdictLabel: string;
+  agentBreakdown: string;
+}
+
+export interface WalkForwardTradeOutcome {
+  id: string;
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  entryBarLabel: string;
+  exitBarLabel: string;
+  entryPrice: number;
+  exitPrice: number;
+  stopLossPrice: number;
+  takeProfitPrice: number;
+  leverage: number;
+  mfePct: number; // Max Favorable Excursion (leveraged %)
+  maePct: number; // Max Adverse Excursion (leveraged %)
+  realizedPnlPct: number;
+  realizedPnlUsd: number;
+  outcome: 'WIN_TAKE_PROFIT' | 'WIN_TRAIL_PROFIT' | 'PROTECTED_BREAKEVEN' | 'LOSS_STOP';
+  isAccurate: boolean;
+  reason: string;
+}
+
 export interface MultiAgentForumConsensus {
   symbol: string;
   baseAsset: string;
@@ -452,6 +506,8 @@ export interface MultiAgentForumConsensus {
   recommendedSizeUsd: number;
   executiveSummary: string;
   votes: SpecialistAgentVote[];
+  checklist: PreTradeChecklistItem[];
+  checklistPassedCount: number;
   ta: TechnicalAnalysisSnapshot;
   whale: WhaleWalletIntelSnapshot;
   newsCredibilityAvg: number;

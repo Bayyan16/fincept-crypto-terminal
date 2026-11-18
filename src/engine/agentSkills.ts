@@ -1,6 +1,7 @@
 import {
   AgentBrainDecision,
   AgentPosition,
+  CandlePoint,
   ClosedTradeLog,
   MarketPair,
   OrderbookState,
@@ -147,7 +148,8 @@ export function scanAllMarketMultiAgentCandidates(
   recentClosedSymbol: string | null,
   minLiquidityGate: number,
   baseOrderSizeUsd: number,
-  verifiedNews: VerifiedNewsItem[] = INITIAL_VERIFIED_NEWS
+  verifiedNews: VerifiedNewsItem[] = INITIAL_VERIFIED_NEWS,
+  candlesMap?: Record<string, CandlePoint[]>
 ): LowRiskHunterCandidate[] {
   const openSymbols = new Set(openPositions.map((p) => p.symbol));
 
@@ -172,25 +174,46 @@ export function scanAllMarketMultiAgentCandidates(
     const depthSafety = Math.min(100, 66 + m.depthPlusMinusHalfPctUsd / 1_200_000);
     const liquiditySafety = Math.round(spreadSafety * 0.45 + depthSafety * 0.55);
 
-    // Agent 2: Quantitative Technical Analysis on market
-    const ta = computeTechnicalAnalysisSnapshot(m);
+    // Agent 2: Quantitative Technical Analysis on market using real OHLCV candles if loaded
+    const realCandles =
+      candlesMap?.[`${m.symbol}_15m`] ||
+      candlesMap?.[`${m.symbol}_5m`] ||
+      candlesMap?.[`${m.symbol}_1h`] ||
+      candlesMap?.[m.hlCoin];
+    const ta = computeTechnicalAnalysisSnapshot(m, realCandles);
+    const taSide: 'LONG' | 'SHORT' =
+      ta.recommendedSide !== 'WAIT'
+        ? ta.recommendedSide
+        : m.change24h >= 0
+          ? 'LONG'
+          : 'SHORT';
 
-    // Agent 1: Bloomberg 90-100% Verified News check
-    const coinNews = validNews.filter((n) =>
-      n.affectedAssets.some(
-        (a) => a.toUpperCase() === m.baseAsset.toUpperCase() || a === 'ALL'
-      )
+    // Agent 1: Bloomberg 90-100% Verified News check (Zero Long-Bias: direct news overrides generic 'ALL')
+    const directCoinNews = validNews.filter((n) =>
+      n.affectedAssets.some((a) => a.toUpperCase() === m.baseAsset.toUpperCase())
     );
+    const coinNews =
+      directCoinNews.length > 0
+        ? directCoinNews
+        : validNews.filter((n) => n.affectedAssets.includes('ALL'));
+
     const newsCredibilityPct =
       coinNews.length > 0
         ? Math.round(
             coinNews.reduce((acc, n) => acc + n.credibilityScore, 0) / coinNews.length
           )
         : 95;
-    const newsBullish = coinNews.filter((n) => n.sentiment === 'BULLISH').length;
-    const newsBearish = coinNews.filter((n) => n.sentiment === 'BEARISH').length;
+
+    const directBull = directCoinNews.filter((n) => n.sentiment === 'BULLISH').length;
+    const directBear = directCoinNews.filter((n) => n.sentiment === 'BEARISH').length;
     const newsSide: 'LONG' | 'SHORT' =
-      newsBearish > newsBullish ? 'SHORT' : 'LONG';
+      directBear > directBull
+        ? 'SHORT'
+        : directBull > directBear
+          ? 'LONG'
+          : m.change24h < -0.6 || (taSide === 'SHORT' && m.whaleNetFlow1hUsd < 0)
+            ? 'SHORT'
+            : 'LONG';
 
     // Agent 3: Institutional Whale Flow
     const whaleSide: 'LONG' | 'SHORT' =
@@ -200,13 +223,6 @@ export function scanAllMarketMultiAgentCandidates(
     const whaleAlignment = Math.round(
       Math.min(99, 55 + obiStrength * 0.5 + whaleStrength * 0.6)
     );
-
-    const taSide: 'LONG' | 'SHORT' =
-      ta.recommendedSide !== 'WAIT'
-        ? ta.recommendedSide
-        : m.change24h >= 0
-          ? 'LONG'
-          : 'SHORT';
 
     const votes = [newsSide, taSide, whaleSide];
     const longVotes = votes.filter((v) => v === 'LONG').length;
@@ -294,35 +310,21 @@ export function selectBestLowRiskHunterCandidate(
   recentClosedSymbol: string | null,
   minLiquidityGate: number,
   baseOrderSizeUsd: number,
-  verifiedNews: VerifiedNewsItem[] = INITIAL_VERIFIED_NEWS
+  verifiedNews: VerifiedNewsItem[] = INITIAL_VERIFIED_NEWS,
+  candlesMap?: Record<string, CandlePoint[]>
 ): LowRiskHunterCandidate | null {
-  const candidates = scanAllMarketMultiAgentOpportunitiesOrCandidates(
+  const candidates = scanAllMarketMultiAgentCandidates(
     markets,
     openPositions,
     recentClosedSymbol,
     minLiquidityGate,
     baseOrderSizeUsd,
-    verifiedNews
+    verifiedNews,
+    candlesMap
   );
-  return candidates[0] || null;
-}
-
-function scanAllMarketMultiAgentOpportunitiesOrCandidates(
-  markets: MarketPair[],
-  openPositions: AgentPosition[],
-  recentClosedSymbol: string | null,
-  minLiquidityGate: number,
-  baseOrderSizeUsd: number,
-  verifiedNews: VerifiedNewsItem[]
-): LowRiskHunterCandidate[] {
-  return scanAllMarketMultiAgentCandidates(
-    markets,
-    openPositions,
-    recentClosedSymbol,
-    minLiquidityGate,
-    baseOrderSizeUsd,
-    verifiedNews
-  );
+  // Strict Precision Gate: prefer candidates with >= 3/4 agents aligned
+  const highConviction = candidates.find((c) => (c.alignedAgentsCount ?? 4) >= 3);
+  return highConviction || candidates[0] || null;
 }
 
 export interface DeepPositionEvaluation {

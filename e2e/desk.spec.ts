@@ -104,13 +104,14 @@ test.describe('terminal desk', () => {
     await taoBtn.click();
     await expect(page.getByText('TAO-PERP').first()).toBeVisible();
 
-    // 3. 4-Agent Consensus Forum inside AGENT_BRAIN sub-tab
+    // 3. 4-Agent Consensus Forum + 8-Point Precision Checklist inside AGENT_BRAIN sub-tab
     await page.getByTestId('subtab-AGENT_BRAIN').click();
     await expect(page.getByTestId('multi-agent-forum')).toBeVisible();
     await expect(page.getByTestId('forum-agent-card-BLOOMBERG_NEWS')).toBeVisible();
     await expect(page.getByTestId('forum-agent-card-TECHNICAL_ANALYST')).toBeVisible();
     await expect(page.getByTestId('forum-agent-card-WHALE_WALLET')).toBeVisible();
     await expect(page.getByTestId('forum-agent-card-EXECUTION_PRECISION')).toBeVisible();
+    await expect(page.getByTestId('forum-precision-checklist')).toBeVisible();
 
     // 4. Bloomberg News 90-100% Verified tab
     await page.getByTestId('forum-tab-news').click();
@@ -120,5 +121,9 @@ test.describe('terminal desk', () => {
     // 5. All-Market Scanner tab
     await page.getByTestId('forum-tab-scanner').click();
     await expect(page.getByTestId('forum-all-market-scanner')).toBeVisible();
+
+    // 6. Position Accuracy & Walk-Forward Backtest Audit tab
+    await page.getByTestId('forum-tab-accuracy-audit').click();
+    await expect(page.getByTestId('forum-accuracy-audit-panel')).toBeVisible();
   });
 });

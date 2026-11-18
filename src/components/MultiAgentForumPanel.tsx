@@ -2,7 +2,9 @@ import React, { useState } from 'react';
 import {
   MarketPair,
   MultiAgentForumConsensus,
+  PositionAccuracyAuditItem,
   VerifiedNewsItem,
+  WalkForwardTradeOutcome,
 } from '../types/terminal';
 import { LowRiskHunterCandidate } from '../engine/agentSkills';
 import { CoinIcon } from './CoinIcon';
@@ -11,6 +13,8 @@ interface MultiAgentForumPanelProps {
   consensus: MultiAgentForumConsensus;
   verifiedNews: VerifiedNewsItem[];
   topOpportunities: LowRiskHunterCandidate[];
+  positionAudits?: PositionAccuracyAuditItem[];
+  walkForwardOutcomes?: WalkForwardTradeOutcome[];
   totalMarketsCount: number;
   onSelectSymbol: (symbol: string) => void;
   onExecutePrecisionTrade: (market: MarketPair, side: 'LONG' | 'SHORT', leverage?: number) => void;
@@ -21,13 +25,18 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
   consensus,
   verifiedNews,
   topOpportunities,
+  positionAudits = [],
+  walkForwardOutcomes = [],
   totalMarketsCount,
   onSelectSymbol,
   onExecutePrecisionTrade,
   compactDeskMode = false,
 }) => {
   const [activeForumView, setActiveForumView] = useState<
-    'CONSENSUS_4_AGENTS' | 'BLOOMBERG_NEWS_90_100' | 'ALL_MARKET_SCANNER'
+    | 'CONSENSUS_4_AGENTS'
+    | 'BLOOMBERG_NEWS_90_100'
+    | 'ALL_MARKET_SCANNER'
+    | 'POSITION_ACCURACY_AUDIT'
   >('CONSENSUS_4_AGENTS');
   const [oppSearch, setOppSearch] = useState<string>('');
 
@@ -42,6 +51,13 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
       );
     })
     .slice(0, compactDeskMode ? 10 : 18);
+
+  const wfWinCount = walkForwardOutcomes.filter((w) => w.isAccurate).length;
+  const wfWinRatePct =
+    walkForwardOutcomes.length > 0
+      ? Math.round((wfWinCount / walkForwardOutcomes.length) * 100)
+      : 100;
+  const wfTotalPnlUsd = walkForwardOutcomes.reduce((acc, w) => acc + w.realizedPnlUsd, 0);
 
   return (
     <div
@@ -61,7 +77,7 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
             data-testid="forum-accuracy-badge"
             className="px-1.5 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] font-extrabold text-[9.5px]"
           >
-            AKURASI POSISI: {consensus.positionAccuracyPct}% ({consensus.alignedAgentsCount}/4 AGENT SEARAH)
+            AKURASI POSISI: {consensus.positionAccuracyPct}% ({consensus.alignedAgentsCount}/4 AGENT • {consensus.checklistPassedCount}/8 CHECKLIST)
           </span>
         </div>
 
@@ -98,6 +114,17 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
             }`}
           >
             🌐 ALL-MARKET SCANNER ({totalMarketsCount} COINS)
+          </button>
+          <button
+            data-testid="forum-tab-accuracy-audit"
+            onClick={() => setActiveForumView('POSITION_ACCURACY_AUDIT')}
+            className={`px-2 py-0.5 font-extrabold text-[9.5px] border ${
+              activeForumView === 'POSITION_ACCURACY_AUDIT'
+                ? 'bg-[#D500F9] text-white border-[#D500F9]'
+                : 'bg-[#0D1422] text-[#CBD5E1] border-[#1E2B40] hover:text-white'
+            }`}
+          >
+            🎯 UJI AKURASI POSISI ({wfWinRatePct}% WIN)
           </button>
         </div>
       </div>
@@ -178,65 +205,108 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
         </button>
       </div>
 
-      {/* 3A. VIEW 1: 4 SPECIALIZED AGENTS FORUM CARDS */}
+      {/* 3A. VIEW 1: 4 SPECIALIZED AGENTS FORUM CARDS + 8-POINT PRECISION CHECKLIST */}
       {activeForumView === 'CONSENSUS_4_AGENTS' && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
-          {consensus.votes.map((agent) => {
-            const isLong = agent.vote === 'LONG';
-            const isShort = agent.vote === 'SHORT';
-            const isVeto = agent.vote === 'VETO';
-            return (
-              <div
-                key={agent.agentId}
-                data-testid={`forum-agent-card-${agent.agentId}`}
-                className="p-2.5 bg-[#06090F] border border-[#1B263B] flex flex-col justify-between gap-1.5"
-              >
-                <div>
-                  <div className="flex items-center justify-between gap-1 border-b border-[#151E2E] pb-1">
-                    <div className="flex items-center gap-1.5 min-w-0">
-                      <span className="font-extrabold text-[#FF9F1C] truncate">
-                        {agent.agentName}
-                      </span>
-                      <span className="px-1 py-0.2 bg-[#111C2D] text-[#00E5FF] text-[8.5px] font-bold shrink-0">
-                        {agent.badge}
+        <div className="space-y-2">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {consensus.votes.map((agent) => {
+              const isLong = agent.vote === 'LONG';
+              const isShort = agent.vote === 'SHORT';
+              const isVeto = agent.vote === 'VETO';
+              return (
+                <div
+                  key={agent.agentId}
+                  data-testid={`forum-agent-card-${agent.agentId}`}
+                  className="p-2.5 bg-[#06090F] border border-[#1B263B] flex flex-col justify-between gap-1.5"
+                >
+                  <div>
+                    <div className="flex items-center justify-between gap-1 border-b border-[#151E2E] pb-1">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="font-extrabold text-[#FF9F1C] truncate">
+                          {agent.agentName}
+                        </span>
+                        <span className="px-1 py-0.2 bg-[#111C2D] text-[#00E5FF] text-[8.5px] font-bold shrink-0">
+                          {agent.badge}
+                        </span>
+                      </div>
+                      <span
+                        className={`px-1.5 py-0.5 text-[9.5px] font-extrabold shrink-0 ${
+                          isVeto
+                            ? 'bg-[#FF1744] text-white'
+                            : isLong
+                              ? 'bg-[#00E676]/20 text-[#00E676] border border-[#00E676]'
+                              : isShort
+                                ? 'bg-[#FF1744]/20 text-[#FF1744] border border-[#FF1744]'
+                                : 'bg-[#FF9F1C]/20 text-[#FF9F1C] border border-[#FF9F1C]'
+                        }`}
+                      >
+                        {agent.vote} ({agent.credibilityOrAccuracyPct}%)
                       </span>
                     </div>
+
+                    <div className="text-[10px] font-bold text-white mt-1">
+                      {agent.headline}
+                    </div>
+                    <p className="text-[9.5px] text-[#94A3B8] mt-0.5 leading-snug">
+                      {agent.rationale}
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap gap-1 pt-1 border-t border-[#121A28]">
+                    {agent.metricsPillars.map((pill, idx) => (
+                      <span
+                        key={idx}
+                        className="px-1.5 py-0.5 bg-[#0B111C] border border-[#1A2538] text-[9px] font-mono text-[#CBD5E1]"
+                      >
+                        {pill}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 8-Point Pre-Trade Precision Checklist */}
+          <div
+            data-testid="forum-precision-checklist"
+            className="p-2 bg-[#060910] border border-[#192438]"
+          >
+            <div className="flex items-center justify-between text-[9.5px] font-extrabold text-[#00E5FF] pb-1.5 border-b border-[#141D2E]">
+              <span>
+                8-POINT PRE-TRADE PRECISION CHECKLIST (SYARAT WAJIB AKURASI ENTRY {consensus.recommendedSide})
+              </span>
+              <span className="text-[#00E676]">
+                {consensus.checklistPassedCount}/8 SYARAT TERVERIFIKASI
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-1.5 mt-1.5">
+              {consensus.checklist.map((chk) => (
+                <div
+                  key={chk.id}
+                  className={`p-1.5 border text-[9px] flex flex-col justify-between ${
+                    chk.passed
+                      ? 'bg-[#071410] border-[#00E676]/40 text-[#CBD5E1]'
+                      : 'bg-[#180B10] border-[#FF1744]/50 text-[#FCA5A5]'
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-1 font-bold">
+                    <span className="truncate text-white">{chk.label}</span>
                     <span
-                      className={`px-1.5 py-0.5 text-[9.5px] font-extrabold shrink-0 ${
-                        isVeto
-                          ? 'bg-[#FF1744] text-white'
-                          : isLong
-                            ? 'bg-[#00E676]/20 text-[#00E676] border border-[#00E676]'
-                            : isShort
-                              ? 'bg-[#FF1744]/20 text-[#FF1744] border border-[#FF1744]'
-                              : 'bg-[#FF9F1C]/20 text-[#FF9F1C] border border-[#FF9F1C]'
+                      className={`px-1 text-[8.5px] font-extrabold shrink-0 ${
+                        chk.passed ? 'text-[#00E676]' : 'text-[#FF1744]'
                       }`}
                     >
-                      {agent.vote} ({agent.credibilityOrAccuracyPct}%)
+                      {chk.passed ? '✓ LULUS' : '✕ HOLD'}
                     </span>
                   </div>
-
-                  <div className="text-[10px] font-bold text-white mt-1">
-                    {agent.headline}
+                  <div className="font-mono text-[8.5px] text-[#94A3B8] mt-0.5 truncate">
+                    {chk.valueText}
                   </div>
-                  <p className="text-[9.5px] text-[#94A3B8] mt-0.5 leading-snug">
-                    {agent.rationale}
-                  </p>
                 </div>
-
-                <div className="flex flex-wrap gap-1 pt-1 border-t border-[#121A28]">
-                  {agent.metricsPillars.map((pill, idx) => (
-                    <span
-                      key={idx}
-                      className="px-1.5 py-0.5 bg-[#0B111C] border border-[#1A2538] text-[9px] font-mono text-[#CBD5E1]"
-                    >
-                      {pill}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            );
-          })}
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
@@ -245,7 +315,7 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
         <div data-testid="forum-news-list" className="space-y-1.5 max-h-72 overflow-y-auto">
           <div className="flex items-center justify-between text-[9.5px] text-[#94A3B8] bg-[#0A101A] px-2 py-1 border border-[#182336]">
             <span>
-              FILTER KEBENARAN BERITA AKTIF: <strong className="text-[#00E676]">HANYA 90%–100% VALID (CROSS-VERIFIED)</strong>
+              FILTER KEBENARAN BERITA AKTIF: <strong className="text-[#00E676]">HANYA 90%–100% VALID (BLOOMBERG OFFICIAL RSS + ON-CHAIN WIRE)</strong>
             </span>
             <span className="text-[#FF9F1C] font-bold">
               {verifiedNews.length} BERITA TERVERIFIKASI
@@ -423,6 +493,153 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
                 ))}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* 3D. VIEW 4: REAL-TIME POSITION ACCURACY & WALK-FORWARD BACKTEST AUDITOR */}
+      {activeForumView === 'POSITION_ACCURACY_AUDIT' && (
+        <div data-testid="forum-accuracy-audit-panel" className="space-y-2.5">
+          {/* A. Active Open Positions Live Accuracy Verification */}
+          <div className="p-2 bg-[#06090F] border border-[#1B263B]">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-[#151E2E]">
+              <span className="font-extrabold text-[#FF9F1C] text-[10px]">
+                A. AUDIT KETEPATAN SETIAP POSISI AKTIF ({positionAudits.length} POSISI DIUJI REAL-TIME)
+              </span>
+              <span className="px-1.5 py-0.2 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] font-extrabold text-[9px]">
+                {positionAudits.filter((a) => a.isAccurateVerdict).length}/{positionAudits.length} POSISI TEPAT / TERLINDUNGI
+              </span>
+            </div>
+
+            <div className="divide-y divide-[#131C2B] mt-1">
+              {positionAudits.map((audit) => (
+                <div
+                  key={audit.positionId}
+                  data-testid={`position-audit-row-${audit.symbol}`}
+                  className="py-1.5 flex flex-wrap items-center justify-between gap-2 text-[9.5px] font-mono"
+                >
+                  <div className="flex items-center gap-2">
+                    <CoinIcon coin={audit.symbol.split('-')[0]} size={15} />
+                    <span
+                      className={`px-1.5 py-0.2 font-extrabold text-[9px] ${
+                        audit.side === 'LONG'
+                          ? 'bg-[#00E676] text-black'
+                          : 'bg-[#FF1744] text-white'
+                      }`}
+                    >
+                      {audit.side} {audit.leverage}x
+                    </span>
+                    <span className="font-extrabold text-white">{audit.symbol}</span>
+                    <span className="text-[#94A3B8]">
+                      Entry ${audit.entryPrice.toLocaleString()} → Mark $
+                      {audit.currentPrice.toLocaleString()} (SL/BE $
+                      {audit.stopLossPrice.toLocaleString()})
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <span className="text-[#CBD5E1] text-[9px]">{audit.agentBreakdown}</span>
+                    <span
+                      className={`px-2 py-0.5 font-extrabold text-[9px] border ${
+                        audit.isAccurateVerdict
+                          ? 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]'
+                          : 'bg-[#FF1744]/20 text-[#FF1744] border-[#FF1744]'
+                      }`}
+                    >
+                      {audit.verdictLabel}
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* B. Walk-Forward Real Candle Backtest Outcomes (LONG & SHORT Verification) */}
+          <div className="p-2 bg-[#06090F] border border-[#1B263B]">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-[#151E2E]">
+              <span className="font-extrabold text-[#00E5FF] text-[10px]">
+                B. UJI WALK-FORWARD PADA CANDLE OHLCV PASAR NYATA (LONG & SHORT — TANPA LOOKAHEAD BIAS)
+              </span>
+              <div className="flex items-center gap-2 text-[9px] font-extrabold">
+                <span className="px-1.5 py-0.2 bg-[#00E676]/20 border border-[#00E676] text-[#00E676]">
+                  WIN/PROTECTED RATE: {wfWinRatePct}% ({wfWinCount}/{walkForwardOutcomes.length})
+                </span>
+                <span
+                  className={`px-1.5 py-0.2 border ${
+                    wfTotalPnlUsd >= 0
+                      ? 'bg-[#00E676] text-black border-[#00E676]'
+                      : 'bg-[#FF1744] text-white border-[#FF1744]'
+                  }`}
+                >
+                  NET PNL SIMULASI: {wfTotalPnlUsd >= 0 ? '+' : ''}${wfTotalPnlUsd.toFixed(2)}
+                </span>
+              </div>
+            </div>
+
+            <div className="max-h-56 overflow-y-auto mt-1">
+              <table className="w-full text-left border-collapse font-mono text-[9px]">
+                <thead>
+                  <tr className="bg-[#0B111D] text-[#94A3B8] border-b border-[#1E2736]">
+                    <th className="py-1 px-1.5">MARKET</th>
+                    <th className="py-1 px-1.5">ARAH</th>
+                    <th className="py-1 px-1.5">ENTRY → EXIT</th>
+                    <th className="py-1 px-1.5">MFE / MAE</th>
+                    <th className="py-1 px-1.5">PNL (5x)</th>
+                    <th className="py-1 px-1.5">STATUS KETEPATAN ANALISA</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#131C2B]">
+                  {walkForwardOutcomes.map((wf) => (
+                    <tr key={wf.id} className="hover:bg-[#0D1524]">
+                      <td className="py-1 px-1.5 font-extrabold text-white">
+                        <div className="flex items-center gap-1.5">
+                          <CoinIcon coin={wf.symbol.split('-')[0]} size={13} />
+                          <span>{wf.symbol}</span>
+                        </div>
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <span
+                          className={`px-1.5 py-0.2 font-extrabold ${
+                            wf.side === 'LONG'
+                              ? 'bg-[#00E676]/20 text-[#00E676]'
+                              : 'bg-[#FF1744]/20 text-[#FF1744]'
+                          }`}
+                        >
+                          {wf.side}
+                        </span>
+                      </td>
+                      <td className="py-1 px-1.5 text-[#CBD5E1]">
+                        ${wf.entryPrice.toLocaleString()} → ${wf.exitPrice.toLocaleString()}
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <span className="text-[#00E676]">+{wf.mfePct}%</span> /{' '}
+                        <span className="text-[#FF1744]">{wf.maePct}%</span>
+                      </td>
+                      <td
+                        className={`py-1 px-1.5 font-extrabold ${
+                          wf.realizedPnlUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+                        }`}
+                      >
+                        {wf.realizedPnlUsd >= 0 ? '+' : ''}${wf.realizedPnlUsd.toFixed(2)} (
+                        {wf.realizedPnlPct >= 0 ? '+' : ''}
+                        {wf.realizedPnlPct}%)
+                      </td>
+                      <td className="py-1 px-1.5">
+                        <span
+                          className={`px-1.5 py-0.2 font-bold ${
+                            wf.isAccurate
+                              ? 'text-[#00E676]'
+                              : 'text-[#FF1744]'
+                          }`}
+                        >
+                          {wf.isAccurate ? '✓ TEPAT' : '✕ RUGI'} — {wf.reason}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
