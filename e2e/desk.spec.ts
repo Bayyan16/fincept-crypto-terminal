@@ -81,4 +81,38 @@ test.describe('terminal desk', () => {
     await page.getByText('⚡ WHALE INFLOW').click();
     await expect(page.getByTestId('subtab-OVERVIEW')).toBeVisible();
   });
+
+  test('4-agent consensus forum, verified news (90-100%), TA indicators and all-market explorer work', async ({
+    page,
+  }) => {
+    await gotoDesk(page);
+
+    // 1. TA strip & indicator toggles on chart
+    await expect(page.getByTestId('chart-ta-strip')).toBeVisible();
+    await expect(page.getByTestId('chart-legend-bb-btn')).toBeVisible();
+    await expect(page.getByTestId('chart-legend-pa-sr-btn')).toBeVisible();
+
+    // 2. All-Crypto Market Sector Explorer (beyond Top 10 CMC)
+    await page.getByTestId('watchlist-sector-AI_DEPIN').click();
+    await expect(page.getByTestId('market-TAO-PERP')).toBeVisible();
+    await page.getByTestId('market-TAO-PERP').click();
+    await expect(page.getByText('TAO-PERP').first()).toBeVisible();
+
+    // 3. 4-Agent Consensus Forum inside AGENT_BRAIN sub-tab
+    await page.getByTestId('subtab-AGENT_BRAIN').click();
+    await expect(page.getByTestId('multi-agent-forum')).toBeVisible();
+    await expect(page.getByTestId('forum-agent-card-BLOOMBERG_NEWS')).toBeVisible();
+    await expect(page.getByTestId('forum-agent-card-TECHNICAL_ANALYST')).toBeVisible();
+    await expect(page.getByTestId('forum-agent-card-WHALE_WALLET')).toBeVisible();
+    await expect(page.getByTestId('forum-agent-card-EXECUTION_PRECISION')).toBeVisible();
+
+    // 4. Bloomberg News 90-100% Verified tab
+    await page.getByTestId('forum-tab-news').click();
+    await expect(page.getByTestId('forum-news-list')).toBeVisible();
+    expect(await page.getByTestId('verified-news-item').count()).toBeGreaterThanOrEqual(4);
+
+    // 5. All-Market Scanner tab
+    await page.getByTestId('forum-tab-scanner').click();
+    await expect(page.getByTestId('forum-all-market-scanner')).toBeVisible();
+  });
 });

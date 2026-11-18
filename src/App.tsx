@@ -10,7 +10,9 @@ import {
   ExecutionEnvironment,
   HlpVaultSummary,
   MarketPair,
+  MarketSector,
   OrderbookState,
+  VerifiedNewsItem,
   WalletConnectionState,
   WhalePositionItem,
   WhaleTransaction,
@@ -25,6 +27,7 @@ import {
   INITIAL_DEXSCREENER_POOLS,
   INITIAL_MARKETS,
   INITIAL_WHALE_TRANSACTIONS,
+  mergeDynamicAllCryptoMarkets,
 } from './engine/liveConnectors';
 import {
   computeAgentConfluenceMatrix,
@@ -32,8 +35,16 @@ import {
   INITIAL_AGENT_POSITIONS,
   INITIAL_BRAIN_DECISIONS,
   INITIAL_CLOSED_TRADES,
+  scanAllMarketMultiAgentCandidates,
   selectBestLowRiskHunterCandidate,
 } from './engine/agentSkills';
+import {
+  buildVerifiedMacroNewsFeed,
+  formatSmartPrice,
+  INITIAL_VERIFIED_NEWS,
+  runMultiAgentForumConsensus,
+} from './engine/multiAgentForum';
+import { MultiAgentForumPanel } from './components/MultiAgentForumPanel';
 import {
   connectBrowserExtensionWallet,
   executeRealOrderOnVenue,
@@ -186,6 +197,11 @@ export function App() {
   const [brainDecisions, setBrainDecisions] = useState<AgentBrainDecision[]>(
     INITIAL_BRAIN_DECISIONS
   );
+  const [verifiedNews, setVerifiedNews] = useState<VerifiedNewsItem[]>(INITIAL_VERIFIED_NEWS);
+  const [watchlistSectorFilter, setWatchlistSectorFilter] = useState<
+    'CORE_14' | 'ALL' | MarketSector | 'TOP_GAINERS'
+  >('CORE_14');
+  const [watchlistSearchQuery, setWatchlistSearchQuery] = useState<string>('');
   const [wallets, setWallets] = useState<WalletConnectionState[]>(() => loadSavedWallets());
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
 
@@ -213,7 +229,7 @@ export function App() {
   const [commandInput, setCommandInput] = useState('');
   const [commandFeedback, setCommandFeedback] = useState<string | null>(null);
   const [nodeFilter, setNodeFilter] = useState<string | null>(null);
-  const [clockStr, setClockStr] = useState('LIVE');
+  const [, setClockStr] = useState('LIVE');
 
   // Resizable Active Positions Lower Dock (Drag Up/Down between Chart & Table)
   const [positionsDockHeightPx, setPositionsDockHeightPx] = useState<number>(215);
@@ -273,7 +289,7 @@ export function App() {
     else if (mode === 'SPLIT') setPositionsDockHeightPx(215);
     else setPositionsDockHeightPx(Math.max(360, paneH - 135));
   };
-  const [liveFeedMode, setLiveFeedMode] = useState<{
+  const [, setLiveFeedMode] = useState<{
     hyperliquid: 'LIVE' | 'SIM_STREAM';
     binance: 'LIVE' | 'SIM_STREAM';
     dexscreener: 'LIVE' | 'SIM_STREAM';
@@ -317,6 +333,65 @@ export function App() {
 
   const candleKey = `${activePair.symbol}_${chartTimeframe}`;
   const currentCandles = candlesMap[candleKey] || [];
+
+  const forumConsensus = useMemo(
+    () =>
+      runMultiAgentForumConsensus(
+        activePair,
+        orderbook,
+        whaleTxs,
+        currentCandles,
+        verifiedNews,
+        whalePositions,
+        orderSizeUsdInput
+      ),
+    [
+      activePair,
+      orderbook,
+      whaleTxs,
+      currentCandles,
+      verifiedNews,
+      whalePositions,
+      orderSizeUsdInput,
+    ]
+  );
+
+  const topMultiAgentOpportunities = useMemo(
+    () =>
+      scanAllMarketMultiAgentCandidates(
+        markets,
+        positions,
+        lastClosedSymbol,
+        minLiquidityScoreGate,
+        orderSizeUsdInput,
+        verifiedNews
+      ),
+    [markets, positions, lastClosedSymbol, minLiquidityScoreGate, orderSizeUsdInput, verifiedNews]
+  );
+
+  const displayedWatchlistMarkets = useMemo(() => {
+    const q = watchlistSearchQuery.trim().toUpperCase();
+    if (q) {
+      return markets
+        .filter(
+          (m) =>
+            m.symbol.toUpperCase().includes(q) ||
+            m.baseAsset.toUpperCase().includes(q) ||
+            (m.sector || '').toUpperCase().includes(q)
+        )
+        .slice(0, 28);
+    }
+    if (watchlistSectorFilter === 'CORE_14') {
+      return markets.slice(0, 14);
+    }
+    if (watchlistSectorFilter === 'ALL') {
+      return markets.slice(0, 42);
+    }
+    if (watchlistSectorFilter === 'TOP_GAINERS') {
+      return [...markets].sort((a, b) => b.change24h - a.change24h).slice(0, 28);
+    }
+    return markets.filter((m) => m.sector === watchlistSectorFilter).slice(0, 28);
+  }, [markets, watchlistSectorFilter, watchlistSearchQuery]);
 
   // 1. Fetch Real Historical & Live OHLCV Candlesticks from Exchange Gateway
   useEffect(() => {
@@ -406,66 +481,32 @@ export function App() {
           dexscreener: snap.realDexPools?.length ? 'LIVE' : 'SIM_STREAM',
         });
 
-        setMarkets((prev) =>
-          prev.map((m) => {
-            const hlData = snap.hlAssets?.[m.hlCoin];
-            if (!hlData || !hlData.price) return m;
-
-            // Find matching real DEX TVL from DexScreener if available
-            const matchingPool = snap.realDexPools?.find((p) =>
-              p.symbol.startsWith(m.baseAsset)
-            );
-
-            // Compute live on-chain net whale flow for this coin from realOnChainTrades
-            const coinTrades = (snap.realOnChainTrades || []).filter(
-              (t) => t.symbol === m.symbol || t.symbol.startsWith(m.baseAsset)
-            );
-            const liveWhaleDelta = coinTrades.reduce(
-              (acc, t) => acc + (t.direction === 'BULLISH' ? t.sizeUsd : -t.sizeUsd),
-              0
-            );
-            const blendedWhaleNetFlow =
-              coinTrades.length > 0
-                ? Math.round(m.whaleNetFlow1hUsd * 0.7 + liveWhaleDelta * 4.5)
-                : m.whaleNetFlow1hUsd;
-            const updatedWhaleBias: MarketPair['whaleBias'] =
-              blendedWhaleNetFlow > 12_000_000
-                ? 'STRONG LONG'
-                : blendedWhaleNetFlow > 2_000_000
-                ? 'ACCUMULATING'
-                : blendedWhaleNetFlow < -10_000_000
-                ? 'STRONG SHORT'
-                : blendedWhaleNetFlow < -1_500_000
-                ? 'DISTRIBUTING'
-                : 'NEUTRAL';
-
-            return {
-              ...m,
-              price: hlData.price,
-              change24h: hlData.change24h,
-              high24h: hlData.high24h && hlData.high24h > 0 ? hlData.high24h : m.high24h,
-              low24h: hlData.low24h && hlData.low24h > 0 ? hlData.low24h : m.low24h,
-              volume24hUsd: hlData.volume24hUsd > 0 ? hlData.volume24hUsd : m.volume24hUsd,
-              openInterestUsd:
-                hlData.openInterestUsd > 0 ? hlData.openInterestUsd : m.openInterestUsd,
-              fundingRate: hlData.fundingRate,
-              dexPoolTvlUsd: matchingPool
-                ? matchingPool.liquidityTvlUsd
-                : Math.round(hlData.openInterestUsd * 0.18),
-              whaleNetFlow1hUsd: blendedWhaleNetFlow,
-              whaleBias: updatedWhaleBias,
-            };
-          })
-        );
+        setMarkets((prev) => {
+          const nextMarkets = mergeDynamicAllCryptoMarkets(
+            prev,
+            snap.hlAssets!,
+            snap.realDexPools,
+            snap.realOnChainTrades
+          );
+          setVerifiedNews(
+            buildVerifiedMacroNewsFeed(
+              nextMarkets,
+              snap.realOnChainTrades || whaleTxs,
+              snap.verifiedMacroNews
+            )
+          );
+          return nextMarkets;
+        });
 
         // Update the latest candle's close/high/low smoothly with live markPx ONLY if already anchored
         setCandlesMap((prev) => {
           const next = { ...prev };
           Object.keys(next).forEach((k) => {
             const sym = k.split('_')[0];
+            const baseCoin = sym.split('-')[0];
             const pairDef = INITIAL_MARKETS.find((x) => x.symbol === sym);
-            if (!pairDef) return;
-            const hlData = snap.hlAssets?.[pairDef.hlCoin];
+            const hlKey = pairDef?.hlCoin || baseCoin;
+            const hlData = snap.hlAssets?.[hlKey] || snap.hlAssets?.[ `k${baseCoin}` ];
             if (!hlData || !hlData.price) return;
             const list = next[k];
             if (!list || list.length === 0) return;
@@ -674,11 +715,9 @@ export function App() {
           const peak = Math.max(pos.peakPnlPct, pnlPct);
 
           const shouldLockBe = pos.breakevenLocked || pnlPct >= autoBreakevenTriggerPct;
-          const decimals = pos.entryPrice > 100 ? 2 : pos.entryPrice > 1 ? 3 : 4;
-          const bePrice =
-            pos.side === 'LONG'
-              ? Number((pos.entryPrice * 1.0004).toFixed(decimals))
-              : Number((pos.entryPrice * 0.9996).toFixed(decimals));
+          const bePrice = formatSmartPrice(
+            pos.side === 'LONG' ? pos.entryPrice * 1.0004 : pos.entryPrice * 0.9996
+          );
 
           const updatedBase: AgentPosition = {
             ...pos,
@@ -733,7 +772,14 @@ export function App() {
   ]);
 
   // Execute Real or Paper Order
-  const handleManualAgentEntry = async (side: 'LONG' | 'SHORT') => {
+  const handleManualAgentEntry = async (
+    side: 'LONG' | 'SHORT',
+    targetPairOverride?: MarketPair,
+    leverageOverride?: number
+  ) => {
+    const targetPair = targetPairOverride || activePair;
+    const targetLeverage = leverageOverride || leverageInput;
+
     if (circuitBreakerTriggered) {
       setCommandFeedback(
         '[CIRCUIT BREAKER ACTIVE] Daily drawdown limit reached. Reset Risk Guard before opening new positions.'
@@ -741,7 +787,7 @@ export function App() {
       return;
     }
 
-    const alreadyOpenSameSymbol = positions.some((p) => p.symbol === activePair.symbol);
+    const alreadyOpenSameSymbol = positions.some((p) => p.symbol === targetPair.symbol);
     if (!alreadyOpenSameSymbol && positions.length >= maxConcurrentPositions) {
       setCommandFeedback(
         `[MAX ${maxConcurrentPositions} LOW-RISK SLOTS FULL] Tutup / Take Profit salah satu posisi terlebih dahulu untuk menjaga batas risiko <= ${maxConcurrentPositions} posisi.`
@@ -749,27 +795,26 @@ export function App() {
       return;
     }
 
-    if (activePair.liquidityScore < minLiquidityScoreGate) {
+    if (targetPair.liquidityScore < minLiquidityScoreGate) {
       setCommandFeedback(
-        `[BLOCKED] ${activePair.symbol} Liquidity Score (${activePair.liquidityScore}) < Gate (${minLiquidityScoreGate})`
+        `[BLOCKED] ${targetPair.symbol} Liquidity Score (${targetPair.liquidityScore}) < Gate (${minLiquidityScoreGate})`
       );
       return;
     }
 
-    const entry =
+    const isSameAsActive = targetPair.symbol === activePair.symbol;
+    const entry = formatSmartPrice(
       side === 'LONG'
-        ? orderbook.bids[0]?.price || activePair.price
-        : orderbook.asks[0]?.price || activePair.price;
+        ? (isSameAsActive ? orderbook.bids[0]?.price : undefined) || targetPair.price
+        : (isSameAsActive ? orderbook.asks[0]?.price : undefined) || targetPair.price
+    );
 
-    const decimals = entry > 100 ? 2 : entry > 1 ? 3 : 4;
-    const beLockStop =
-      side === 'LONG'
-        ? Number((entry * 1.0003).toFixed(decimals))
-        : Number((entry * 0.9997).toFixed(decimals));
-    const tp =
-      side === 'LONG'
-        ? Number((entry * 1.018).toFixed(decimals))
-        : Number((entry * 0.982).toFixed(decimals));
+    const beLockStop = formatSmartPrice(
+      side === 'LONG' ? entry * 1.0003 : entry * 0.9997
+    );
+    const tp = formatSmartPrice(
+      side === 'LONG' ? entry * 1.018 : entry * 0.982
+    );
 
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(
@@ -782,12 +827,12 @@ export function App() {
     if (isReal) {
       setIsExecutingOrder(true);
       setCommandFeedback(
-        `Signing & transmitting ${executionEnv} ${side} order ($${orderSizeUsdInput}) to ${activePair.primaryExchange}...`
+        `Signing & transmitting ${executionEnv} ${side} order ($${orderSizeUsdInput}) to ${targetPair.primaryExchange}...`
       );
       const execRes = await executeRealOrderOnVenue({
-        exchange: activePair.primaryExchange,
-        symbol: activePair.symbol,
-        binanceSymbol: activePair.binanceSymbol,
+        exchange: targetPair.primaryExchange,
+        symbol: targetPair.symbol,
+        binanceSymbol: targetPair.binanceSymbol,
         side,
         orderPurpose: 'ENTRY_MAKER',
         sizeUsd: orderSizeUsdInput,
@@ -803,9 +848,9 @@ export function App() {
           {
             id: `bd-err-${Date.now()}`,
             timestamp: timeStr,
-            symbol: activePair.symbol,
+            symbol: targetPair.symbol,
             category: 'EXECUTION',
-            headline: `Order Real-Money Ditolak pada ${activePair.primaryExchange}`,
+            headline: `Order Real-Money Ditolak pada ${targetPair.primaryExchange}`,
             detail: execRes.error || 'Periksa kredensial API Key / Wallet Anda.',
             score: 0,
             tone: 'WARN',
@@ -821,14 +866,14 @@ export function App() {
       id: `pos-${Date.now()}`,
       orderId: realOrderId,
       isRealMoney: isReal,
-      symbol: activePair.symbol,
+      symbol: targetPair.symbol,
       side,
-      marketType: activePair.marketType,
-      exchange: activePair.primaryExchange,
+      marketType: targetPair.marketType,
+      exchange: targetPair.primaryExchange,
       entryPrice: entry,
-      currentPrice: activePair.price,
+      currentPrice: targetPair.price,
       sizeUsd: orderSizeUsdInput,
-      leverage: leverageInput,
+      leverage: targetLeverage,
       stopLossPrice: beLockStop,
       takeProfitPrice: tp,
       breakevenLocked: true,
@@ -839,11 +884,11 @@ export function App() {
       openedAt: timeStr,
       statusReason: `${
         isReal ? `[${executionEnv} #${realOrderId}]` : '[PAPER]'
-      } Maker Post-Only @ $${entry.toLocaleString()} | BREAKEVEN+FEE LOCKED`,
+      } Maker Post-Only @ $${entry.toLocaleString()} | BREAKEVEN+FEE LOCKED (4-Agent Forum Verified)`,
     };
 
     setPositions((prev) =>
-      [newPos, ...prev.filter((p) => p.symbol !== activePair.symbol)].slice(
+      [newPos, ...prev.filter((p) => p.symbol !== targetPair.symbol)].slice(
         0,
         maxConcurrentPositions
       )
@@ -852,22 +897,22 @@ export function App() {
       {
         id: `bd-${Date.now()}`,
         timestamp: timeStr,
-        symbol: activePair.symbol,
+        symbol: targetPair.symbol,
         category: 'EXECUTION',
         headline: `${isReal ? '🔥 REAL ORDER' : 'PAPER ORDER'} ${side} ${
-          activePair.symbol
-        } ($${orderSizeUsdInput.toLocaleString()} @ ${leverageInput}x) via ${
-          activePair.primaryExchange
+          targetPair.symbol
+        } ($${orderSizeUsdInput.toLocaleString()} @ ${targetLeverage}x) via ${
+          targetPair.primaryExchange
         }`,
         detail: `Order ID: ${realOrderId} | Entry: $${entry.toLocaleString()} (Post-Only Maker). Auto-Breakeven Lock @ +${autoBreakevenTriggerPct}%.`,
-        score: confluence.totalConfluence,
+        score: forumConsensus.consensusScore,
         tone: side === 'LONG' ? 'BULLISH' : 'BEARISH',
       },
       ...prev,
     ]);
     setCommandFeedback(
       `✓ Executed ${isReal ? executionEnv : 'PAPER'} ${side} ${
-        activePair.symbol
+        targetPair.symbol
       } (#${realOrderId}) @ $${entry.toLocaleString()}`
     );
   };
@@ -882,7 +927,8 @@ export function App() {
       positions,
       lastClosedSymbol,
       minLiquidityScoreGate,
-      orderSizeUsdInput
+      orderSizeUsdInput,
+      verifiedNews
     );
     if (!candidate) return;
 
@@ -1202,12 +1248,37 @@ export function App() {
     }
   };
 
+  const handleExecuteForumPrecisionTrade = (
+    targetMarket: MarketPair,
+    side: 'LONG' | 'SHORT',
+    overrideLeverage?: number
+  ) => {
+    const matched = markets.find((m) => m.symbol === targetMarket.symbol) || targetMarket;
+    setCustomDeskPool(null);
+    setSelectedSymbol(matched.symbol);
+    if (overrideLeverage) {
+      setLeverageInput(overrideLeverage);
+    }
+    handleManualAgentEntry(side, matched, overrideLeverage);
+  };
+
   const handleCommandSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     const cmd = commandInput.trim().toLowerCase();
     if (!cmd) return;
 
-    if (cmd.includes('btc')) setSelectedSymbol('BTC-PERP');
+    const cleanToken = cmd.replace(/^\//, '').replace(/-perp|-usdc|-sol$/i, '').toUpperCase();
+    const matchedMarket = markets.find(
+      (m) =>
+        m.baseAsset.toUpperCase() === cleanToken ||
+        m.symbol.toUpperCase() === cmd.replace(/^\//, '').toUpperCase() ||
+        m.hlCoin.toUpperCase() === cleanToken
+    );
+
+    if (matchedMarket) {
+      setCustomDeskPool(null);
+      setSelectedSymbol(matchedMarket.symbol);
+    } else if (cmd.includes('btc')) setSelectedSymbol('BTC-PERP');
     else if (cmd.includes('eth')) setSelectedSymbol('ETH-PERP');
     else if (cmd.includes('xrp')) setSelectedSymbol('XRP-PERP');
     else if (cmd.includes('bnb')) setSelectedSymbol('BNB-PERP');
@@ -1226,7 +1297,8 @@ export function App() {
     else if (cmd.includes('wallet') || cmd.includes('connect') || cmd.includes('api'))
       setIsWalletModalOpen(true);
     else if (cmd.includes('dex')) setActiveTopTab('DEX_SCREENER');
-    else if (cmd.includes('skill') || cmd.includes('agent')) setActiveTopTab('AGENT_SKILLS');
+    else if (cmd.includes('skill') || cmd.includes('agent') || cmd.includes('forum') || cmd.includes('news'))
+      setActiveTopTab('AGENT_SKILLS');
     else if (cmd.includes('long')) handleManualAgentEntry('LONG');
     else if (cmd.includes('short')) handleManualAgentEntry('SHORT');
     else if (cmd.includes('kill') || cmd.includes('flatten')) handleEmergencyFlattenAll();
@@ -1635,10 +1707,64 @@ export function App() {
         </div>
       </nav>
 
-      {/* 3. SEAMLESS MULTI-MARKET WATCHLIST GRID (Zero Clipping Across All Zoom/Viewport Widths) */}
-      <div className="px-3 py-1 bg-[#070A0F] border-b border-[#1E2736] text-[10px] w-full">
-        <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 min-[2100px]:grid-cols-[repeat(14,minmax(0,1fr))] gap-1 w-full">
-          {markets.map((m) => {
+      {/* 3. SEAMLESS MULTI-MARKET WATCHLIST GRID & ALL-CRYPTO SECTOR EXPLORER (235+ Markets) */}
+      <div className="px-3 py-1 bg-[#070A0F] border-b border-[#1E2736] text-[10px] w-full space-y-1">
+        <div className="flex flex-wrap items-center justify-between gap-1.5">
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-[9px] text-[#FF9F1C] font-extrabold mr-1">
+              MARKET UNIVERSE ({markets.length}):
+            </span>
+            {(
+              [
+                { id: 'CORE_14', label: 'CORE 14' },
+                { id: 'ALL', label: `🌐 ALL CRYPTO (${markets.length})` },
+                { id: 'AI_DEPIN', label: '🤖 AI & DEPIN' },
+                { id: 'MEME_ALPHA', label: '🔥 MEME & ALPHA' },
+                { id: 'DEFI_RWA', label: '🏦 DEFI & RWA' },
+                { id: 'L1_L2', label: '⛓️ L1 & L2' },
+                { id: 'TOP_GAINERS', label: '🚀 TOP GAINERS' },
+              ] as const
+            ).map((cat) => (
+              <button
+                key={cat.id}
+                data-testid={`watchlist-sector-${cat.id}`}
+                onClick={() => {
+                  setWatchlistSectorFilter(cat.id);
+                  setWatchlistSearchQuery('');
+                }}
+                className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
+                  watchlistSectorFilter === cat.id && !watchlistSearchQuery
+                    ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
+                    : 'bg-[#0C121D] text-[#94A3B8] border-[#1A2538] hover:text-white'
+                }`}
+              >
+                {cat.label}
+              </button>
+            ))}
+          </div>
+
+          <div className="flex items-center gap-1">
+            <input
+              type="text"
+              data-testid="watchlist-market-search"
+              value={watchlistSearchQuery}
+              onChange={(e) => setWatchlistSearchQuery(e.target.value)}
+              placeholder={`Cari dari ${markets.length} market (PEPE, TAO, ONDO, ARB, WIF...)`}
+              className="px-2 py-0.5 bg-[#05080D] border border-[#1E2B42] text-white text-[9.5px] w-56 focus:outline-none"
+            />
+            {watchlistSearchQuery && (
+              <button
+                onClick={() => setWatchlistSearchQuery('')}
+                className="px-1.5 py-0.5 bg-[#162032] text-[#FF9F1C] text-[9px] font-bold border border-[#FF9F1C]/40"
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 min-[2100px]:grid-cols-[repeat(14,minmax(0,1fr))] gap-1 w-full max-h-24 overflow-y-auto">
+          {displayedWatchlistMarkets.map((m) => {
             const isSel = m.symbol === selectedSymbol;
             const pct1d = Number.isFinite(m.change24h) ? m.change24h : 0;
             const isUp = pct1d >= 0;
@@ -2074,7 +2200,7 @@ export function App() {
                           {/* Quick Coin Selector inside Orderbook */}
                           <div className="flex items-center gap-1 flex-wrap">
                             <span className="text-[9.5px] text-[#94A3B8] mr-1">PILIH COIN:</span>
-                            {markets.map((m) => (
+                            {markets.slice(0, 18).map((m) => (
                               <button
                                 key={m.symbol}
                                 onClick={() => setSelectedSymbol(m.symbol)}
@@ -2444,9 +2570,29 @@ export function App() {
                   })()}
 
                   {activeSubTab === 'AGENT_BRAIN' && (
-                    <div key="AGENT_BRAIN" className="anim-fade flex flex-col h-full bg-[#06080C] p-2.5 overflow-y-auto space-y-1.5 text-[10.5px]">
-                      <div className="text-[#FF9F1C] font-extrabold border-b border-[#1E2736] pb-1">
-                        AUTONOMOUS AGENT REASONING & SKILL TELEMETRY
+                    <div key="AGENT_BRAIN" className="anim-fade flex flex-col h-full bg-[#06080C] p-2.5 overflow-y-auto space-y-2 text-[10.5px]">
+                      <div className="text-[#FF9F1C] font-extrabold border-b border-[#1E2736] pb-1 flex items-center justify-between">
+                        <span>AUTONOMOUS AGENT REASONING & 4-AGENT CONSENSUS FORUM</span>
+                        <span className="text-[#00E676] text-[9.5px]">
+                          BBG NEWS {forumConsensus.newsCredibilityAvg}% VALID • TA {forumConsensus.ta.taScore}/100 • WHALE {forumConsensus.whale.whaleScore}/100
+                        </span>
+                      </div>
+
+                      <MultiAgentForumPanel
+                        consensus={forumConsensus}
+                        verifiedNews={verifiedNews}
+                        topOpportunities={topMultiAgentOpportunities}
+                        totalMarketsCount={markets.length}
+                        onSelectSymbol={(sym) => {
+                          setCustomDeskPool(null);
+                          setSelectedSymbol(sym);
+                        }}
+                        onExecutePrecisionTrade={handleExecuteForumPrecisionTrade}
+                        compactDeskMode
+                      />
+
+                      <div className="text-[#00E5FF] font-extrabold text-[10px] pt-1">
+                        LIVE EXECUTION & SKILL TELEMETRY LOG
                       </div>
                       {brainDecisions.map((b) => (
                         <div
@@ -2469,38 +2615,42 @@ export function App() {
                 {/* Right Confluence & 10-Level Live Orderbook Column (No Clipped Text) */}
                 <div className="col-span-3 flex flex-col p-2.5 bg-[#070A0F] overflow-y-auto text-[10.5px] space-y-3">
                   <div>
-                    <div className="text-[#D500F9] font-extrabold text-[10px] border-b border-[#1E2736] pb-0.5 mb-1.5 uppercase">
-                      AGENT SKILL SCORES
+                    <div className="text-[#D500F9] font-extrabold text-[10px] border-b border-[#1E2736] pb-0.5 mb-1.5 uppercase flex items-center justify-between">
+                      <span>4-AGENT FORUM SCORES</span>
+                      <span className="text-[#00E676]">{forumConsensus.alignedAgentsCount}/4</span>
                     </div>
                     <div className="space-y-1">
                       <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">LIQUIDITY GATE</span>
-                        <span className="text-[#00E676] font-bold">
-                          {confluence.liquidityScore}/100
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">ORDERFLOW OBI</span>
+                        <span className="text-[#94A3B8]">1. BBG NEWS VALID</span>
                         <span className="text-[#FF9F1C] font-bold">
-                          {confluence.orderflowScore}/100
+                          {forumConsensus.newsCredibilityAvg}%
                         </span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">WHALE PIPELINE</span>
+                        <span className="text-[#94A3B8]">2. TECHNICAL PA</span>
                         <span className="text-[#00E5FF] font-bold">
-                          {confluence.whaleScore}/100
+                          {forumConsensus.ta.taScore}/100
                         </span>
                       </div>
                       <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">SAFETY GUARD</span>
+                        <span className="text-[#94A3B8]">3. WHALE WALLET</span>
                         <span className="text-[#00E676] font-bold">
-                          {confluence.microLossSafetyScore}/100
+                          {forumConsensus.whale.whaleScore}/100
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-[#94A3B8]">4. PRECISION R:R</span>
+                        <span className="text-[#00E676] font-bold">
+                          1:{forumConsensus.riskRewardRatio} ({forumConsensus.positionAccuracyPct}%)
                         </span>
                       </div>
                     </div>
-                    <div className="mt-1.5 py-1 text-center font-extrabold text-[10px] border border-[#00E676] bg-[#00E676]/15 text-[#00E676]">
-                      {confluence.recommendedAction.replace(/_/g, ' ')}
-                    </div>
+                    <button
+                      onClick={() => setActiveSubTab('AGENT_BRAIN')}
+                      className="w-full mt-1.5 py-1 text-center font-extrabold text-[10px] border border-[#00E676] bg-[#00E676]/15 hover:bg-[#00E676] hover:text-black text-[#00E676]"
+                    >
+                      {forumConsensus.finalVerdict.replace(/_/g, ' ')} ({forumConsensus.recommendedSide})
+                    </button>
                   </div>
 
                   {/* Expanded Live Orderbook Ladder (5 Asks + Mid + 5 Bids, properly aligned) */}
@@ -3394,6 +3544,20 @@ export function App() {
         {/* TAB 3: AGENT BRAIN & REAL-MONEY RISK GUARD */}
         {activeTopTab === 'AGENT_SKILLS' && (
           <div key="AGENT_SKILLS" className="anim-panel p-4 h-full overflow-y-auto bg-[#06080C] grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="lg:col-span-2">
+              <MultiAgentForumPanel
+                consensus={forumConsensus}
+                verifiedNews={verifiedNews}
+                topOpportunities={topMultiAgentOpportunities}
+                totalMarketsCount={markets.length}
+                onSelectSymbol={(sym) => {
+                  setCustomDeskPool(null);
+                  setSelectedSymbol(sym);
+                }}
+                onExecutePrecisionTrade={handleExecuteForumPrecisionTrade}
+              />
+            </div>
+
             <div className="p-4 bg-[#090D14] border border-[#1E2736] space-y-4">
               <div className="border-b border-[#1E2736] pb-2">
                 <h3 className="text-sm font-extrabold text-[#FF9F1C]">

@@ -1,5 +1,10 @@
 import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AgentPosition, CandlePoint, MarketPair, OrderbookState } from '../types/terminal';
+import {
+  computeBollingerBandsSeries,
+  computeEmaSeries,
+  computeTechnicalAnalysisSnapshot,
+} from '../engine/multiAgentForum';
 
 export type ChartInterval = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
 
@@ -27,6 +32,8 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
   const [showWhaleZones, setShowWhaleZones] = useState(true);
   const [showBotLevels, setShowBotLevels] = useState(true);
   const [showEma, setShowEma] = useState(true);
+  const [showBollinger, setShowBollinger] = useState(true);
+  const [showStructureLevels, setShowStructureLevels] = useState(true);
 
   // Horizontal Bar Zoom & Pan State
   // visibleCount: how many bars are visible horizontally (min 8 bars for deep zoom-in, max 140 bars)
@@ -126,19 +133,36 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     [candles, startIdx, endIdx]
   );
 
-  // Compute EMA-20 across all candles and slice to visible window
-  const visibleEma = useMemo(() => {
-    if (!candles.length) return [];
-    const k = 2 / (20 + 1);
-    const emaAll: number[] = [];
-    let prev = candles[0].close;
-    for (let i = 0; i < candles.length; i++) {
-      const val = i === 0 ? candles[i].close : candles[i].close * k + prev * (1 - k);
-      emaAll.push(val);
-      prev = val;
-    }
-    return emaAll.slice(startIdx, endIdx);
-  }, [candles, startIdx, endIdx]);
+  // Compute EMA-20, EMA-50, EMA-200 & Bollinger Bands (20, 2) across all candles and slice to visible window
+  const { visibleEma20, visibleEma50, visibleEma200, visibleBbUpper, visibleBbLower } =
+    useMemo(() => {
+      if (!candles.length) {
+        return {
+          visibleEma20: [] as number[],
+          visibleEma50: [] as number[],
+          visibleEma200: [] as number[],
+          visibleBbUpper: [] as number[],
+          visibleBbLower: [] as number[],
+        };
+      }
+      const closes = candles.map((c) => c.close);
+      const ema20All = computeEmaSeries(closes, 20);
+      const ema50All = computeEmaSeries(closes, 50);
+      const ema200All = computeEmaSeries(closes, Math.min(200, Math.max(55, closes.length)));
+      const bbAll = computeBollingerBandsSeries(closes, 20, 2);
+      return {
+        visibleEma20: ema20All.slice(startIdx, endIdx),
+        visibleEma50: ema50All.slice(startIdx, endIdx),
+        visibleEma200: ema200All.slice(startIdx, endIdx),
+        visibleBbUpper: bbAll.upper.slice(startIdx, endIdx),
+        visibleBbLower: bbAll.lower.slice(startIdx, endIdx),
+      };
+    }, [candles, startIdx, endIdx]);
+
+  const taSnapshot = useMemo(
+    () => computeTechnicalAnalysisSnapshot(pair, candles),
+    [pair, candles]
+  );
 
   // Horizontal Bar Zoom Handler (Zooms centered around hovered candle if available)
   const handleBarZoom = useCallback(
@@ -441,14 +465,21 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
   const whaleBidWall = orderbook?.bids.find((b) => b.isWhaleWall) || orderbook?.bids[2];
   const whaleAskWall = orderbook?.asks.find((a) => a.isWhaleWall) || orderbook?.asks[2];
 
-  // Build EMA polyline points clipped to plot area
-  const emaPoints = visibleEma
-    .map((val, idx) => {
-      const x = padLeft + idx * stepX + stepX / 2;
-      const y = Math.max(padTop, Math.min(padTop + plotH, priceToY(val)));
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(' ');
+  // Build EMA 20 / 50 / 200 & Bollinger Bands polyline points clipped to plot area
+  const buildPolyline = (arr: number[]) =>
+    arr
+      .map((val, idx) => {
+        const x = padLeft + idx * stepX + stepX / 2;
+        const y = Math.max(padTop, Math.min(padTop + plotH, priceToY(val)));
+        return `${x.toFixed(1)},${y.toFixed(1)}`;
+      })
+      .join(' ');
+
+  const emaPoints = buildPolyline(visibleEma20);
+  const ema50Points = buildPolyline(visibleEma50);
+  const ema200Points = buildPolyline(visibleEma200);
+  const bbUpperPoints = buildPolyline(visibleBbUpper);
+  const bbLowerPoints = buildPolyline(visibleBbLower);
 
   // Crosshair fade: keep the last known hover position rendered briefly so the 130ms opacity
   // fade-out is visible; live hover data is used while the cursor is inside the plot area.
@@ -634,8 +665,33 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                 ? 'border-[#FF9F1C] text-[#FF9F1C] bg-[#FF9F1C]/10 font-bold hover:shadow-[0_0_8px_rgba(255,159,28,0.35)]'
                 : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#FF9F1C]/50'
             }`}
+            title="Tampilkan EMA 20 (Oranye), EMA 50 (Cyan), & EMA 200 (Ungu)"
           >
-            EMA20
+            EMA 20/50/200
+          </button>
+          <button
+            data-testid="chart-legend-bb-btn"
+            onClick={() => setShowBollinger(!showBollinger)}
+            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${
+              showBollinger
+                ? 'border-[#D500F9] text-[#D500F9] bg-[#D500F9]/10 font-bold hover:shadow-[0_0_8px_rgba(213,0,249,0.35)]'
+                : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#D500F9]/50'
+            }`}
+            title="Tampilkan Bollinger Bands (20, 2σ)"
+          >
+            BB(20,2)
+          </button>
+          <button
+            data-testid="chart-legend-pa-sr-btn"
+            onClick={() => setShowStructureLevels(!showStructureLevels)}
+            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${
+              showStructureLevels
+                ? 'border-[#00E676] text-[#00E676] bg-[#00E676]/10 font-bold hover:shadow-[0_0_8px_rgba(0,230,118,0.35)]'
+                : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#00E676]/50'
+            }`}
+            title="Tampilkan Level Kunci Price Action Support (S1) & Resistance (R1)"
+          >
+            KEY S/R
           </button>
           <button
             data-testid="chart-legend-whale-walls-btn"
@@ -701,6 +757,74 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
         )}
         <div className="text-[9.5px] text-[#00E5FF]">
           Wheel: Zoom ({clampedVisibleCount} bars) | Drag Chart: Geser Kiri/Kanan/Atas/Bawah | Drag Sumbu Kanan: Skala Harga
+        </div>
+      </div>
+
+      {/* 2B. Technical Analysis Agent Live Indicator Strip (PA Structure, RSI, MACD, EMA 20/50/200, Bollinger, Key S/R) */}
+      <div
+        data-testid="chart-ta-strip"
+        className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2.5 py-1 bg-[#05080F] border-b border-[#162032] text-[9.5px] font-mono"
+      >
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
+          <span>
+            <span className="text-[#94A3B8]">PA STRUCTURE: </span>
+            <strong
+              className={
+                taSnapshot.recommendedSide === 'LONG'
+                  ? 'text-[#00E676]'
+                  : taSnapshot.recommendedSide === 'SHORT'
+                    ? 'text-[#FF1744]'
+                    : 'text-[#FF9F1C]'
+              }
+            >
+              {taSnapshot.structureLabel}
+            </strong>
+          </span>
+          <span>
+            <span className="text-[#94A3B8]">RSI(14): </span>
+            <strong
+              className={
+                taSnapshot.rsi14 >= 70
+                  ? 'text-[#FF1744]'
+                  : taSnapshot.rsi14 <= 32
+                    ? 'text-[#00E676]'
+                    : 'text-[#00E5FF]'
+              }
+            >
+              {taSnapshot.rsi14}
+            </strong>
+          </span>
+          <span>
+            <span className="text-[#94A3B8]">MACD: </span>
+            <strong
+              className={
+                taSnapshot.macdHistogram >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+              }
+            >
+              {taSnapshot.macdState.replace(/_/g, ' ')} ({taSnapshot.macdHistogram >= 0 ? '+' : ''}
+              {taSnapshot.macdHistogram})
+            </strong>
+          </span>
+          <span className="hidden md:inline">
+            <span className="text-[#FF9F1C]">EMA20:</span> {formatPx(taSnapshot.ema20)}{' '}
+            <span className="text-[#00E5FF]">EMA50:</span> {formatPx(taSnapshot.ema50)}{' '}
+            <span className="text-[#D500F9]">EMA200:</span> {formatPx(taSnapshot.ema200)}
+          </span>
+          <span className="hidden xl:inline">
+            <span className="text-[#D500F9]">BB(20,2) %B:</span>{' '}
+            <strong className="text-white">{taSnapshot.bbPercentB}</strong>
+          </span>
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[#00E676]">
+            KEY S1: <strong>${formatPx(taSnapshot.support1)}</strong>
+          </span>
+          <span className="text-[#FF1744]">
+            KEY R1: <strong>${formatPx(taSnapshot.resistance1)}</strong>
+          </span>
+          <span className="px-1.5 py-0.2 bg-[#111B2C] border border-[#00E5FF]/40 text-[#00E5FF] font-extrabold">
+            TA SCORE: {taSnapshot.taScore}/100 ({taSnapshot.recommendedSide})
+          </span>
         </div>
       </div>
 
@@ -880,13 +1004,102 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                 </g>
               )}
 
-            {/* EMA-20 Line */}
+            {/* Key Price Action Structure Support S1 & Resistance R1 Lines */}
+            {showStructureLevels &&
+              taSnapshot.support1 >= minPrice &&
+              taSnapshot.support1 <= maxPrice && (
+                <g>
+                  <line
+                    x1={padLeft}
+                    y1={priceToY(taSnapshot.support1)}
+                    x2={width - padRight}
+                    y2={priceToY(taSnapshot.support1)}
+                    stroke="#00E676"
+                    strokeOpacity="0.65"
+                    strokeWidth="1.1"
+                    strokeDasharray="5 3"
+                  />
+                  <text
+                    x={width - padRight - 145}
+                    y={priceToY(taSnapshot.support1) - 3}
+                    className="fill-[#00E676] text-[8px] font-bold opacity-90"
+                  >
+                    KEY SUPPORT S1 @ ${formatPx(taSnapshot.support1)}
+                  </text>
+                </g>
+              )}
+
+            {showStructureLevels &&
+              taSnapshot.resistance1 >= minPrice &&
+              taSnapshot.resistance1 <= maxPrice && (
+                <g>
+                  <line
+                    x1={padLeft}
+                    y1={priceToY(taSnapshot.resistance1)}
+                    x2={width - padRight}
+                    y2={priceToY(taSnapshot.resistance1)}
+                    stroke="#FF1744"
+                    strokeOpacity="0.65"
+                    strokeWidth="1.1"
+                    strokeDasharray="5 3"
+                  />
+                  <text
+                    x={width - padRight - 155}
+                    y={priceToY(taSnapshot.resistance1) + 9}
+                    className="fill-[#FF1744] text-[8px] font-bold opacity-90"
+                  >
+                    KEY RESISTANCE R1 @ ${formatPx(taSnapshot.resistance1)}
+                  </text>
+                </g>
+              )}
+
+            {/* Bollinger Bands (20, 2σ) Upper & Lower Lines */}
+            {showBollinger && bbUpperPoints && (
+              <polyline
+                fill="none"
+                stroke="#D500F9"
+                strokeWidth="0.95"
+                strokeOpacity="0.55"
+                strokeDasharray="3 2"
+                points={bbUpperPoints}
+              />
+            )}
+            {showBollinger && bbLowerPoints && (
+              <polyline
+                fill="none"
+                stroke="#D500F9"
+                strokeWidth="0.95"
+                strokeOpacity="0.55"
+                strokeDasharray="3 2"
+                points={bbLowerPoints}
+              />
+            )}
+
+            {/* EMA-20 (Amber), EMA-50 (Cyan), EMA-200 (Magenta) Lines */}
+            {showEma && ema200Points && (
+              <polyline
+                fill="none"
+                stroke="#D500F9"
+                strokeWidth="1.1"
+                strokeOpacity="0.65"
+                points={ema200Points}
+              />
+            )}
+            {showEma && ema50Points && (
+              <polyline
+                fill="none"
+                stroke="#00E5FF"
+                strokeWidth="1.2"
+                strokeOpacity="0.8"
+                points={ema50Points}
+              />
+            )}
             {showEma && emaPoints && (
               <polyline
                 fill="none"
                 stroke="#FF9F1C"
-                strokeWidth="1.3"
-                strokeOpacity="0.85"
+                strokeWidth="1.35"
+                strokeOpacity="0.92"
                 points={emaPoints}
               />
             )}

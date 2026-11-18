@@ -6,11 +6,73 @@ import {
   ExchangeId,
   HlpVaultSummary,
   MarketPair,
+  MarketSector,
   OrderbookLevel,
   OrderbookState,
+  VerifiedNewsItem,
   WhalePositionItem,
   WhaleTransaction,
 } from '../types/terminal';
+
+function createQuickMarket(
+  symbol: string,
+  baseAsset: string,
+  hlCoin: string,
+  sector: MarketSector,
+  cmcRank: number,
+  price: number,
+  change24h: number,
+  volume24hUsd: number,
+  openInterestUsd: number,
+  whaleNetFlow1hUsd: number,
+  primaryExchange: ExchangeId = 'HYPERLIQUID',
+  chainNetwork = 'Hyperliquid L1 / Multi-Exchange'
+): MarketPair {
+  const high24h = Number((price * (1 + Math.max(0.018, Math.abs(change24h) / 100))).toPrecision(5));
+  const low24h = Number((price * (1 - Math.max(0.018, Math.abs(change24h) / 100))).toPrecision(5));
+  const obiScore = Number(
+    Math.max(-0.65, Math.min(0.65, (whaleNetFlow1hUsd / Math.max(1_000_000, volume24hUsd * 0.04)) * 0.35)).toFixed(2)
+  );
+  const whaleBias: MarketPair['whaleBias'] =
+    whaleNetFlow1hUsd >= 6_000_000
+      ? 'STRONG LONG'
+      : whaleNetFlow1hUsd >= 1_000_000
+        ? 'ACCUMULATING'
+        : whaleNetFlow1hUsd <= -6_000_000
+          ? 'STRONG SHORT'
+          : whaleNetFlow1hUsd <= -1_000_000
+            ? 'DISTRIBUTING'
+            : 'NEUTRAL';
+  return {
+    symbol,
+    baseAsset,
+    quoteAsset: 'USDC',
+    hlCoin,
+    binanceSymbol: `${baseAsset.replace(/^k(?=[A-Z]{2,})/, '')}USDT`,
+    cmcRank,
+    marketCapUsd: Math.round(volume24hUsd * 7.5),
+    chainNetwork,
+    sector,
+    marketType: 'PERP',
+    primaryExchange,
+    supportedExchanges: ['HYPERLIQUID', 'BINANCE', 'BYBIT', 'OKX'],
+    price,
+    change24h,
+    high24h,
+    low24h,
+    volume24hUsd,
+    openInterestUsd,
+    fundingRate: change24h >= 0 ? 0.0095 : 0.0045,
+    spreadBps: volume24hUsd >= 300_000_000 ? 0.42 : 0.68,
+    depthPlusMinusHalfPctUsd: Math.max(3_200_000, Math.round(openInterestUsd * 0.045)),
+    dexPoolTvlUsd: Math.max(8_500_000, Math.round(openInterestUsd * 0.16)),
+    liquidityScore: volume24hUsd >= 400_000_000 ? 93 : volume24hUsd >= 150_000_000 ? 89 : 85,
+    obiScore,
+    cvdDelta15mUsd: Math.round(whaleNetFlow1hUsd * 0.58),
+    whaleNetFlow1hUsd,
+    whaleBias,
+  };
+}
 
 export const INITIAL_MARKETS: MarketPair[] = [
   {
@@ -405,7 +467,183 @@ export const INITIAL_MARKETS: MarketPair[] = [
     whaleNetFlow1hUsd: 4250000,
     whaleBias: 'STRONG LONG',
   },
+  // --- EXPANDED ALL-MARKET UNIVERSE (BEYOND TOP 10 CMC: L1/L2, AI/DePIN, DeFi/RWA, MEME, POW) ---
+  createQuickMarket('TON-PERP', 'TON', 'TON', 'L1_L2', 15, 3.64, 3.45, 420_000_000, 145_000_000, 5_400_000, 'BYBIT', 'TON Mainnet / Hyperliquid L1'),
+  createQuickMarket('DOT-PERP', 'DOT', 'DOT', 'L1_L2', 16, 4.82, 2.18, 380_000_000, 132_000_000, 3_900_000, 'BINANCE', 'Polkadot Relay / Hyperliquid L1'),
+  createQuickMarket('NEAR-PERP', 'NEAR', 'NEAR', 'AI_DEPIN', 17, 3.38, 6.24, 540_000_000, 195_000_000, 8_200_000, 'HYPERLIQUID', 'NEAR Protocol / AI Sharding'),
+  createQuickMarket('APT-PERP', 'APT', 'APT', 'L1_L2', 18, 6.42, 4.15, 460_000_000, 168_000_000, 6_100_000, 'BINANCE', 'Aptos Move L1 / Hyperliquid'),
+  createQuickMarket('ARB-PERP', 'ARB', 'ARB', 'L1_L2', 19, 0.485, 5.12, 510_000_000, 185_000_000, 7_300_000, 'HYPERLIQUID', 'Arbitrum One L2 Native'),
+  createQuickMarket('OP-PERP', 'OP', 'OP', 'L1_L2', 20, 0.892, 3.84, 390_000_000, 142_000_000, 4_600_000, 'BINANCE', 'Optimism Superchain L2'),
+  createQuickMarket('INJ-PERP', 'INJ', 'INJ', 'DEFI_RWA', 21, 14.25, 7.15, 410_000_000, 154_000_000, 7_850_000, 'HYPERLIQUID', 'Injective DeFi L1 / Hyperliquid'),
+  createQuickMarket('TIA-PERP', 'TIA', 'TIA', 'L1_L2', 22, 3.85, 4.92, 340_000_000, 128_000_000, 4_900_000, 'HYPERLIQUID', 'Celestia Modular DA'),
+  createQuickMarket('SEI-PERP', 'SEI', 'SEI', 'L1_L2', 23, 0.284, 5.68, 310_000_000, 112_000_000, 4_200_000, 'BINANCE', 'Sei Parallel EVM L1'),
+  createQuickMarket('TAO-PERP', 'TAO', 'TAO', 'AI_DEPIN', 24, 368.5, 9.42, 680_000_000, 245_000_000, 12_400_000, 'HYPERLIQUID', 'Bittensor Decentralized AI'),
+  createQuickMarket('RENDER-PERP', 'RENDER', 'RENDER', 'AI_DEPIN', 25, 4.46, 8.14, 490_000_000, 172_000_000, 8_900_000, 'BINANCE', 'Render GPU DePIN Network'),
+  createQuickMarket('FET-PERP', 'FET', 'FET', 'AI_DEPIN', 26, 0.785, 7.65, 430_000_000, 158_000_000, 6_700_000, 'BINANCE', 'ASI Artificial Superintelligence'),
+  createQuickMarket('WLD-PERP', 'WLD', 'WLD', 'AI_DEPIN', 27, 1.24, 6.82, 520_000_000, 182_000_000, 7_450_000, 'HYPERLIQUID', 'Worldcoin Identity / Optimism'),
+  createQuickMarket('AAVE-PERP', 'AAVE', 'AAVE', 'DEFI_RWA', 28, 218.4, 6.45, 590_000_000, 210_000_000, 9_800_000, 'HYPERLIQUID', 'Aave V3 Institutional Lending'),
+  createQuickMarket('UNI-PERP', 'UNI', 'UNI', 'DEFI_RWA', 29, 7.64, 4.38, 480_000_000, 165_000_000, 6_400_000, 'BINANCE', 'Uniswap V4 / Unichain'),
+  createQuickMarket('PENDLE-PERP', 'PENDLE', 'PENDLE', 'DEFI_RWA', 30, 3.42, 8.75, 370_000_000, 138_000_000, 7_900_000, 'HYPERLIQUID', 'Pendle Yield Tokenization'),
+  createQuickMarket('ONDO-PERP', 'ONDO', 'ONDO', 'DEFI_RWA', 31, 0.985, 7.92, 450_000_000, 162_000_000, 8_600_000, 'HYPERLIQUID', 'Ondo Institutional RWA Treasuries'),
+  createQuickMarket('ENA-PERP', 'ENA', 'ENA', 'DEFI_RWA', 32, 0.442, 6.18, 410_000_000, 148_000_000, 5_950_000, 'BYBIT', 'Ethena Synthetic Dollar Protocol'),
+  createQuickMarket('PEPE-PERP', 'PEPE', 'kPEPE', 'MEME_ALPHA', 33, 0.0114, 11.85, 920_000_000, 310_000_000, 14_200_000, 'HYPERLIQUID', 'Ethereum / Hyperliquid kPEPE'),
+  createQuickMarket('WIF-PERP', 'WIF', 'WIF', 'MEME_ALPHA', 34, 0.745, 10.42, 640_000_000, 215_000_000, 10_800_000, 'HYPERLIQUID', 'Solana Smart-Money Meme'),
+  createQuickMarket('BONK-PERP', 'BONK', 'kBONK', 'MEME_ALPHA', 35, 0.0168, 8.95, 480_000_000, 164_000_000, 7_600_000, 'HYPERLIQUID', 'Solana / Hyperliquid kBONK'),
+  createQuickMarket('SHIB-PERP', 'SHIB', 'kSHIB', 'MEME_ALPHA', 36, 0.0142, 5.24, 510_000_000, 175_000_000, 6_300_000, 'BINANCE', 'Ethereum / Hyperliquid kSHIB'),
+  createQuickMarket('LTC-PERP', 'LTC', 'LTC', 'L1_L2', 37, 96.4, 3.15, 530_000_000, 190_000_000, 6_800_000, 'BINANCE', 'Litecoin PoW / ETF Candidate'),
+  createQuickMarket('PAXG-PERP', 'PAXG', 'PAXG', 'DEFI_RWA', 38, 2915.0, 1.12, 260_000_000, 95_000_000, 4_100_000, 'HYPERLIQUID', 'Tokenized Sovereign Gold RWA'),
 ];
+
+const AI_SECTOR_SET = new Set(['TAO', 'RENDER', 'RNDR', 'FET', 'WLD', 'NEAR', 'ARKM', 'IO', 'AKT', 'VIRTUAL', 'AI16Z', 'GRASS', 'KAITO', 'FIL', 'AR']);
+const DEFI_RWA_SET = new Set(['AAVE', 'UNI', 'PENDLE', 'ONDO', 'ENA', 'MKR', 'SKY', 'LDO', 'CRV', 'GMX', 'DYDX', 'MORPHO', 'USUAL', 'PAXG', 'SNX', 'COMP', 'CAKE']);
+const MEME_SET = new Set(['DOGE', 'PEPE', 'kPEPE', 'WIF', 'BONK', 'kBONK', 'SHIB', 'kSHIB', 'FLOKI', 'kFLOKI', 'POPCAT', 'PENGU', 'FARTCOIN', 'TRUMP', 'PNUT', 'GOAT', 'BRETT', 'MEW', 'BOME', 'MEME', 'SPX', 'MOG', 'TURBO', 'NEIRO', 'kNEIRO']);
+const DEX_SET = new Set(['HYPE', 'JUP', 'RAY', 'ORCA', 'DRIFT', 'AERO']);
+
+export function classifyCoinSector(baseAsset: string, cmcRank?: number): MarketSector {
+  if (cmcRank && cmcRank <= 10) return 'TOP_10';
+  const clean = baseAsset.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase();
+  if (DEX_SET.has(clean) || DEX_SET.has(baseAsset)) return 'DEX_NATIVE';
+  if (AI_SECTOR_SET.has(clean)) return 'AI_DEPIN';
+  if (DEFI_RWA_SET.has(clean)) return 'DEFI_RWA';
+  if (MEME_SET.has(clean) || MEME_SET.has(baseAsset)) return 'MEME_ALPHA';
+  return 'L1_L2';
+}
+
+/**
+ * Dynamically merges the live Hyperliquid L1 asset universe (235+ perpetual markets)
+ * + real DEX pools into the terminal's tradable MarketPair list so the user and
+ * the 4-Agent Consensus Hunter can trade EVERY crypto market (not just Top 10 CMC).
+ */
+export function mergeDynamicAllCryptoMarkets(
+  prevMarkets: MarketPair[],
+  hlAssets: Record<string, any>,
+  realDexPools?: DexScreenerPoolItem[],
+  realOnChainTrades?: WhaleTransaction[]
+): MarketPair[] {
+  const updatedExisting = prevMarkets.map((m) => {
+    const hlData = hlAssets[m.hlCoin] || hlAssets[m.baseAsset];
+    const sector = m.sector || classifyCoinSector(m.baseAsset, m.cmcRank);
+    if (!hlData || !hlData.price) {
+      return { ...m, sector };
+    }
+
+    const matchingPool = realDexPools?.find((p) => p.symbol.startsWith(m.baseAsset));
+    const coinTrades = (realOnChainTrades || []).filter(
+      (t) => t.symbol === m.symbol || t.symbol.startsWith(m.baseAsset)
+    );
+    const liveWhaleDelta = coinTrades.reduce(
+      (acc, t) => acc + (t.direction === 'BULLISH' ? t.sizeUsd : -t.sizeUsd),
+      0
+    );
+    const blendedWhaleNetFlow =
+      coinTrades.length > 0
+        ? Math.round(m.whaleNetFlow1hUsd * 0.7 + liveWhaleDelta * 4.5)
+        : m.whaleNetFlow1hUsd;
+    const updatedWhaleBias: MarketPair['whaleBias'] =
+      blendedWhaleNetFlow > 10_000_000
+        ? 'STRONG LONG'
+        : blendedWhaleNetFlow > 1_500_000
+          ? 'ACCUMULATING'
+          : blendedWhaleNetFlow < -8_000_000
+            ? 'STRONG SHORT'
+            : blendedWhaleNetFlow < -1_200_000
+              ? 'DISTRIBUTING'
+              : 'NEUTRAL';
+
+    return {
+      ...m,
+      sector,
+      price: hlData.price,
+      change24h: hlData.change24h,
+      high24h: hlData.high24h && hlData.high24h > 0 ? hlData.high24h : m.high24h,
+      low24h: hlData.low24h && hlData.low24h > 0 ? hlData.low24h : m.low24h,
+      volume24hUsd: hlData.volume24hUsd > 0 ? hlData.volume24hUsd : m.volume24hUsd,
+      openInterestUsd: hlData.openInterestUsd > 0 ? hlData.openInterestUsd : m.openInterestUsd,
+      fundingRate: hlData.fundingRate,
+      dexPoolTvlUsd: matchingPool
+        ? matchingPool.liquidityTvlUsd
+        : Math.round(hlData.openInterestUsd * 0.18),
+      whaleNetFlow1hUsd: blendedWhaleNetFlow,
+      whaleBias: updatedWhaleBias,
+    };
+  });
+
+  const existingHlCoins = new Set<string>();
+  for (const m of updatedExisting) {
+    existingHlCoins.add(m.hlCoin.toUpperCase());
+    existingHlCoins.add(m.baseAsset.toUpperCase());
+  }
+
+  // Discover all remaining live Hyperliquid L1 perpetual markets with active pricing
+  const dynamicDiscovered: MarketPair[] = [];
+  const allHlList = Object.values(hlAssets || {}).filter(
+    (a: any) =>
+      a &&
+      typeof a.coin === 'string' &&
+      a.price > 0 &&
+      !existingHlCoins.has(a.coin.toUpperCase())
+  );
+
+  allHlList.sort((a: any, b: any) => (b.volume24hUsd || 0) - (a.volume24hUsd || 0));
+
+  allHlList.forEach((asset: any, idx: number) => {
+    const rawCoin: string = asset.coin;
+    const cleanBase = rawCoin.replace(/^k(?=[A-Z]{2,})/, '');
+    const symbol = `${cleanBase}-PERP`;
+    if (existingHlCoins.has(cleanBase.toUpperCase())) return;
+    existingHlCoins.add(cleanBase.toUpperCase());
+    existingHlCoins.add(rawCoin.toUpperCase());
+
+    const vol = Math.max(50_000, asset.volume24hUsd || 500_000);
+    const oi = Math.max(25_000, asset.openInterestUsd || Math.round(vol * 0.32));
+    const change = Number(asset.change24h || 0);
+    const estWhaleFlow = Math.round(
+      vol * 0.035 * (change >= 0 ? 1 : -1) * Math.min(2.5, Math.max(0.4, Math.abs(change) / 3))
+    );
+    const sector = classifyCoinSector(rawCoin);
+
+    dynamicDiscovered.push({
+      symbol,
+      baseAsset: cleanBase,
+      quoteAsset: 'USDC',
+      hlCoin: rawCoin,
+      binanceSymbol: `${cleanBase}USDT`,
+      cmcRank: 39 + idx,
+      marketCapUsd: Math.round(oi * 12),
+      chainNetwork: 'Hyperliquid L1 / Multi-Exchange Perp',
+      sector,
+      marketType: 'PERP',
+      primaryExchange: 'HYPERLIQUID',
+      supportedExchanges: ['HYPERLIQUID', 'BINANCE', 'BYBIT', 'OKX'],
+      price: asset.price,
+      change24h: change,
+      high24h: asset.high24h || Number((asset.price * 1.025).toPrecision(5)),
+      low24h: asset.low24h || Number((asset.price * 0.975).toPrecision(5)),
+      volume24hUsd: vol,
+      openInterestUsd: oi,
+      fundingRate: asset.fundingRate ?? 0.0085,
+      spreadBps: vol >= 50_000_000 ? 0.45 : vol >= 5_000_000 ? 0.75 : 1.15,
+      depthPlusMinusHalfPctUsd: Math.max(850_000, Math.round(oi * 0.06)),
+      dexPoolTvlUsd: Math.max(1_200_000, Math.round(oi * 0.18)),
+      liquidityScore: vol >= 50_000_000 ? 92 : vol >= 5_000_000 ? 86 : 80,
+      obiScore: Number(Math.max(-0.58, Math.min(0.58, change / 14)).toFixed(2)),
+      cvdDelta15mUsd: Math.round(estWhaleFlow * 0.55),
+      whaleNetFlow1hUsd: estWhaleFlow,
+      whaleBias:
+        estWhaleFlow >= 1_500_000
+          ? 'STRONG LONG'
+          : estWhaleFlow >= 250_000
+            ? 'ACCUMULATING'
+            : estWhaleFlow <= -1_500_000
+              ? 'STRONG SHORT'
+              : estWhaleFlow <= -250_000
+                ? 'DISTRIBUTING'
+                : 'NEUTRAL',
+    });
+  });
+
+  return [...updatedExisting, ...dynamicDiscovered];
+}
 
 export const INITIAL_DEXSCREENER_POOLS: DexScreenerPoolItem[] = [
   {
@@ -913,6 +1151,7 @@ export async function fetchBackendRealSnapshot(): Promise<{
   realOnChainTrades?: WhaleTransaction[];
   realChordLinks?: ChordFlowLink[];
   realAgentSignals?: any[];
+  verifiedMacroNews?: VerifiedNewsItem[];
 }> {
   try {
     const res = await fetch(`${API_BASE}/api/live/snapshot`);
@@ -924,6 +1163,7 @@ export async function fetchBackendRealSnapshot(): Promise<{
           raydiumConnected: Boolean(data.raydiumConnected),
           jupiterConnected: Boolean(data.jupiterConnected),
           liveBlocks: data.liveBlocks,
+          dexUniverseStats: data.dexUniverseStats,
           hlpVaultSummary: data.hlpVaultSummary,
           hlAssets: data.hlAssets,
           realWhalePositions: data.realWhalePositions,
@@ -933,6 +1173,7 @@ export async function fetchBackendRealSnapshot(): Promise<{
           realOnChainTrades: data.realOnChainTrades,
           realChordLinks: data.realChordLinks,
           realAgentSignals: data.realAgentSignals,
+          verifiedMacroNews: data.verifiedMacroNews,
         };
       }
     }
@@ -1009,10 +1250,9 @@ export async function fetchBackendRealOrderbook(
     // Only fall through if local backend proxy failed cleanly
   }
 
-  const HL_KNOWN_SET = new Set(['BTC', 'ETH', 'SOL', 'XRP', 'BNB', 'DOGE', 'ADA', 'TRX', 'AVAX', 'LINK', 'HYPE', 'SUI', 'JUP', 'ZEC']);
   const wrappedAliasMap: Record<string, string> = { WETH: 'ETH', WBTC: 'BTC', WSOL: 'SOL', WBNB: 'BNB', WHYPE: 'HYPE' };
   const safeHlCoin = wrappedAliasMap[hlCoin.toUpperCase()] || hlCoin;
-  if (!HL_KNOWN_SET.has(safeHlCoin.toUpperCase())) {
+  if (!safeHlCoin || safeHlCoin.length > 16) {
     return null;
   }
 

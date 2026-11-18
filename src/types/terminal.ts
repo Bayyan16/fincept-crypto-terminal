@@ -10,6 +10,14 @@ export type MarketType = 'PERP' | 'SPOT' | 'DEX_POOL';
 
 export type ExecutionEnvironment = 'PAPER_SANDBOX' | 'EXCHANGE_TESTNET' | 'REAL_MAINNET';
 
+export type MarketSector =
+  | 'TOP_10'
+  | 'L1_L2'
+  | 'AI_DEPIN'
+  | 'DEFI_RWA'
+  | 'MEME_ALPHA'
+  | 'DEX_NATIVE';
+
 export interface MarketPair {
   symbol: string;
   baseAsset: string;
@@ -19,6 +27,7 @@ export interface MarketPair {
   cmcRank?: number;
   marketCapUsd?: number;
   chainNetwork?: string;
+  sector?: MarketSector;
   marketType: MarketType;
   primaryExchange: ExchangeId;
   supportedExchanges: ExchangeId[];
@@ -213,7 +222,15 @@ export interface AgentBrainDecision {
   id: string;
   timestamp: string;
   symbol: string;
-  category: 'SKILL_LIQUIDITY' | 'SKILL_WHALE' | 'SKILL_ORDERFLOW' | 'SKILL_RISK_GUARD' | 'EXECUTION';
+  category:
+    | 'SKILL_LIQUIDITY'
+    | 'SKILL_WHALE'
+    | 'SKILL_ORDERFLOW'
+    | 'SKILL_RISK_GUARD'
+    | 'SKILL_NEWS_INTEL'
+    | 'SKILL_TECHNICAL_PA'
+    | 'FORUM_CONSENSUS'
+    | 'EXECUTION';
   headline: string;
   detail: string;
   score: number;
@@ -299,3 +316,145 @@ export interface DexUniverseStats {
   chainPoolCounts: Record<string, number>;
   chainUniqueTokenCounts: Record<string, number>;
 }
+
+export interface VerifiedNewsItem {
+  id: string;
+  timestamp: string;
+  source: string;
+  category:
+    | 'MACRO_FED'
+    | 'ETF_INSTITUTIONAL'
+    | 'REGULATORY_SEC'
+    | 'ONCHAIN_WHALE'
+    | 'PROTOCOL_CATALYST'
+    | 'EXCHANGE_FLOW';
+  headline: string;
+  summary: string;
+  affectedAssets: string[];
+  sentiment: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  credibilityScore: number; // Strictly 90 - 100% verified
+  impactScore: number; // 0 - 100 market sensitivity
+  verificationProof: string;
+  url?: string;
+}
+
+export interface TechnicalAnalysisSnapshot {
+  symbol: string;
+  price: number;
+  priceActionStructure:
+    | 'BULLISH_BOS_HH_HL'
+    | 'BEARISH_BOS_LH_LL'
+    | 'BULLISH_CHOCH_REVERSAL'
+    | 'BEARISH_CHOCH_REVERSAL'
+    | 'RANGE_ACCUMULATION';
+  structureLabel: string;
+  swingHigh: number;
+  swingLow: number;
+  support1: number;
+  support2: number;
+  resistance1: number;
+  resistance2: number;
+  distanceToSupportPct: number;
+  distanceToResistancePct: number;
+  ema20: number;
+  ema50: number;
+  ema200: number;
+  emaAlignment:
+    | 'BULLISH_STACK'
+    | 'BEARISH_STACK'
+    | 'GOLDEN_CROSS'
+    | 'DEATH_CROSS'
+    | 'MIXED_CONSOLIDATION';
+  emaAlignmentLabel: string;
+  rsi14: number;
+  rsiState:
+    | 'OVERSOLD_BOUNCE'
+    | 'BULLISH_MOMENTUM'
+    | 'NEUTRAL_BALANCE'
+    | 'BEARISH_MOMENTUM'
+    | 'OVERBOUGHT_EXHAUSTION';
+  macdLine: number;
+  macdSignal: number;
+  macdHistogram: number;
+  macdState: 'BULLISH_CROSS' | 'BULLISH_EXPANSION' | 'BEARISH_CROSS' | 'BEARISH_EXPANSION';
+  bbUpper: number;
+  bbMiddle: number;
+  bbLower: number;
+  bbPercentB: number;
+  bbWidthPct: number;
+  bbState:
+    | 'VOLATILITY_SQUEEZE'
+    | 'UPPER_BAND_WALK'
+    | 'LOWER_BAND_DEFENSE'
+    | 'MEAN_REVERSION_ZONE';
+  atr14: number;
+  atrPct: number;
+  taScore: number;
+  recommendedSide: 'LONG' | 'SHORT' | 'WAIT';
+  summary: string;
+}
+
+export interface WhaleWalletIntelSnapshot {
+  symbol: string;
+  netFlow1hUsd: number;
+  institutionalBias: 'STRONG_ACCUMULATION' | 'ACCUMULATING' | 'NEUTRAL' | 'DISTRIBUTING' | 'HEAVY_DUMP';
+  activeEntities: string[];
+  bullishTxCount: number;
+  bearishTxCount: number;
+  largestWhaleTxUsd: number;
+  hlpVaultSide: 'LONG' | 'SHORT' | 'FLAT';
+  hlpVaultNotionalUsd: number;
+  orderbookObiPct: number;
+  whaleScore: number;
+  recommendedSide: 'LONG' | 'SHORT' | 'WAIT';
+  summary: string;
+}
+
+export type SpecialistAgentId =
+  | 'BLOOMBERG_NEWS'
+  | 'TECHNICAL_ANALYST'
+  | 'WHALE_WALLET'
+  | 'EXECUTION_PRECISION';
+
+export interface SpecialistAgentVote {
+  agentId: SpecialistAgentId;
+  agentName: string;
+  badge: string;
+  specialty: string;
+  vote: 'LONG' | 'SHORT' | 'WAIT' | 'VETO';
+  score: number; // 0 - 100
+  credibilityOrAccuracyPct: number; // 90 - 100%
+  headline: string;
+  rationale: string;
+  metricsPillars: string[];
+  timestamp: string;
+}
+
+export interface MultiAgentForumConsensus {
+  symbol: string;
+  baseAsset: string;
+  timestamp: string;
+  finalVerdict: 'STRONG_LONG' | 'STRONG_SHORT' | 'WAIT_CONFIRMATION' | 'VETO_RISK_BLOCK';
+  recommendedSide: 'LONG' | 'SHORT';
+  consensusScore: number; // 0 - 100
+  positionAccuracyPct: number; // 0 - 100%
+  alignedAgentsCount: number; // 0 - 4
+  totalAgents: 4;
+  hasVeto: boolean;
+  vetoReason: string | null;
+  entryPrice: number;
+  stopLossPrice: number;
+  breakevenLockPrice: number;
+  takeProfit1: number;
+  takeProfit2: number;
+  riskRewardRatio: number;
+  recommendedLeverage: number;
+  recommendedSizeUsd: number;
+  executiveSummary: string;
+  votes: SpecialistAgentVote[];
+  ta: TechnicalAnalysisSnapshot;
+  whale: WhaleWalletIntelSnapshot;
+  newsCredibilityAvg: number;
+  matchedNews: VerifiedNewsItem[];
+}
+
