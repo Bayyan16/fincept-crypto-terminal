@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { AgentPosition, CandlePoint, MarketPair, OrderbookState } from '../types/terminal';
 
 export type ChartInterval = '1m' | '5m' | '15m' | '1h' | '4h' | '1d';
@@ -109,6 +109,8 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     setPanOffset(0);
     setPricePanRatio(0);
     setPriceScaleFactor(1);
+    // The faded-out crosshair indexes the previous data set; don't let it linger
+    lastCrosshairRef.current = null;
   }, [pair.symbol, timeframe]);
 
   const totalCandles = candles.length;
@@ -318,34 +320,52 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     }
   }, []);
 
-  // Point rAF callbacks at the latest render's handlers/values without re-registering DOM listeners
-  useEffect(() => {
+  // Point rAF callbacks at the latest render's handlers/values without re-registering DOM listeners.
+  // Layout effect so the refs are current before paint (and therefore before the next rAF tick).
+  useLayoutEffect(() => {
     latestRef.current.processMouseMove = processMouseMove;
     latestRef.current.handleBarZoom = handleBarZoom;
     latestRef.current.handleVerticalZoom = handleVerticalZoom;
     latestRef.current.clampedVisibleCount = clampedVisibleCount;
   });
 
-  // Cancel any pending rAF work on unmount
+  // Cancel any pending pointer-move rAF on unmount (the wheel effect cleans up its own rAF)
   useEffect(() => {
     return () => {
       if (moveRafRef.current !== null) cancelAnimationFrame(moveRafRef.current);
-      if (wheelRafRef.current !== null) cancelAnimationFrame(wheelRafRef.current);
     };
   }, []);
 
-  const handleMouseUpOrLeave = () => {
-    setDragMode('NONE');
-  };
-
-  const handleMouseLeave = () => {
-    handleMouseUpOrLeave();
-    // Drop any pending rAF move so a stale position can't re-show the crosshair after leaving
-    pendingMoveRef.current = null;
+  // Apply a move still waiting for its rAF tick right now, using this render's drag mode,
+  // so the final pointer position of a drag is never dropped.
+  const flushPendingMove = () => {
     if (moveRafRef.current !== null) {
       cancelAnimationFrame(moveRafRef.current);
       moveRafRef.current = null;
     }
+    const pending = pendingMoveRef.current;
+    pendingMoveRef.current = null;
+    if (pending) processMouseMove(pending.clientX, pending.clientY);
+  };
+
+  const handleMouseUpOrLeave = () => {
+    flushPendingMove();
+    setDragMode('NONE');
+  };
+
+  const handleMouseLeave = () => {
+    if (dragMode !== 'NONE') {
+      // Mid-drag: commit the last drag position before ending the drag
+      flushPendingMove();
+    } else {
+      // Hovering only: drop any pending move so a stale position can't re-show the crosshair
+      pendingMoveRef.current = null;
+      if (moveRafRef.current !== null) {
+        cancelAnimationFrame(moveRafRef.current);
+        moveRafRef.current = null;
+      }
+    }
+    setDragMode('NONE');
     setHoverIndex(null);
     setMouseY(null);
   };
@@ -708,7 +728,6 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                 ? 'cursor-grabbing'
                 : 'cursor-grab'
           }`}
-          style={{ touchAction: 'none' }}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUpOrLeave}

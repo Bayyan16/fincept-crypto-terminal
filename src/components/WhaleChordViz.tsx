@@ -278,7 +278,61 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
   // Pointer moves are collapsed into one rAF tick per frame: no matter how many
   // events the OS delivers, positions update at most once per frame.
+  const applyMove = (p: { clientX: number; clientY: number }) => {
+    const mode = dragModeRef.current;
+    if (!mode) return;
+
+    const dxScreen = p.clientX - dragStartRef.current.clientX;
+    const dyScreen = p.clientY - dragStartRef.current.clientY;
+
+    const svgEl = svgRef.current;
+    const rect = svgEl ? svgEl.getBoundingClientRect() : { width: 560, height: 410 };
+    const scaleX = 560 / Math.max(1, rect.width);
+    const scaleY = 410 / Math.max(1, rect.height);
+
+    if (mode === 'node') {
+      const nodeId = draggingNodeIdRef.current;
+      if (!nodeId) return;
+      const dxSvg = (dxScreen * scaleX) / zoom;
+      const dySvg = (dyScreen * scaleY) / zoom;
+      setNodePositions((prev) => ({
+        ...prev,
+        [nodeId]: {
+          x: Math.round(Math.max(35, Math.min(525, dragStartRef.current.startNodeX + dxSvg))),
+          y: Math.round(Math.max(25, Math.min(385, dragStartRef.current.startNodeY + dySvg))),
+        },
+      }));
+    } else {
+      setPan({
+        x: Math.round(dragStartRef.current.startPanX + dxScreen * scaleX),
+        y: Math.round(dragStartRef.current.startPanY + dyScreen * scaleY),
+      });
+    }
+  };
+
+  // Applies a move that is still waiting for its rAF tick right now, so the
+  // final pointer position is never dropped when a drag ends.
+  const flushPendingMove = () => {
+    if (moveRafRef.current !== null) {
+      cancelAnimationFrame(moveRafRef.current);
+      moveRafRef.current = null;
+    }
+    const p = pendingMoveRef.current;
+    pendingMoveRef.current = null;
+    if (p) applyMove(p);
+  };
+
   const handleMouseMove = (e: React.MouseEvent) => {
+    // Drag-vs-click detection must be synchronous: the browser fires `click`
+    // right after `mouseup`, before any pending rAF gets a chance to run.
+    if (dragModeRef.current && !dragStartRef.current.moved) {
+      const dx = e.clientX - dragStartRef.current.clientX;
+      const dy = e.clientY - dragStartRef.current.clientY;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) {
+        dragStartRef.current.moved = true;
+      }
+    }
+
     pendingMoveRef.current = { clientX: e.clientX, clientY: e.clientY };
     if (moveRafRef.current !== null) return;
 
@@ -287,48 +341,24 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
       const p = pendingMoveRef.current;
       if (!p) return;
       pendingMoveRef.current = null;
-
-      const mode = dragModeRef.current;
-      if (!mode) return;
-
-      const dxScreen = p.clientX - dragStartRef.current.clientX;
-      const dyScreen = p.clientY - dragStartRef.current.clientY;
-      if (Math.abs(dxScreen) > 3 || Math.abs(dyScreen) > 3) {
-        dragStartRef.current.moved = true;
-      }
-
-      const svgEl = svgRef.current;
-      const rect = svgEl ? svgEl.getBoundingClientRect() : { width: 560, height: 410 };
-      const scaleX = 560 / Math.max(1, rect.width);
-      const scaleY = 410 / Math.max(1, rect.height);
-
-      if (mode === 'node') {
-        const nodeId = draggingNodeIdRef.current;
-        if (!nodeId) return;
-        const dxSvg = (dxScreen * scaleX) / zoom;
-        const dySvg = (dyScreen * scaleY) / zoom;
-        setNodePositions((prev) => ({
-          ...prev,
-          [nodeId]: {
-            x: Math.round(Math.max(35, Math.min(525, dragStartRef.current.startNodeX + dxSvg))),
-            y: Math.round(Math.max(25, Math.round(Math.min(385, dragStartRef.current.startNodeY + dySvg)))),
-          },
-        }));
-      } else {
-        setPan({
-          x: Math.round(dragStartRef.current.startPanX + dxScreen * scaleX),
-          y: Math.round(dragStartRef.current.startPanY + dyScreen * scaleY),
-        });
-      }
+      applyMove(p);
     });
   };
 
-  const handleMouseUp = () => {
+  const endDrag = (restoreHover: boolean) => {
+    flushPendingMove();
+    const releasedNodeId = draggingNodeIdRef.current;
     dragModeRef.current = null;
     draggingNodeIdRef.current = null;
     setDraggingNodeId(null);
     setIsPanningCanvas(false);
+    // The node can trail the pointer by a frame during fast drags, which fires
+    // its onMouseLeave; the pointer is still on the dropped node, so restore it.
+    if (restoreHover && releasedNodeId) setHoveredNode(releasedNodeId);
   };
+
+  const handleMouseUp = () => endDrag(true);
+  const handleCanvasMouseLeave = () => endDrag(false);
 
   const handleNodeClick = (id: string) => {
     if (dragStartRef.current.moved) return;
@@ -580,7 +610,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
         onMouseDown={handleCanvasMouseDown}
         onMouseMove={handleMouseMove}
         onMouseUp={handleMouseUp}
-        onMouseLeave={handleMouseUp}
+        onMouseLeave={handleCanvasMouseLeave}
         style={{ touchAction: 'none' }}
         className={`relative flex-1 flex items-center justify-center bg-[#040609] overflow-hidden min-h-[110px] ${
           draggingNodeId || isPanningCanvas ? 'cursor-grabbing' : 'cursor-grab'
@@ -770,7 +800,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                 >
                   {/* Inner transform group: transition is disabled while dragging so the
                       node tracks the pointer 1:1; on release the ease-out "settle"
-                      animates the scale (and any final position drift) back in. */}
+                      animates the scale back to rest. */}
                   <g
                     style={{
                       transform: `scale(${isDraggingThis ? 1.08 : isHovered ? 1.04 : 1})`,
