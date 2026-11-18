@@ -104,14 +104,33 @@ test.describe('terminal desk', () => {
     await taoBtn.click();
     await expect(page.getByText('TAO-PERP').first()).toBeVisible();
 
-    // 3. 4-Agent Consensus Forum + 8-Point Precision Checklist inside AGENT_BRAIN sub-tab
+    // 3. 4-Agent Consensus Forum + 3D Isometric War-Room Visualizer + 8-Point Precision Checklist inside AGENT_BRAIN sub-tab
     await page.getByTestId('subtab-AGENT_BRAIN').click();
     await expect(page.getByTestId('multi-agent-forum')).toBeVisible();
+    await expect(page.getByTestId('agent-war-room-3d-viz')).toBeVisible();
+    await expect(page.getByTestId('agent-subskills-inspector')).toBeVisible();
+    await page.getByTestId('viz-pod-TECHNICAL_ANALYST').click();
+    await expect(page.getByTestId('agent-subskills-inspector')).toContainText('Skill 2A');
+    await page.getByTestId('viz-pod-WHALE_WALLET').click();
+    await expect(page.getByTestId('agent-subskills-inspector')).toContainText('Skill 3A');
     await expect(page.getByTestId('forum-agent-card-BLOOMBERG_NEWS')).toBeVisible();
     await expect(page.getByTestId('forum-agent-card-TECHNICAL_ANALYST')).toBeVisible();
     await expect(page.getByTestId('forum-agent-card-WHALE_WALLET')).toBeVisible();
     await expect(page.getByTestId('forum-agent-card-EXECUTION_PRECISION')).toBeVisible();
     await expect(page.getByTestId('forum-precision-checklist')).toBeVisible();
+
+    // 3B. 3D Vault Settlement & Courier Agent Illustration (Profit Inflow Vault vs External Loss Vault)
+    await expect(page.getByTestId('vault-settlement-courier-3d-viz')).toBeVisible();
+    await expect(page.getByTestId('internal-profit-vault-node')).toBeVisible();
+    await expect(page.getByTestId('treasury-courier-agent-node')).toBeVisible();
+    await expect(page.getByTestId('external-loss-vault-node')).toBeVisible();
+    await expect(page.getByTestId('vault-total-profit-in')).toContainText('MASUK BRANKAS');
+    await expect(page.getByTestId('vault-total-loss-out')).toContainText('KELUAR EKSTERNAL');
+    await expect(page.getByTestId('vault-realtime-trade-ledger')).toBeVisible();
+    expect(await page.getByTestId('vault-closed-trade-item').count()).toBeGreaterThanOrEqual(3);
+    await page.getByTestId('vault-filter-PROFIT_IN').click();
+    await page.getByTestId('vault-filter-LOSS_OUT').click();
+    await page.getByTestId('vault-filter-ALL').click();
 
     // 4. Bloomberg News 90-100% Verified tab
     await page.getByTestId('forum-tab-news').click();

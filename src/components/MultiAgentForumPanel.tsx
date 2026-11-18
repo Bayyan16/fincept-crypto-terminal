@@ -1,13 +1,17 @@
 import React, { useState } from 'react';
 import {
+  ClosedTradeLog,
   MarketPair,
   MultiAgentForumConsensus,
   PositionAccuracyAuditItem,
+  SpecialistAgentId,
   VerifiedNewsItem,
   WalkForwardTradeOutcome,
 } from '../types/terminal';
-import { LowRiskHunterCandidate } from '../engine/agentSkills';
+import { INITIAL_CLOSED_TRADES, LowRiskHunterCandidate } from '../engine/agentSkills';
 import { CoinIcon } from './CoinIcon';
+import { AgentWarRoom3DViz } from './AgentWarRoom3DViz';
+import { VaultSettlementCourier3DViz } from './VaultSettlementCourier3DViz';
 
 interface MultiAgentForumPanelProps {
   consensus: MultiAgentForumConsensus;
@@ -15,6 +19,7 @@ interface MultiAgentForumPanelProps {
   topOpportunities: LowRiskHunterCandidate[];
   positionAudits?: PositionAccuracyAuditItem[];
   walkForwardOutcomes?: WalkForwardTradeOutcome[];
+  closedTrades?: ClosedTradeLog[];
   totalMarketsCount: number;
   onSelectSymbol: (symbol: string) => void;
   onExecutePrecisionTrade: (market: MarketPair, side: 'LONG' | 'SHORT', leverage?: number) => void;
@@ -27,6 +32,7 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
   topOpportunities,
   positionAudits = [],
   walkForwardOutcomes = [],
+  closedTrades = INITIAL_CLOSED_TRADES,
   totalMarketsCount,
   onSelectSymbol,
   onExecutePrecisionTrade,
@@ -38,6 +44,7 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
     | 'ALL_MARKET_SCANNER'
     | 'POSITION_ACCURACY_AUDIT'
   >('CONSENSUS_4_AGENTS');
+  const [selectedAgentId, setSelectedAgentId] = useState<SpecialistAgentId>('BLOOMBERG_NEWS');
   const [oppSearch, setOppSearch] = useState<string>('');
 
   const filteredOpps = topOpportunities
@@ -205,19 +212,47 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
         </button>
       </div>
 
-      {/* 3A. VIEW 1: 4 SPECIALIZED AGENTS FORUM CARDS + 8-POINT PRECISION CHECKLIST */}
+      {/* 3A. VIEW 1: TWIN 3D ISOMETRIC VISUALIZERS (WAR-ROOM + VAULT COURIER) + 4 SPECIALIZED AGENTS + 8-POINT PRECISION CHECKLIST */}
       {activeForumView === 'CONSENSUS_4_AGENTS' && (
         <div className="space-y-2">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          {/* Twin 2D / Semi-3D Isometric Visualizers: Left = 4-Agent War-Room, Right = Real-Time Dual-Vault Profit/Loss Courier */}
+          <div
+            className={
+              compactDeskMode
+                ? 'grid grid-cols-1 gap-2'
+                : 'grid grid-cols-1 xl:grid-cols-2 gap-2.5 items-stretch'
+            }
+          >
+            <AgentWarRoom3DViz
+              consensus={consensus}
+              selectedAgentId={selectedAgentId}
+              onSelectAgent={setSelectedAgentId}
+            />
+            <VaultSettlementCourier3DViz closedTrades={closedTrades} />
+          </div>
+
+          <div
+            className={
+              compactDeskMode
+                ? 'grid grid-cols-1 md:grid-cols-2 gap-2'
+                : 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2'
+            }
+          >
             {consensus.votes.map((agent) => {
               const isLong = agent.vote === 'LONG';
               const isShort = agent.vote === 'SHORT';
               const isVeto = agent.vote === 'VETO';
+              const isSelected = selectedAgentId === agent.agentId;
               return (
                 <div
                   key={agent.agentId}
                   data-testid={`forum-agent-card-${agent.agentId}`}
-                  className="p-2.5 bg-[#06090F] border border-[#1B263B] flex flex-col justify-between gap-1.5"
+                  onClick={() => setSelectedAgentId(agent.agentId)}
+                  className={`p-2.5 bg-[#06090F] border flex flex-col justify-between gap-1.5 cursor-pointer ${
+                    isSelected
+                      ? 'border-[#00E5FF] shadow-[0_0_12px_rgba(0,229,255,0.12)]'
+                      : 'border-[#1B263B] hover:border-[#2C3E5E]'
+                  }`}
                 >
                   <div>
                     <div className="flex items-center justify-between gap-1 border-b border-[#151E2E] pb-1">
@@ -244,12 +279,36 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
                       </span>
                     </div>
 
-                    <div className="text-[10px] font-bold text-white mt-1">
+                    <div className="text-[10px] font-bold text-white mt-1 line-clamp-2">
                       {agent.headline}
                     </div>
                     <p className="text-[9.5px] text-[#94A3B8] mt-0.5 leading-snug">
                       {agent.rationale}
                     </p>
+
+                    {/* 3 Specialized Sub-Skills Matrix */}
+                    {agent.subSkills && agent.subSkills.length > 0 && (
+                      <div className="mt-1.5 grid grid-cols-1 gap-1">
+                        {agent.subSkills.map((sk, sIdx) => (
+                          <div
+                            key={sIdx}
+                            className="px-1.5 py-0.5 bg-[#0A111E] border border-[#172338] flex items-center justify-between gap-2"
+                          >
+                            <span className="text-[8.5px] font-extrabold text-[#00E5FF] truncate">
+                              {sk.name}
+                            </span>
+                            <div className="flex items-center gap-1.5 shrink-0">
+                              <span className="text-[8px] text-[#CBD5E1] font-mono truncate max-w-[115px]">
+                                {sk.status}
+                              </span>
+                              <span className="text-[8.5px] text-[#00E676] font-mono font-extrabold">
+                                {sk.score}%
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   <div className="flex flex-wrap gap-1 pt-1 border-t border-[#121A28]">
@@ -500,6 +559,9 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
       {/* 3D. VIEW 4: REAL-TIME POSITION ACCURACY & WALK-FORWARD BACKTEST AUDITOR */}
       {activeForumView === 'POSITION_ACCURACY_AUDIT' && (
         <div data-testid="forum-accuracy-audit-panel" className="space-y-2.5">
+          {/* 3D Dual-Vault Profit Inflow & External Loss Outflow Courier Agent Illustration */}
+          <VaultSettlementCourier3DViz closedTrades={closedTrades} />
+
           {/* A. Active Open Positions Live Accuracy Verification */}
           <div className="p-2 bg-[#06090F] border border-[#1B263B]">
             <div className="flex flex-wrap items-center justify-between gap-2 pb-1.5 border-b border-[#151E2E]">

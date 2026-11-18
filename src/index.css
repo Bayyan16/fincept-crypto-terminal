@@ -173,6 +173,127 @@ textarea:focus-visible {
   border-radius: 2px;
 }
 
+/* ---------- 2D / Semi-3D Isometric Multi-Agent War-Room Animations ---------- */
+@keyframes fin-iso-float {
+  0%,
+  100% {
+    transform: translateY(0px);
+  }
+  50% {
+    transform: translateY(-5px);
+  }
+}
+
+@keyframes fin-iso-float-alt {
+  0%,
+  100% {
+    transform: translateY(-4px);
+  }
+  50% {
+    transform: translateY(2px);
+  }
+}
+
+@keyframes fin-beam-flow {
+  from {
+    stroke-dashoffset: 36;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes fin-orbit-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes fin-sonar-pulse {
+  0% {
+    opacity: 0.75;
+    transform: scale(0.88);
+  }
+  50% {
+    opacity: 0.25;
+    transform: scale(1.08);
+  }
+  100% {
+    opacity: 0.75;
+    transform: scale(0.88);
+  }
+}
+
+.iso-float-1 {
+  animation: fin-iso-float 3.4s ease-in-out infinite;
+}
+
+.iso-float-2 {
+  animation: fin-iso-float-alt 3.8s ease-in-out infinite;
+}
+
+.iso-beam-anim {
+  stroke-dasharray: 8 6;
+  animation: fin-beam-flow 1.15s linear infinite;
+}
+
+.iso-orbit-spin {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: fin-orbit-spin 9s linear infinite;
+}
+
+.iso-sonar-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: fin-sonar-pulse 2.6s ease-in-out infinite;
+}
+
+@keyframes fin-courier-to-profit-vault {
+  0% {
+    transform: translate(0px, 0px) scale(0.92);
+    opacity: 0.35;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-210px, -8px) scale(1.04);
+    opacity: 0.25;
+  }
+}
+
+@keyframes fin-courier-to-loss-vault {
+  0% {
+    transform: translate(0px, 0px) scale(0.92);
+    opacity: 0.35;
+  }
+  20% {
+    opacity: 1;
+  }
+  80% {
+    opacity: 1;
+  }
+  100% {
+    transform: translate(210px, -8px) scale(1.04);
+    opacity: 0.25;
+  }
+}
+
+.iso-courier-profit {
+  animation: fin-courier-to-profit-vault 2.4s cubic-bezier(0.25, 0.7, 0.35, 1) infinite;
+}
+
+.iso-courier-loss {
+  animation: fin-courier-to-loss-vault 2.8s cubic-bezier(0.25, 0.7, 0.35, 1) infinite;
+}
+
 /* ---------- Respect users who prefer reduced motion ---------- */
 @media (prefers-reduced-motion: reduce) {
   *,

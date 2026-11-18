@@ -47,6 +47,7 @@ import {
   runWalkForwardAccuracyBacktest,
 } from './engine/multiAgentForum';
 import { MultiAgentForumPanel } from './components/MultiAgentForumPanel';
+import { VaultSettlementCourier3DViz } from './components/VaultSettlementCourier3DViz';
 import {
   connectBrowserExtensionWallet,
   executeRealOrderOnVenue,
@@ -2653,6 +2654,7 @@ export function App() {
                         topOpportunities={topMultiAgentOpportunities}
                         positionAudits={positionAudits}
                         walkForwardOutcomes={walkForwardOutcomes}
+                        closedTrades={closedTrades}
                         totalMarketsCount={markets.length}
                         onSelectSymbol={(sym) => {
                           setCustomDeskPool(null);
@@ -3612,272 +3614,416 @@ export function App() {
           </div>
         )}
 
-        {/* TAB 3: AGENT BRAIN & REAL-MONEY RISK GUARD */}
+        {/* TAB 3: AGENT BRAIN & REAL-MONEY RISK GUARD (SEAMLESS INSTITUTIONAL COCKPIT) */}
         {activeTopTab === 'AGENT_SKILLS' && (
-          <div key="AGENT_SKILLS" className="anim-panel p-4 h-full overflow-y-auto bg-[#06080C] grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <div className="lg:col-span-2">
-              <MultiAgentForumPanel
-                consensus={forumConsensus}
-                verifiedNews={verifiedNews}
-                topOpportunities={topMultiAgentOpportunities}
-                positionAudits={positionAudits}
-                walkForwardOutcomes={walkForwardOutcomes}
-                totalMarketsCount={markets.length}
-                onSelectSymbol={(sym) => {
-                  setCustomDeskPool(null);
-                  setSelectedSymbol(sym);
-                }}
-                onExecutePrecisionTrade={handleExecuteForumPrecisionTrade}
-              />
-            </div>
-
-            <div className="p-4 bg-[#090D14] border border-[#1E2736] space-y-4">
-              <div className="border-b border-[#1E2736] pb-2">
-                <h3 className="text-sm font-extrabold text-[#FF9F1C]">
-                  KONFIGURASI REAL-MONEY CIRCUIT BREAKER & "ZERO-SLOP" MICRO-LOSS GUARD
-                </h3>
-                <p className="text-xs text-[#94A3B8] mt-0.5">
-                  Parameter proteksi modal real-money: membatasi ukuran order, mengunci Breakeven
-                  otomatis, dan menghentikan bot jika batas kerugian harian tersentuh.
-                </p>
-              </div>
-
-              <div className="space-y-3 text-xs">
-                <div className="flex items-center justify-between p-2.5 bg-[#06090F] border border-[#161F2E]">
-                  <div>
-                    <div className="font-bold text-white">
-                      1. Maker-First / Post-Only Execution (GTX / Alo)
-                    </div>
-                    <div className="text-[10.5px] text-[#94A3B8]">
-                      Mengirim order Limit dengan flag Post-Only (GTX di Binance, PostOnly di Bybit,
-                      Alo di Hyperliquid) agar selalu mendapat rabat fee Maker.
-                    </div>
+          <div
+            key="AGENT_SKILLS"
+            data-testid="agent-skills-cockpit"
+            className="anim-panel p-3 h-full overflow-y-auto bg-[#06080C] flex flex-col gap-3"
+          >
+            {/* 1. Top Unified Cockpit Telemetry Ribbon (At-a-Glance Summary without Hiding Any Detail) */}
+            <div
+              data-testid="agent-skills-cockpit-bar"
+              className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-2"
+            >
+              <div className="p-2.5 bg-[#090E18] border-l-4 border-l-[#00E5FF] border border-[#1B283E] flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[9px] font-extrabold text-[#00E5FF] uppercase tracking-wider">
+                    1. WAR-ROOM CONSENSUS VERDICT
                   </div>
-                  <button
-                    onClick={() => setMakerOnlyMode(!makerOnlyMode)}
-                    className={`px-3 py-1 font-extrabold ${
-                      makerOnlyMode ? 'bg-[#00E676] text-black' : 'bg-[#1E2736] text-white'
-                    }`}
-                  >
-                    {makerOnlyMode ? 'ENABLED' : 'DISABLED'}
-                  </button>
-                </div>
-
-                <div className="flex items-center justify-between p-2.5 bg-[#06090F] border border-[#161F2E]">
-                  <div>
-                    <div className="font-bold text-white">
-                      2. Auto-Breakeven + Fee Lock Trigger (%)
-                    </div>
-                    <div className="text-[10.5px] text-[#94A3B8]">
-                      Geser Stop Loss otomatis ke atas harga Entry begitu posisi profit melewati
-                      ambang ini.
-                    </div>
-                  </div>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={autoBreakevenTriggerPct}
-                    onChange={(e) => setAutoBreakevenTriggerPct(Number(e.target.value))}
-                    className="w-20 px-2 py-1 bg-[#0D131E] border border-[#FF9F1C] text-[#FF9F1C] font-extrabold text-right"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between p-2.5 bg-[#06090F] border border-[#161F2E]">
-                  <div>
-                    <div className="font-bold text-white">
-                      3. Orderflow Invalidation Scratch Cap (%)
-                    </div>
-                    <div className="text-[10.5px] text-[#94A3B8]">
-                      Batas rugi mikro maksimum jika OBI atau Whale berbalik arah secara mendadak.
-                    </div>
-                  </div>
-                  <input
-                    type="number"
-                    step="0.01"
-                    value={maxMicroLossScratchPct}
-                    onChange={(e) => setMaxMicroLossScratchPct(Number(e.target.value))}
-                    className="w-20 px-2 py-1 bg-[#0D131E] border border-[#00E5FF] text-[#00E5FF] font-extrabold text-right"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between p-2.5 bg-[#06090F] border border-[#161F2E]">
-                  <div>
-                    <div className="font-bold text-white">
-                      4. Max Daily Drawdown Circuit Breaker ($ USD)
-                    </div>
-                    <div className="text-[10.5px] text-[#94A3B8]">
-                      Jika total kerugian harian menyentuh angka ini, bot otomatis menghentikan
-                      pembukaan posisi baru.
-                    </div>
-                  </div>
-                  <input
-                    type="number"
-                    value={maxDailyDrawdownUsd}
-                    onChange={(e) => setMaxDailyDrawdownUsd(Number(e.target.value))}
-                    className="w-24 px-2 py-1 bg-[#0D131E] border border-[#FF1744] text-[#FF1744] font-extrabold text-right"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between p-2.5 bg-[#06090F] border border-[#161F2E]">
-                  <div>
-                    <div className="font-bold text-white">
-                      5. Minimum Liquidity Density Gate (0-100)
-                    </div>
-                    <div className="text-[10.5px] text-[#94A3B8]">
-                      Tolak semua market yang memiliki skor likuiditas di bawah nilai ini.
-                    </div>
-                  </div>
-                  <input
-                    type="number"
-                    value={minLiquidityScoreGate}
-                    onChange={(e) => setMinLiquidityScoreGate(Number(e.target.value))}
-                    className="w-20 px-2 py-1 bg-[#0D131E] border border-[#00E676] text-[#00E676] font-extrabold text-right"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between p-2.5 bg-[#06090F] border border-[#00E5FF]/50">
-                  <div>
-                    <div className="font-bold text-[#00E5FF]">
-                      6. Post-TP Continuous Hunter (Leverage Konservatif 4x–8x, Max 3 Posisi)
-                    </div>
-                    <div className="text-[10.5px] text-[#94A3B8]">
-                      Saat posisi ditutup (Take Profit manual/otomatis), Agent otomatis menganalisis
-                      seluruh market & membuka posisi baru berisiko terendah dengan Leverage
-                      konservatif 4x–8x + Breakeven Lock instan hingga maksimal 3 posisi aktif.
-                    </div>
-                  </div>
-                  <select
-                    value={maxConcurrentPositions}
-                    onChange={(e) => setMaxConcurrentPositions(Number(e.target.value))}
-                    className="w-24 px-2 py-1 bg-[#0D131E] border border-[#00E5FF] text-[#00E5FF] font-extrabold text-right"
-                  >
-                    <option value={1}>Max 1 Pos</option>
-                    <option value={2}>Max 2 Pos</option>
-                    <option value={3}>Max 3 Pos</option>
-                  </select>
-                </div>
-
-                <div className="flex items-center justify-between p-2.5 bg-[#06090F] border border-[#FF9F1C]/50">
-                  <div>
-                    <div className="font-bold text-[#FF9F1C]">
-                      7. Deep Intelligence Auto-Close vs Hold Floating Loss & Auto-TP Trigger (%)
-                    </div>
-                    <div className="text-[10.5px] text-[#94A3B8]">
-                      Agent menahan floating loss sementara selama Tembok Orderbook + Whale On-Chain
-                      + Sentimen masih mendukung (&ge;42/100), dan otomatis Cut/Take Profit saat
-                      momentum patah atau mencapai target profit.
-                    </div>
-                  </div>
-                  <input
-                    type="number"
-                    step="0.1"
-                    value={autoTakeProfitTriggerPct}
-                    onChange={(e) => setAutoTakeProfitTriggerPct(Number(e.target.value))}
-                    className="w-20 px-2 py-1 bg-[#0D131E] border border-[#FF9F1C] text-[#FF9F1C] font-extrabold text-right"
-                  />
-                </div>
-
-                <div className="flex items-center justify-between p-2.5 bg-[#06090F] border border-[#00E676]/60">
-                  <div>
-                    <div className="font-bold text-[#00E676]">
-                      8. Direct-to-Hot-Wallet Auto-Settlement (Tanpa Perlu Withdraw Manual)
-                    </div>
-                    <div className="text-[10.5px] text-[#94A3B8]">
-                      Setiap profit dari penutupan posisi (Take Profit otomatis/manual) langsung
-                      masuk ke saldo Hot Wallet (Trust Wallet / Phantom Wallet) secara instan.
-                    </div>
-                  </div>
-                  <button
-                    onClick={() => setAutoDirectHotWalletSettle(!autoDirectHotWalletSettle)}
-                    className={`px-3 py-1 text-[10px] font-extrabold border ${
-                      autoDirectHotWalletSettle
-                        ? 'bg-[#00E676] text-black border-[#00E676]'
-                        : 'bg-[#141D2B] text-[#94A3B8] border-[#293548]'
-                    }`}
-                  >
-                    {autoDirectHotWalletSettle ? '✓ AUTO HOT-WALLET ON' : 'OFF'}
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            {/* Right Column: Live 3-Pillar Deep Position Intelligence + Agent Brain Stream */}
-            <div className="flex flex-col gap-4">
-              {/* Live 3-Pillar Position Hold vs Auto-Close Telemetry Card */}
-              <div className="p-4 bg-[#090D14] border border-[#1E2736]">
-                <h3 className="text-sm font-extrabold text-[#FF9F1C] border-b border-[#1E2736] pb-2 mb-3">
-                  DEEP INTELLIGENCE MONITOR: HOLD FLOATING LOSS VS AUTO-CLOSE ({positions.length}/{maxConcurrentPositions} POSISI)
-                </h3>
-                <div className="space-y-2 text-xs">
-                  {positions.map((pos) => (
-                    <div
-                      key={pos.id}
-                      className="p-2.5 bg-[#06090F] border border-[#1C2638] flex flex-col gap-1"
+                  <div className="text-xs font-extrabold text-white mt-0.5">
+                    {forumConsensus.symbol} •{' '}
+                    <span
+                      className={
+                        forumConsensus.recommendedSide === 'LONG'
+                          ? 'text-[#00E676]'
+                          : 'text-[#FF1744]'
+                      }
                     >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="px-1.5 py-0.5 bg-[#00E676] text-black font-extrabold text-[10px]">
-                            {pos.side} {pos.leverage}x
-                          </span>
-                          <span className="font-extrabold text-white">{pos.symbol}</span>
-                          <span className="text-[10px] text-[#00E5FF] font-bold">
-                            ({pos.exchange})
-                          </span>
+                      {forumConsensus.recommendedSide} ({forumConsensus.recommendedLeverage}x)
+                    </span>
+                  </div>
+                  <div className="text-[9.5px] text-[#94A3B8] font-mono">
+                    Quorum {forumConsensus.alignedAgentsCount}/4 Agent • Checklist{' '}
+                    {forumConsensus.checklistPassedCount}/8
+                  </div>
+                </div>
+                <span className="px-2 py-1 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] font-extrabold text-xs font-mono">
+                  {forumConsensus.positionAccuracyPct}%
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-[#090E18] border-l-4 border-l-[#FF9F1C] border border-[#1B283E] flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[9px] font-extrabold text-[#FF9F1C] uppercase tracking-wider">
+                    2. ZERO-SLOP CIRCUIT BREAKER
+                  </div>
+                  <div className="text-xs font-extrabold text-white mt-0.5">
+                    Maker: {makerOnlyMode ? 'POST-ONLY ON' : 'OFF'} • BE: +{autoBreakevenTriggerPct}%
+                  </div>
+                  <div className="text-[9.5px] text-[#94A3B8] font-mono">
+                    Scratch Cap: {maxMicroLossScratchPct}% • Max Daily Stop: -${maxDailyDrawdownUsd}
+                  </div>
+                </div>
+                <span className="px-2 py-1 bg-[#FF9F1C]/15 border border-[#FF9F1C] text-[#FF9F1C] font-extrabold text-[10px] font-mono">
+                  GUARD ON
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-[#090E18] border-l-4 border-l-[#D500F9] border border-[#1B283E] flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[9px] font-extrabold text-[#EA80FC] uppercase tracking-wider">
+                    3. DEEP POSITION INTELLIGENCE
+                  </div>
+                  <div className="text-xs font-extrabold text-white mt-0.5">
+                    {positions.length}/{maxConcurrentPositions} Slot Aktif • Auto-TP: +
+                    {autoTakeProfitTriggerPct}%
+                  </div>
+                  <div className="text-[9.5px] text-[#94A3B8] font-mono">
+                    Floating PnL:{' '}
+                    <strong
+                      className={
+                        totalUnrealizedPnl >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+                      }
+                    >
+                      {totalUnrealizedPnl >= 0 ? '+' : ''}${totalUnrealizedPnl.toFixed(2)}
+                    </strong>
+                  </div>
+                </div>
+                <span className="px-2 py-1 bg-[#D500F9]/15 border border-[#D500F9] text-[#EA80FC] font-extrabold text-[10px] font-mono">
+                  {markets.length} COINS
+                </span>
+              </div>
+
+              <div className="p-2.5 bg-[#090E18] border-l-4 border-l-[#00E676] border border-[#1B283E] flex items-center justify-between gap-2">
+                <div>
+                  <div className="text-[9px] font-extrabold text-[#00E676] uppercase tracking-wider">
+                    4. BRANKAS PROFIT & HOT-WALLET
+                  </div>
+                  <div className="text-xs font-extrabold text-[#00E676] mt-0.5">
+                    Net Settled: +${totalRealizedPnl.toFixed(2)} USD
+                  </div>
+                  <div className="text-[9.5px] text-[#94A3B8] font-mono">
+                    {closedTrades.length} Trade Ditutup • Direct Settle:{' '}
+                    {autoDirectHotWalletSettle ? 'ON' : 'OFF'}
+                  </div>
+                </div>
+                <span className="px-2 py-1 bg-[#00E676] text-black font-extrabold text-[10px] font-mono">
+                  SETTLED
+                </span>
+              </div>
+            </div>
+
+            {/* 2. Unified 4-Agent Consensus Forum + Twin 3D Visualizers (War-Room & Vault Courier Side-by-Side) */}
+            <MultiAgentForumPanel
+              consensus={forumConsensus}
+              verifiedNews={verifiedNews}
+              topOpportunities={topMultiAgentOpportunities}
+              positionAudits={positionAudits}
+              walkForwardOutcomes={walkForwardOutcomes}
+              closedTrades={closedTrades}
+              totalMarketsCount={markets.length}
+              onSelectSymbol={(sym) => {
+                setCustomDeskPool(null);
+                setSelectedSymbol(sym);
+              }}
+              onExecutePrecisionTrade={handleExecuteForumPrecisionTrade}
+            />
+
+            {/* 3. Seamless Lower Technical Cockpit: Left (7 Cols) = 2x4 Real-Money Circuit Breaker Grid | Right (5 Cols) = Deep Position Monitor + Brain Stream */}
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-stretch">
+              {/* Left 7 Columns: 8 Real-Money Circuit Breaker & Zero-Slop Guard Controls in a Compact 2x4 Grid */}
+              <div className="xl:col-span-7 p-3 bg-[#080C14] border border-[#1E2B42] flex flex-col justify-between gap-2.5">
+                <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#182336] pb-2">
+                  <div>
+                    <h3 className="text-xs font-extrabold text-[#FF9F1C] uppercase tracking-wide">
+                      KONFIGURASI REAL-MONEY CIRCUIT BREAKER & "ZERO-SLOP" MICRO-LOSS GUARD (8 PARAMETER AKTIF)
+                    </h3>
+                    <p className="text-[10px] text-[#94A3B8]">
+                      Parameter proteksi modal real-money: membatasi ukuran order, mengunci Breakeven
+                      otomatis, dan menghentikan bot jika batas kerugian harian tersentuh.
+                    </p>
+                  </div>
+                  <span className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-[9.5px] font-extrabold">
+                    ✓ 8/8 PROTEKSI AKTIF
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+                  <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#162032]">
+                    <div className="min-w-0">
+                      <div className="font-bold text-white truncate">
+                        1. Maker-First / Post-Only Execution (GTX / Alo)
+                      </div>
+                      <div className="text-[9.5px] text-[#94A3B8] leading-snug">
+                        Order Limit Post-Only (GTX/Alo) agar selalu mendapat rabat fee Maker.
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setMakerOnlyMode(!makerOnlyMode)}
+                      className={`px-2.5 py-1 text-[10px] font-extrabold shrink-0 ${
+                        makerOnlyMode ? 'bg-[#00E676] text-black' : 'bg-[#1E2736] text-white'
+                      }`}
+                    >
+                      {makerOnlyMode ? 'ENABLED' : 'DISABLED'}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#162032]">
+                    <div className="min-w-0">
+                      <div className="font-bold text-white truncate">
+                        2. Auto-Breakeven + Fee Lock Trigger (%)
+                      </div>
+                      <div className="text-[9.5px] text-[#94A3B8] leading-snug">
+                        Geser Stop Loss otomatis ke atas harga Entry saat profit melewati ambang ini.
+                      </div>
+                    </div>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={autoBreakevenTriggerPct}
+                      onChange={(e) => setAutoBreakevenTriggerPct(Number(e.target.value))}
+                      className="w-16 px-1.5 py-1 bg-[#0D131E] border border-[#FF9F1C] text-[#FF9F1C] font-extrabold text-right shrink-0"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#162032]">
+                    <div className="min-w-0">
+                      <div className="font-bold text-white truncate">
+                        3. Orderflow Invalidation Scratch Cap (%)
+                      </div>
+                      <div className="text-[9.5px] text-[#94A3B8] leading-snug">
+                        Batas rugi mikro maksimum jika OBI atau Whale berbalik arah mendadak.
+                      </div>
+                    </div>
+                    <input
+                      type="number"
+                      step="0.01"
+                      value={maxMicroLossScratchPct}
+                      onChange={(e) => setMaxMicroLossScratchPct(Number(e.target.value))}
+                      className="w-16 px-1.5 py-1 bg-[#0D131E] border border-[#00E5FF] text-[#00E5FF] font-extrabold text-right shrink-0"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#162032]">
+                    <div className="min-w-0">
+                      <div className="font-bold text-white truncate">
+                        4. Max Daily Drawdown Circuit Breaker ($ USD)
+                      </div>
+                      <div className="text-[9.5px] text-[#94A3B8] leading-snug">
+                        Jika total kerugian harian menyentuh angka ini, bot otomatis menghentikan entry.
+                      </div>
+                    </div>
+                    <input
+                      type="number"
+                      value={maxDailyDrawdownUsd}
+                      onChange={(e) => setMaxDailyDrawdownUsd(Number(e.target.value))}
+                      className="w-20 px-1.5 py-1 bg-[#0D131E] border border-[#FF1744] text-[#FF1744] font-extrabold text-right shrink-0"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#162032]">
+                    <div className="min-w-0">
+                      <div className="font-bold text-white truncate">
+                        5. Minimum Liquidity Density Gate (0-100)
+                      </div>
+                      <div className="text-[9.5px] text-[#94A3B8] leading-snug">
+                        Tolak semua market yang memiliki skor likuiditas di bawah nilai ini.
+                      </div>
+                    </div>
+                    <input
+                      type="number"
+                      value={minLiquidityScoreGate}
+                      onChange={(e) => setMinLiquidityScoreGate(Number(e.target.value))}
+                      className="w-16 px-1.5 py-1 bg-[#0D131E] border border-[#00E676] text-[#00E676] font-extrabold text-right shrink-0"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#00E5FF]/50">
+                    <div className="min-w-0">
+                      <div className="font-bold text-[#00E5FF] truncate">
+                        6. Post-TP Continuous Hunter (4x–8x, Max 3 Pos)
+                      </div>
+                      <div className="text-[9.5px] text-[#94A3B8] leading-snug">
+                        Saat posisi ditutup, Agent memindai market & membuka posisi baru berisiko terendah.
+                      </div>
+                    </div>
+                    <select
+                      value={maxConcurrentPositions}
+                      onChange={(e) => setMaxConcurrentPositions(Number(e.target.value))}
+                      className="w-20 px-1.5 py-1 bg-[#0D131E] border border-[#00E5FF] text-[#00E5FF] font-extrabold text-right shrink-0"
+                    >
+                      <option value={1}>Max 1 Pos</option>
+                      <option value={2}>Max 2 Pos</option>
+                      <option value={3}>Max 3 Pos</option>
+                    </select>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#FF9F1C]/50">
+                    <div className="min-w-0">
+                      <div className="font-bold text-[#FF9F1C] truncate">
+                        7. Deep Intelligence Auto-Close & Auto-TP (%)
+                      </div>
+                      <div className="text-[9.5px] text-[#94A3B8] leading-snug">
+                        Tahan floating loss selama Orderbook + Whale mendukung (&ge;42/100) & kunci TP.
+                      </div>
+                    </div>
+                    <input
+                      type="number"
+                      step="0.1"
+                      value={autoTakeProfitTriggerPct}
+                      onChange={(e) => setAutoTakeProfitTriggerPct(Number(e.target.value))}
+                      className="w-16 px-1.5 py-1 bg-[#0D131E] border border-[#FF9F1C] text-[#FF9F1C] font-extrabold text-right shrink-0"
+                    />
+                  </div>
+
+                  <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#00E676]/60">
+                    <div className="min-w-0">
+                      <div className="font-bold text-[#00E676] truncate">
+                        8. Direct-to-Hot-Wallet Auto-Settlement
+                      </div>
+                      <div className="text-[9.5px] text-[#94A3B8] leading-snug">
+                        Setiap profit otomatis langsung masuk ke Hot Wallet (Trust / Phantom) instan.
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setAutoDirectHotWalletSettle(!autoDirectHotWalletSettle)}
+                      className={`px-2 py-1 text-[9.5px] font-extrabold border shrink-0 ${
+                        autoDirectHotWalletSettle
+                          ? 'bg-[#00E676] text-black border-[#00E676]'
+                          : 'bg-[#141D2B] text-[#94A3B8] border-[#293548]'
+                      }`}
+                    >
+                      {autoDirectHotWalletSettle ? '✓ AUTO ON' : 'OFF'}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              {/* Right 5 Columns: Live 3-Pillar Deep Position Intelligence + Autonomous Agent Brain Stream */}
+              <div className="xl:col-span-5 flex flex-col gap-2.5">
+                {/* Live 3-Pillar Position Hold vs Auto-Close Telemetry Card */}
+                <div className="p-3 bg-[#080C14] border border-[#1E2B42]">
+                  <div className="flex items-center justify-between border-b border-[#182336] pb-1.5 mb-2">
+                    <h3 className="text-xs font-extrabold text-[#FF9F1C]">
+                      DEEP INTELLIGENCE MONITOR: HOLD FLOATING LOSS VS AUTO-CLOSE ({positions.length}/{maxConcurrentPositions} POSISI)
+                    </h3>
+                    <span className="text-[9.5px] font-mono text-[#00E676] font-bold">
+                      {agentAutonomousEnabled ? '● AUTO-HUNTER ON' : '○ PAUSED'}
+                    </span>
+                  </div>
+                  {positions.length === 0 ? (
+                    <div className="p-2.5 bg-[#060A12] border border-[#17243A] flex items-center justify-between gap-2 text-[10px]">
+                      <div>
+                        <div className="font-extrabold text-[#00E5FF]">
+                          SEMUA SLOT POSISI TELAH DI-SETTLE KE BRANKAS PROFIT (+${totalRealizedPnl.toFixed(2)})
                         </div>
-                        <span
-                          className={`px-2 py-0.5 text-[10px] font-extrabold border ${
-                            pos.aiHoldDecision === 'HOLD_FLOATING_LOSS'
-                              ? 'bg-[#FF9F1C]/15 text-[#FF9F1C] border-[#FF9F1C]'
-                              : 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]'
-                          }`}
+                        <div className="text-[#94A3B8] mt-0.5">
+                          Post-TP Continuous Hunter aktif memindai {markets.length} market untuk peluang kuorum 4-Agent berikutnya.
+                        </div>
+                      </div>
+                      <button
+                        onClick={() =>
+                          handleExecuteForumPrecisionTrade(
+                            activePair,
+                            forumConsensus.recommendedSide,
+                            forumConsensus.recommendedLeverage
+                          )
+                        }
+                        className="px-2.5 py-1 bg-[#00E676] text-black font-extrabold text-[9.5px] shrink-0"
+                      >
+                        ⚡ ENTRY {forumConsensus.symbol}
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="space-y-1.5 text-[11px] max-h-40 overflow-y-auto">
+                      {positions.map((pos) => (
+                        <div
+                          key={pos.id}
+                          className="p-2 bg-[#06090F] border border-[#1C2638] flex flex-col gap-1"
                         >
-                          {pos.aiHoldDecision === 'HOLD_FLOATING_LOSS'
-                            ? '🛡️ HOLD FLOATING LOSS'
-                            : '🚀 RIDE & TRAIL PROFIT'}
-                        </span>
-                      </div>
-                      <div className="grid grid-cols-3 gap-2 mt-1 text-[10.5px]">
-                        <div className="p-1.5 bg-[#0A0F1A] border border-[#162032]">
-                          <span className="text-[#94A3B8]">1. Orderbook Defense:</span>{' '}
-                          <strong className="text-[#00E676]">{pos.orderbookDefenseScore ?? 82}/100</strong>
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-1.5">
+                              <span
+                                className={`px-1.5 py-0.2 font-extrabold text-[9.5px] ${
+                                  pos.side === 'LONG'
+                                    ? 'bg-[#00E676] text-black'
+                                    : 'bg-[#FF1744] text-white'
+                                }`}
+                              >
+                                {pos.side} {pos.leverage}x
+                              </span>
+                              <span className="font-extrabold text-white">{pos.symbol}</span>
+                              <span className="text-[9.5px] text-[#00E5FF] font-bold">
+                                ({pos.exchange})
+                              </span>
+                            </div>
+                            <span
+                              className={`px-1.5 py-0.2 text-[9.5px] font-extrabold border ${
+                                pos.aiHoldDecision === 'HOLD_FLOATING_LOSS'
+                                  ? 'bg-[#FF9F1C]/15 text-[#FF9F1C] border-[#FF9F1C]'
+                                  : 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]'
+                              }`}
+                            >
+                              {pos.aiHoldDecision === 'HOLD_FLOATING_LOSS'
+                                ? '🛡️ HOLD FLOATING LOSS'
+                                : '🚀 RIDE & TRAIL PROFIT'}
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-3 gap-1.5 text-[9.5px]">
+                            <div className="px-1.5 py-1 bg-[#0A0F1A] border border-[#162032]">
+                              <span className="text-[#94A3B8]">OB Defense:</span>{' '}
+                              <strong className="text-[#00E676]">
+                                {pos.orderbookDefenseScore ?? 82}/100
+                              </strong>
+                            </div>
+                            <div className="px-1.5 py-1 bg-[#0A0F1A] border border-[#162032]">
+                              <span className="text-[#94A3B8]">Whale Flow:</span>{' '}
+                              <strong className="text-[#00E5FF]">
+                                {pos.whaleConvictionScore ?? 86}/100
+                              </strong>
+                            </div>
+                            <div className="px-1.5 py-1 bg-[#0A0F1A] border border-[#162032]">
+                              <span className="text-[#94A3B8]">Sentiment:</span>{' '}
+                              <strong className="text-[#FF9F1C]">
+                                {pos.sentimentScore ?? 78}/100
+                              </strong>
+                            </div>
+                          </div>
                         </div>
-                        <div className="p-1.5 bg-[#0A0F1A] border border-[#162032]">
-                          <span className="text-[#94A3B8]">2. On-Chain Whale:</span>{' '}
-                          <strong className="text-[#00E5FF]">{pos.whaleConvictionScore ?? 86}/100</strong>
-                        </div>
-                        <div className="p-1.5 bg-[#0A0F1A] border border-[#162032]">
-                          <span className="text-[#94A3B8]">3. Market Sentiment:</span>{' '}
-                          <strong className="text-[#FF9F1C]">{pos.sentimentScore ?? 78}/100</strong>
-                        </div>
-                      </div>
-                      <div className="text-[10.5px] text-[#CBD5E1] mt-0.5">
-                        {pos.aiDecisionReason ?? pos.statusReason}
-                      </div>
+                      ))}
                     </div>
-                  ))}
+                  )}
                 </div>
-              </div>
 
-              {/* Live Agent Decision Stream */}
-              <div className="p-4 bg-[#090D14] border border-[#1E2736] flex-1 flex flex-col">
-                <h3 className="text-sm font-extrabold text-[#00E5FF] border-b border-[#1E2736] pb-2 mb-3">
-                  LIVE AUTONOMOUS AGENT BRAIN LOG
-                </h3>
-                <div className="flex-1 overflow-y-auto space-y-2 text-xs">
-                  {brainDecisions.map((b) => (
-                    <div
-                      key={b.id}
-                      className="p-2.5 bg-[#06090E] border-l-2 border-[#00E5FF] border border-[#161F2E]"
-                    >
-                      <div className="flex justify-between font-bold text-white">
-                        <span>
-                          [{b.timestamp}] {b.symbol} — {b.headline}
-                        </span>
-                        <span className="text-[#FF9F1C]">{b.category}</span>
+                {/* Live Agent Decision Stream (Bounded Scrollable Container for Zero Vertical Overflow) */}
+                <div className="p-3 bg-[#080C14] border border-[#1E2B42] flex-1 flex flex-col min-h-0">
+                  <div className="flex items-center justify-between border-b border-[#182336] pb-1.5 mb-2">
+                    <h3 className="text-xs font-extrabold text-[#00E5FF]">
+                      LIVE AUTONOMOUS AGENT BRAIN LOG ({brainDecisions.length} EVENTS)
+                    </h3>
+                    <span className="text-[9px] font-mono text-[#94A3B8]">REAL-TIME STREAM</span>
+                  </div>
+                  <div className="max-h-52 overflow-y-auto space-y-1.5 text-[10.5px] pr-1">
+                    {brainDecisions.map((b) => (
+                      <div
+                        key={b.id}
+                        className="p-2 bg-[#06090E] border-l-2 border-[#00E5FF] border border-[#161F2E]"
+                      >
+                        <div className="flex justify-between gap-2 font-bold text-white">
+                          <span className="truncate">
+                            [{b.timestamp}] {b.symbol} — {b.headline}
+                          </span>
+                          <span className="text-[#FF9F1C] text-[9.5px] font-mono shrink-0">
+                            {b.category}
+                          </span>
+                        </div>
+                        <p className="text-[9.5px] text-[#94A3B8] mt-0.5 leading-snug">
+                          {b.detail}
+                        </p>
                       </div>
-                      <p className="text-[11px] text-[#94A3B8] mt-1">{b.detail}</p>
-                    </div>
-                  ))}
+                    ))}
+                  </div>
                 </div>
               </div>
             </div>
@@ -3904,6 +4050,8 @@ export function App() {
                 </span>
               </div>
             </div>
+
+            <VaultSettlementCourier3DViz closedTrades={closedTrades} />
 
             <div className="space-y-2">
               {closedTrades.map((ct) => (

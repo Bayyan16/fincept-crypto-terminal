@@ -51,6 +51,10 @@ test.describe('shell', () => {
     await expect(page.getByTestId('dex-search')).toBeVisible();
 
     await page.getByTestId('top-tab-AGENT_SKILLS').click();
+    await expect(page.getByTestId('agent-skills-cockpit')).toBeVisible();
+    await expect(page.getByTestId('agent-skills-cockpit-bar')).toBeVisible();
+    await expect(page.getByTestId('agent-war-room-3d-viz')).toBeVisible();
+    await expect(page.getByTestId('vault-settlement-courier-3d-viz')).toBeVisible();
     await expect(page.getByText(/CIRCUIT BREAKER/).first()).toBeVisible();
 
     await page.getByTestId('top-tab-PORTFOLIO_LOG').click();

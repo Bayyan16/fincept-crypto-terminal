@@ -2571,25 +2571,71 @@ async function fetchLiveBloombergRssItems(hlAssets, nowStr) {
   }
 
   const feeds = [
-    { url: 'https://feeds.bloomberg.com/crypto/news.rss', source: 'BLOOMBERG CRYPTO WIRE (OFFICIAL RSS)' },
-    { url: 'https://feeds.bloomberg.com/markets/news.rss', source: 'BLOOMBERG MARKETS & MACRO WIRE' },
+    {
+      url: 'https://feeds.bloomberg.com/crypto/news.rss',
+      source: 'BLOOMBERG CRYPTO WIRE (OFFICIAL RSS)',
+      requireMacroOrCryptoFilter: false,
+      maxItems: 4,
+    },
+    {
+      url: 'https://www.coindesk.com/arc/outboundfeeds/rss/',
+      source: 'COINDESK INSTITUTIONAL CRYPTO WIRE',
+      requireMacroOrCryptoFilter: false,
+      maxItems: 3,
+    },
+    {
+      url: 'https://feeds.bloomberg.com/markets/news.rss',
+      source: 'BLOOMBERG MACRO & FED MONETARY WIRE',
+      requireMacroOrCryptoFilter: true,
+      maxItems: 4,
+    },
   ];
 
   const items = [];
-  const bullWords = /surge|boom|rise|rally|gain|record|high|inflow|bull|expand|lead|grow|approve|buy/i;
-  const bearWords = /loss|drop|fall|low|hike|stress|risk|pushback|crash|dump|hack|lawsuit|bear|sell|slump/i;
+  const bullWords = /surge|boom|rise|rally|gain|record|high|inflow|bull|expand|lead|grow|approve|buy|soar|jump|launch/i;
+  const bearWords = /loss|drop|fall|low|hike|stress|risk|pushback|crash|dump|hack|lawsuit|bear|sell|slump|fear|warn|liquidat|outflow/i;
+  const cryptoOrMacroRelevanceRegex =
+    /\b(crypto|bitcoin|btc|ether|ethereum|eth|solana|sol|hyperliquid|hype|perps|perpetual|xrp|ripple|bnb|doge|cardano|avax|chainlink|sui|ton|polkadot|near|aptos|arbitrum|optimism|bittensor|tao|render|pepe|bonk|shib|aave|uniswap|ondo|pendle|ethena|stablecoin|usdc|usdt|defi|token|blockchain|etf|sec|fed|federal reserve|fomc|interest rate|inflation|cpi|treasury|dollar|dxy|tariff|nvidia|ai|gold)\b/i;
+
+  const tickerRegexMap = [
+    { re: /\b(bitcoin|btc)\b/i, sym: 'BTC' },
+    { re: /\b(ether|ethereum|eth)\b/i, sym: 'ETH' },
+    { re: /\b(solana|sol)\b/i, sym: 'SOL' },
+    { re: /\b(hyperliquid|hype|perps)\b/i, sym: 'HYPE' },
+    { re: /\b(xrp|ripple)\b/i, sym: 'XRP' },
+    { re: /\b(binance|bnb)\b/i, sym: 'BNB' },
+    { re: /\b(dogecoin|doge)\b/i, sym: 'DOGE' },
+    { re: /\b(sui)\b/i, sym: 'SUI' },
+    { re: /\b(avalanche|avax)\b/i, sym: 'AVAX' },
+    { re: /\b(chainlink|link)\b/i, sym: 'LINK' },
+    { re: /\b(bittensor|tao|nvidia|ai|anthropic)\b/i, sym: 'TAO' },
+    { re: /\b(render|rndr|gpu|nvidia)\b/i, sym: 'RENDER' },
+    { re: /\b(fet|superintelligence|ai)\b/i, sym: 'FET' },
+    { re: /\b(aave)\b/i, sym: 'AAVE' },
+    { re: /\b(uniswap|uni)\b/i, sym: 'UNI' },
+    { re: /\b(ondo|rwa|treasury)\b/i, sym: 'ONDO' },
+    { re: /\b(pendle)\b/i, sym: 'PENDLE' },
+    { re: /\b(arbitrum|arb)\b/i, sym: 'ARB' },
+    { re: /\b(optimism|op)\b/i, sym: 'OP' },
+    { re: /\b(pepe)\b/i, sym: 'PEPE' },
+    { re: /\b(dogwifhat|wif)\b/i, sym: 'WIF' },
+    { re: /\b(bonk)\b/i, sym: 'BONK' },
+    { re: /\b(gold|paxg)\b/i, sym: 'PAXG' },
+  ];
 
   await Promise.all(
     feeds.map(async (f, fIdx) => {
       try {
         const controller = new AbortController();
-        const t = setTimeout(() => controller.abort(), 2200);
+        const t = setTimeout(() => controller.abort(), 2400);
         const res = await fetch(f.url, { signal: controller.signal });
         clearTimeout(t);
         if (!res.ok) return;
         const xml = await res.text();
-        const blocks = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, 3);
+        const blocks = [...xml.matchAll(/<item>([\s\S]*?)<\/item>/g)].slice(0, 8);
+        let addedForFeed = 0;
         blocks.forEach((m, idx) => {
+          if (addedForFeed >= f.maxItems) return;
           const block = m[1] || '';
           const titleMatch =
             block.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/) ||
@@ -2599,11 +2645,25 @@ async function fetchLiveBloombergRssItems(hlAssets, nowStr) {
             block.match(/<description>([\s\S]*?)<\/description>/);
           const linkMatch = block.match(/<link>([\s\S]*?)<\/link>/);
 
-          const headline = (titleMatch?.[1] || '').trim();
-          const rawDesc = (descMatch?.[1] || '').replace(/<[^>]+>/g, '').trim();
+          const headline = (titleMatch?.[1] || '')
+            .replace(/&#039;/g, "'")
+            .replace(/&quot;/g, '"')
+            .replace(/&amp;/g, '&')
+            .trim();
+          const rawDesc = (descMatch?.[1] || '')
+            .replace(/<[^>]+>/g, '')
+            .replace(/&#039;/g, "'")
+            .replace(/&quot;/g, '"')
+            .replace(/&amp;/g, '&')
+            .trim();
           if (!headline) return;
 
           const textCombined = `${headline} ${rawDesc}`;
+          // Strict Semantic Crypto & Macro Relevance Gate: reject unrelated commodities/general stories
+          if (f.requireMacroOrCryptoFilter && !cryptoOrMacroRelevanceRegex.test(textCombined)) {
+            return;
+          }
+
           const isBear = bearWords.test(textCombined) && !bullWords.test(headline);
           const isBull = bullWords.test(textCombined) && !isBear;
           const sentiment = isBear
@@ -2615,28 +2675,28 @@ async function fetchLiveBloombergRssItems(hlAssets, nowStr) {
                 : 'BEARISH';
 
           const affectedAssets = [];
-          if (/hyperliquid|perps/i.test(textCombined)) affectedAssets.push('HYPE');
-          if (/bitcoin|btc/i.test(textCombined)) affectedAssets.push('BTC');
-          if (/ether|eth/i.test(textCombined)) affectedAssets.push('ETH');
-          if (/solana|sol/i.test(textCombined)) affectedAssets.push('SOL');
-          if (/nvidia|ai|anthropic/i.test(textCombined)) affectedAssets.push('TAO', 'RENDER', 'FET');
-          if (/gold/i.test(textCombined)) affectedAssets.push('PAXG', 'BTC');
+          for (const rule of tickerRegexMap) {
+            if (rule.re.test(textCombined) && !affectedAssets.includes(rule.sym)) {
+              affectedAssets.push(rule.sym);
+            }
+          }
           if (affectedAssets.length === 0) affectedAssets.push('BTC', 'ETH', 'SOL');
 
+          addedForFeed++;
           items.push({
             id: `bbg-rss-${fIdx}-${idx}`,
             timestamp: nowStr,
             source: f.source,
-            category: fIdx === 0 ? 'ETF_INSTITUTIONAL' : 'MACRO_FED',
+            category: fIdx <= 1 ? 'ETF_INSTITUTIONAL' : 'MACRO_FED',
             headline,
             summary:
-              rawDesc ||
+              rawDesc.slice(0, 220) ||
               `Berita resmi terverifikasi dari ${f.source} — diuji silang terhadap aliran derivatif & likuiditas on-chain.`,
             affectedAssets,
             sentiment,
-            credibilityScore: fIdx === 0 ? 99 : 97,
-            impactScore: fIdx === 0 ? 94 : 90,
-            verificationProof: `Verified Official Feed: ${f.url}`,
+            credibilityScore: fIdx === 0 ? 99 : fIdx === 1 ? 97 : 96,
+            impactScore: fIdx === 0 ? 95 : 91,
+            verificationProof: `Verified Official Crypto/Macro Feed: ${f.url}`,
             url: linkMatch?.[1]?.trim(),
           });
         });

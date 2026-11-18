@@ -529,16 +529,24 @@ export function mergeDynamicAllCryptoMarkets(
 
     const matchingPool = realDexPools?.find((p) => p.symbol.startsWith(m.baseAsset));
     const coinTrades = (realOnChainTrades || []).filter(
-      (t) => t.symbol === m.symbol || t.symbol.startsWith(m.baseAsset)
+      (t) =>
+        (t.symbol === m.symbol || t.symbol.startsWith(m.baseAsset)) &&
+        t.tokenSymbol !== 'USDC'
     );
     const liveWhaleDelta = coinTrades.reduce(
       (acc, t) => acc + (t.direction === 'BULLISH' ? t.sizeUsd : -t.sizeUsd),
       0
     );
+    const liveVol = hlData.volume24hUsd > 0 ? hlData.volume24hUsd : m.volume24hUsd;
+    const changeTilt = Math.max(-2.2, Math.min(2.2, (hlData.change24h || 0) / 1.6));
+    const obiTilt = m.obiScore * 1.35;
+    const structuralFlow = Math.round(liveVol * 0.0045 * (changeTilt * 0.65 + obiTilt * 0.35));
     const blendedWhaleNetFlow =
       coinTrades.length > 0
-        ? Math.round(m.whaleNetFlow1hUsd * 0.7 + liveWhaleDelta * 4.5)
-        : m.whaleNetFlow1hUsd;
+        ? Math.round(structuralFlow * 0.75 + liveWhaleDelta * 1.5)
+        : structuralFlow !== 0
+          ? structuralFlow
+          : m.whaleNetFlow1hUsd;
     const updatedWhaleBias: MarketPair['whaleBias'] =
       blendedWhaleNetFlow > 10_000_000
         ? 'STRONG LONG'

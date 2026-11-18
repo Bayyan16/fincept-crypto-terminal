@@ -416,6 +416,12 @@ export type SpecialistAgentId =
   | 'WHALE_WALLET'
   | 'EXECUTION_PRECISION';
 
+export interface SpecialistAgentSubSkill {
+  name: string;
+  status: string;
+  score: number;
+}
+
 export interface SpecialistAgentVote {
   agentId: SpecialistAgentId;
   agentName: string;
@@ -427,6 +433,7 @@ export interface SpecialistAgentVote {
   headline: string;
   rationale: string;
   metricsPillars: string[];
+  subSkills?: SpecialistAgentSubSkill[];
   timestamp: string;
 }
 
