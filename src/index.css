@@ -22,6 +22,29 @@ body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-y: contain;
+}
+
+/* Mobile Android & iPhone horizontal swipe rail & touch-drag ergonomics */
+.touch-scroll-x {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  touch-action: pan-x pan-y;
+  overscroll-behavior-x: contain;
+}
+
+.touch-drag-surface {
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+@media (max-width: 1023px) {
+  footer {
+    padding-bottom: calc(0.35rem + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 ::selection {

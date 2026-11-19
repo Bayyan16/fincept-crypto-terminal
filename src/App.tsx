@@ -254,10 +254,10 @@ export function App() {
     document.body.style.cursor = 'ns-resize';
     document.body.style.userSelect = 'none';
 
-    const handleGlobalMove = (e: MouseEvent) => {
+    const handleGlobalMove = (e: PointerEvent) => {
       const deltaY = positionsResizeStartRef.current.startY - e.clientY;
       const paneH = leftPaneRef.current?.clientHeight || 680;
-      const maxH = Math.max(260, paneH - 120);
+      const maxH = Math.min(540, Math.max(260, paneH - 120));
       const nextH = Math.max(
         40,
         Math.min(maxH, positionsResizeStartRef.current.startHeight + deltaY)
@@ -269,17 +269,19 @@ export function App() {
       setIsResizingPositionsDock(false);
     };
 
-    window.addEventListener('mousemove', handleGlobalMove);
-    window.addEventListener('mouseup', handleGlobalUp);
+    window.addEventListener('pointermove', handleGlobalMove);
+    window.addEventListener('pointerup', handleGlobalUp);
+    window.addEventListener('pointercancel', handleGlobalUp);
     return () => {
       document.body.style.cursor = prevCursor;
       document.body.style.userSelect = prevUserSelect;
-      window.removeEventListener('mousemove', handleGlobalMove);
-      window.removeEventListener('mouseup', handleGlobalUp);
+      window.removeEventListener('pointermove', handleGlobalMove);
+      window.removeEventListener('pointerup', handleGlobalUp);
+      window.removeEventListener('pointercancel', handleGlobalUp);
     };
   }, [isResizingPositionsDock]);
 
-  const handlePositionsResizeMouseDown = (e: React.MouseEvent) => {
+  const handlePositionsResizePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsResizingPositionsDock(true);
@@ -1688,8 +1690,8 @@ export function App() {
       className="flex flex-col min-h-screen lg:h-screen w-full max-w-full bg-[#0B0F17] text-[#E2E8F0] font-sans overflow-x-hidden lg:overflow-hidden select-none antialiased"
     >
       {/* 1. TOP FINCEPT COMMAND BAR & REAL-MONEY EXECUTION MODE SWITCHER */}
-      <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 py-1.5 bg-[#090C12] border-b border-[#1E2736] w-full min-w-0">
-        <div className="flex flex-wrap items-center gap-2 min-w-0 flex-1">
+      <header className="flex flex-wrap items-center justify-between gap-x-2.5 gap-y-1.5 px-2.5 sm:px-3 py-1.5 bg-[#090C12] border-b border-[#1E2736] w-full min-w-0">
+        <div className="flex items-center gap-2 min-w-0 flex-1">
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="px-1.5 py-0.5 bg-[#FF9F1C] text-black font-extrabold text-xs tracking-wider">
               FINCEPT
@@ -1702,16 +1704,16 @@ export function App() {
           <span className="text-[#2D3A4F] shrink-0 hidden sm:inline">|</span>
 
           {/* Command Bar Input */}
-          <form onSubmit={handleCommandSubmit} className="flex items-center min-w-0 shrink-0">
-            <div className="flex items-center bg-[#040609] border border-[#263246] focus-within:border-[#FF9F1C] px-2 py-0.5">
-              <span className="text-[#FF9F1C] text-xs font-bold mr-1.5">&gt;</span>
+          <form onSubmit={handleCommandSubmit} className="flex items-center min-w-0 flex-1 sm:flex-initial sm:shrink-0">
+            <div className="flex items-center bg-[#040609] border border-[#263246] focus-within:border-[#FF9F1C] px-2 py-0.5 w-full sm:w-auto">
+              <span className="text-[#FF9F1C] text-xs font-bold mr-1.5 shrink-0">&gt;</span>
               <input
                 type="text"
                 data-testid="command-input"
                 value={commandInput}
                 onChange={(e) => setCommandInput(e.target.value)}
-                placeholder="Type /profile, /portfolio, /btc, /sol, /long..."
-                className="bg-transparent text-[11px] text-[#F8FAFC] placeholder-[#64748B] focus:outline-none w-36 sm:w-44 xl:w-56"
+                placeholder="Type /profile, /portfolio, /btc, /sol..."
+                className="bg-transparent text-[11px] text-[#F8FAFC] placeholder-[#64748B] focus:outline-none w-full min-w-0 sm:w-44 xl:w-56"
               />
             </div>
           </form>
@@ -1727,8 +1729,8 @@ export function App() {
         </div>
 
         {/* Right Execution Mode Switcher, Flexible Network Selector, Profile & Portfolio Pill */}
-        <div className="flex flex-wrap items-center gap-1.5 text-[10px] max-w-full">
-          <div className="flex items-center bg-[#040609] border border-[#1E2736] p-0.5">
+        <div className="flex flex-nowrap lg:flex-wrap items-center gap-1.5 text-[10px] max-w-full w-full lg:w-auto overflow-x-auto no-scrollbar touch-scroll-x pb-0.5 lg:pb-0">
+          <div className="flex items-center bg-[#040609] border border-[#1E2736] p-0.5 shrink-0">
             {(
               [
                 { id: 'PAPER_SANDBOX', label: 'PAPER' },
@@ -1788,7 +1790,7 @@ export function App() {
                 : activeProfileAddress.split(' ')[0]}
             </span>
             <span className={activeTopTab === 'PORTFOLIO_PROFILE' ? 'text-black/60' : 'text-[#FF9F1C]'}>|</span>
-            <span>💼 ${formatDepthOrVol(totalPortfolioEquityUsd)}</span>
+            <span>💼 {formatDepthOrVol(totalPortfolioEquityUsd)}</span>
           </button>
 
           <button
@@ -1816,9 +1818,9 @@ export function App() {
         </div>
       </header>
 
-      {/* 2. PRIMARY NAVIGATION TABS (Dedicated Full-Width Strip — Zero Overlap, Responsive Wrap) */}
-      <nav className="flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-3 py-0.5 bg-[#0B0F17] border-b border-[#1E2736] text-[11px] w-full">
-        <div className="flex flex-wrap items-center gap-1 min-w-0">
+      {/* 2. PRIMARY NAVIGATION TABS (Single Swipeable Bar on Mobile Android/iPhone, Full Strip on Desktop) */}
+      <nav className="flex items-center justify-between gap-x-2 px-2 sm:px-3 py-0.5 bg-[#0B0F17] border-b border-[#1E2736] text-[11px] w-full">
+        <div className="flex flex-nowrap lg:flex-wrap items-center gap-1 min-w-0 w-full lg:w-auto overflow-x-auto no-scrollbar touch-scroll-x">
           {(
             [
               { id: 'TERMINAL_DESK', label: '1) MULTI-EXCHANGE DESK' },
@@ -1832,7 +1834,7 @@ export function App() {
               key={tab.id}
               data-testid={`top-tab-${tab.id}`}
               onClick={() => setActiveTopTab(tab.id)}
-              className={`px-3 py-1.5 font-extrabold tracking-wide whitespace-nowrap border-b-2 transition-all duration-150 active:scale-[0.98] ${
+              className={`px-2.5 sm:px-3 py-1.5 font-extrabold tracking-wide whitespace-nowrap shrink-0 border-b-2 transition-all duration-150 active:scale-[0.98] ${
                 activeTopTab === tab.id
                   ? 'bg-[#151D2B] text-[#FF9F1C] border-[#FF9F1C]'
                   : tab.id === 'PORTFOLIO_PROFILE'
@@ -1852,11 +1854,11 @@ export function App() {
         </div>
       </nav>
 
-      {/* 3. SEAMLESS MULTI-MARKET WATCHLIST GRID & ALL-CRYPTO SECTOR EXPLORER (235+ Markets) */}
-      <div className="px-3 py-1 bg-[#070A0F] border-b border-[#1E2736] text-[10px] w-full space-y-1">
-        <div className="flex flex-wrap items-center justify-between gap-1.5">
-          <div className="flex flex-wrap items-center gap-1">
-            <span className="text-[9px] text-[#FF9F1C] font-extrabold mr-1">
+      {/* 3. SEAMLESS MULTI-MARKET WATCHLIST RAIL (Swipeable on Mobile, Multi-Column Grid on Desktop) */}
+      <div className="px-2.5 sm:px-3 py-1 bg-[#070A0F] border-b border-[#1E2736] text-[10px] w-full space-y-1">
+        <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-1.5">
+          <div className="flex flex-nowrap lg:flex-wrap items-center gap-1 overflow-x-auto no-scrollbar touch-scroll-x w-full lg:w-auto pb-0.5 lg:pb-0">
+            <span className="text-[9px] text-[#FF9F1C] font-extrabold mr-1 whitespace-nowrap shrink-0">
               MARKET UNIVERSE ({markets.length}):
             </span>
             {(
@@ -1877,7 +1879,7 @@ export function App() {
                   setWatchlistSectorFilter(cat.id);
                   setWatchlistSearchQuery('');
                 }}
-                className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
+                className={`px-2 py-0.5 text-[9px] font-extrabold border whitespace-nowrap shrink-0 ${
                   watchlistSectorFilter === cat.id && !watchlistSearchQuery
                     ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
                     : 'bg-[#0C121D] text-[#94A3B8] border-[#1A2538] hover:text-white'
@@ -1888,19 +1890,19 @@ export function App() {
             ))}
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 w-full sm:w-auto">
             <input
               type="text"
               data-testid="watchlist-market-search"
               value={watchlistSearchQuery}
               onChange={(e) => setWatchlistSearchQuery(e.target.value)}
               placeholder={`Cari dari ${markets.length} market (PEPE, TAO, ONDO, ARB, WIF...)`}
-              className="px-2 py-0.5 bg-[#05080D] border border-[#1E2B42] text-white text-[9.5px] w-56 focus:outline-none"
+              className="px-2 py-1 sm:py-0.5 bg-[#05080D] border border-[#1E2B42] text-white text-[10px] sm:text-[9.5px] w-full sm:w-56 focus:outline-none"
             />
             {watchlistSearchQuery && (
               <button
                 onClick={() => setWatchlistSearchQuery('')}
-                className="px-1.5 py-0.5 bg-[#162032] text-[#FF9F1C] text-[9px] font-bold border border-[#FF9F1C]/40"
+                className="px-2 py-1 sm:px-1.5 sm:py-0.5 bg-[#162032] text-[#FF9F1C] text-[9px] font-bold border border-[#FF9F1C]/40 shrink-0"
               >
                 ✕
               </button>
@@ -1908,7 +1910,7 @@ export function App() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 xl:grid-cols-7 min-[2100px]:grid-cols-[repeat(14,minmax(0,1fr))] gap-1 w-full max-h-24 overflow-y-auto">
+        <div className="flex flex-nowrap overflow-x-auto no-scrollbar touch-scroll-x gap-1.5 pb-0.5 lg:pb-0 lg:grid lg:grid-cols-4 xl:grid-cols-7 min-[2100px]:grid-cols-[repeat(14,minmax(0,1fr))] lg:gap-1 w-full lg:max-h-24 lg:overflow-y-auto">
           {displayedWatchlistMarkets.map((m) => {
             const isSel = m.symbol === selectedSymbol;
             const pct1d = Number.isFinite(m.change24h) ? m.change24h : 0;
@@ -1921,7 +1923,7 @@ export function App() {
                   setCustomDeskPool(null);
                   setSelectedSymbol(m.symbol);
                 }}
-                className={`px-1.5 py-0.5 border flex items-center justify-between gap-1 min-w-0 transition-all duration-150 hover:-translate-y-px active:scale-[0.97] ${
+                className={`px-2 py-1 lg:px-1.5 lg:py-0.5 border flex items-center justify-between gap-1.5 lg:gap-1 shrink-0 min-w-[154px] lg:min-w-0 lg:shrink transition-all duration-150 hover:-translate-y-px active:scale-[0.97] ${
                   isSel
                     ? 'bg-[#131E30] border-[#00E5FF] text-[#F8FAFC] font-extrabold shadow-[inset_0_0_0_1px_rgba(0,229,255,0.2)]'
                     : 'bg-[#0A0E15] border-[#192231] text-[#CBD5E1] hover:border-[#2E3D57] hover:text-white'
@@ -1969,8 +1971,8 @@ export function App() {
       </div>
 
       {/* 4. ACTIVE INSTRUMENT TICKER, POSITION SIZER & AUTONOMOUS AGENT CONTROLS */}
-      <div className="flex flex-wrap items-center justify-between px-3 py-1.5 bg-[#06090F] border-b border-[#1E2736] text-[11px] gap-2 w-full">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-1 min-w-0">
+      <div className="flex flex-wrap items-center justify-between px-2.5 sm:px-3 py-1.5 bg-[#06090F] border-b border-[#1E2736] text-[11px] gap-1.5 sm:gap-2 w-full">
+        <div className="flex flex-wrap items-center justify-between sm:justify-start gap-x-3 gap-y-1 min-w-0 w-full lg:w-auto">
           <div className="flex items-center gap-2 shrink-0">
             {customDeskPool && activePair.symbol.endsWith('-DEX') ? (
               <MarketTokenIcon
@@ -2047,18 +2049,18 @@ export function App() {
         </div>
 
         {/* Real-Money Order Sizing & Execution Controls */}
-        <div className="flex flex-wrap items-center gap-1.5 max-w-full">
-          <div className="flex items-center bg-[#040609] border border-[#1E2736] px-1.5 py-0.5 text-[10px]">
+        <div className="flex flex-nowrap lg:flex-wrap items-center gap-1.5 max-w-full w-full lg:w-auto overflow-x-auto no-scrollbar touch-scroll-x pb-0.5 lg:pb-0">
+          <div className="flex items-center bg-[#040609] border border-[#1E2736] px-1.5 py-0.5 text-[10px] shrink-0">
             <span className="text-[#94A3B8] mr-1">SIZE $:</span>
             <input
               type="number"
               value={orderSizeUsdInput}
               onChange={(e) => setOrderSizeUsdInput(Math.max(10, Number(e.target.value)))}
-              className="w-16 bg-transparent text-[#FF9F1C] font-extrabold text-right focus:outline-none"
+              className="w-14 sm:w-16 bg-transparent text-[#FF9F1C] font-extrabold text-right focus:outline-none"
             />
           </div>
 
-          <div className="flex items-center bg-[#040609] border border-[#1E2736] px-1.5 py-0.5 text-[10px]">
+          <div className="flex items-center bg-[#040609] border border-[#1E2736] px-1.5 py-0.5 text-[10px] shrink-0">
             <span className="text-[#94A3B8] mr-1">LEV:</span>
             <select
               value={leverageInput}
@@ -2075,7 +2077,7 @@ export function App() {
 
           <button
             onClick={() => setAgentAutonomousEnabled(!agentAutonomousEnabled)}
-            className={`px-2 py-1 text-[10px] font-extrabold border ${
+            className={`px-2 py-1 text-[10px] font-extrabold border whitespace-nowrap shrink-0 ${
               agentAutonomousEnabled
                 ? 'bg-[#00E676] text-black border-[#00E676]'
                 : 'bg-[#151C28] text-[#94A3B8] border-[#2A364B]'
@@ -2087,7 +2089,7 @@ export function App() {
           <button
             onClick={() => handleManualAgentEntry('LONG')}
             disabled={isExecutingOrder}
-            className="px-2.5 py-1 bg-[#00E676]/20 hover:bg-[#00E676] hover:text-black text-[#00E676] border border-[#00E676] text-[10px] font-extrabold transition-colors"
+            className="px-2.5 py-1 bg-[#00E676]/20 hover:bg-[#00E676] hover:text-black text-[#00E676] border border-[#00E676] text-[10px] font-extrabold transition-colors whitespace-nowrap shrink-0"
           >
             {executionEnv === 'REAL_MAINNET' ? '🔥 REAL LONG' : '+ MAKER LONG'}
           </button>
@@ -2095,21 +2097,21 @@ export function App() {
           <button
             onClick={() => handleManualAgentEntry('SHORT')}
             disabled={isExecutingOrder}
-            className="px-2.5 py-1 bg-[#FF1744]/20 hover:bg-[#FF1744] hover:text-white text-[#FF1744] border border-[#FF1744] text-[10px] font-extrabold transition-colors"
+            className="px-2.5 py-1 bg-[#FF1744]/20 hover:bg-[#FF1744] hover:text-white text-[#FF1744] border border-[#FF1744] text-[10px] font-extrabold transition-colors whitespace-nowrap shrink-0"
           >
             {executionEnv === 'REAL_MAINNET' ? '🔥 REAL SHORT' : '- MAKER SHORT'}
           </button>
 
           <button
             onClick={() => handleSimulateWhaleSurge('BULLISH')}
-            className="px-2 py-1 bg-[#141C2B] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/60 text-[10px] font-bold transition-colors"
+            className="px-2 py-1 bg-[#141C2B] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/60 text-[10px] font-bold transition-colors whitespace-nowrap shrink-0"
           >
             ⚡ WHALE INFLOW
           </button>
 
           <button
             onClick={() => handleSimulateWhaleSurge('BEARISH')}
-            className="px-2 py-1 bg-[#1A1218] hover:bg-[#D500F9] hover:text-white text-[#D500F9] border border-[#D500F9]/60 text-[10px] font-bold transition-colors"
+            className="px-2 py-1 bg-[#1A1218] hover:bg-[#D500F9] hover:text-white text-[#D500F9] border border-[#D500F9]/60 text-[10px] font-bold transition-colors whitespace-nowrap shrink-0"
           >
             🛡️ DUMP GUARD
           </button>
@@ -2121,15 +2123,15 @@ export function App() {
         {activeTopTab === 'TERMINAL_DESK' && (
           <div
             key="TERMINAL_DESK"
-            className="anim-panel grid grid-cols-12 h-full divide-y lg:divide-y-0 lg:divide-x divide-[#1E2736]"
+            className="anim-panel flex flex-col lg:grid lg:grid-cols-12 lg:h-full divide-y lg:divide-y-0 lg:divide-x divide-[#1E2736]"
           >
-            {/* LEFT & CENTER PANE (7 Columns) */}
+            {/* LEFT & CENTER PANE (7 Columns on Desktop, Full-Width Stacked on Mobile Android/iPhone) */}
             <div
               ref={leftPaneRef}
-              className="col-span-12 lg:col-span-7 flex flex-col lg:h-full overflow-hidden bg-[#06080C]"
+              className="w-full lg:col-span-7 flex flex-col lg:h-full lg:overflow-hidden bg-[#06080C]"
             >
-              <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-1 bg-[#0A0E15] border-b border-[#1E2736] text-[10.5px]">
-                <div className="flex flex-wrap items-center gap-x-4 gap-y-1 min-w-0">
+              <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 sm:px-3 py-1 bg-[#0A0E15] border-b border-[#1E2736] text-[10.5px]">
+                <div className="flex flex-nowrap sm:flex-wrap items-center gap-x-3.5 sm:gap-x-4 gap-y-1 min-w-0 max-w-full overflow-x-auto no-scrollbar touch-scroll-x">
                   {(
                     [
                       { id: 'OVERVIEW', label: 'OVERVIEW & CHART' },
@@ -2142,7 +2144,7 @@ export function App() {
                       key={st.id}
                       data-testid={`subtab-${st.id}`}
                       onClick={() => setActiveSubTab(st.id)}
-                      className={`py-0.5 font-extrabold border-b-2 transition-all duration-150 active:scale-[0.96] ${
+                      className={`py-0.5 font-extrabold border-b-2 whitespace-nowrap shrink-0 transition-all duration-150 active:scale-[0.96] ${
                         activeSubTab === st.id
                           ? 'border-[#FF9F1C] text-[#FF9F1C]'
                           : 'border-transparent text-[#94A3B8] hover:text-white'
@@ -2158,9 +2160,9 @@ export function App() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-12 flex-1 min-h-0 divide-x divide-[#1E2736] border-b border-[#1E2736]">
-                {/* Left Stats Column (Clean, Well-Spaced Real Market Telemetry) */}
-                <div className="col-span-3 flex flex-col p-2.5 bg-[#070A0F] overflow-y-auto text-[10.5px] space-y-3">
+              <div className="flex flex-col lg:grid lg:grid-cols-12 flex-1 min-h-0 divide-y lg:divide-y-0 lg:divide-x divide-[#1E2736] border-b border-[#1E2736]">
+                {/* Left Stats Column (Clean, Well-Spaced Real Market Telemetry — Placed Below Chart on Mobile) */}
+                <div className="order-3 lg:order-1 lg:col-span-3 flex flex-col sm:grid sm:grid-cols-3 lg:flex lg:flex-col p-2.5 bg-[#070A0F] lg:overflow-y-auto text-[10.5px] gap-3">
                   <div>
                     <div className="text-[#FF9F1C] font-extrabold text-[10px] border-b border-[#1E2736] pb-0.5 mb-1.5 uppercase">
                       REAL MARKET TELEMETRY
@@ -2271,8 +2273,8 @@ export function App() {
                   </div>
                 </div>
 
-                {/* Center Real-Market Candlestick Chart / Sub-Tabs */}
-                <div className="col-span-6 flex flex-col min-h-0 overflow-hidden">
+                {/* Center Real-Market Candlestick Chart / Sub-Tabs (First & Full-Width on Mobile) */}
+                <div className="order-1 lg:order-2 lg:col-span-6 flex flex-col min-h-[390px] sm:min-h-[430px] lg:min-h-0 overflow-hidden">
                   {activeSubTab === 'OVERVIEW' && (
                     <div key="OVERVIEW" className="anim-fade flex flex-col h-full min-h-0">
                       <CandlestickOrderflowChart
@@ -2447,7 +2449,7 @@ export function App() {
                         </div>
 
                         {/* 3. FULL 18-ROW MULTI-EXCHANGE L2 DEPTH TABLE (WITH COIN SIZE & CUMULATIVE USD) */}
-                        <div className="flex-1 grid grid-cols-2 gap-2.5 bg-[#080B12] border border-[#162032] p-2">
+                        <div className="flex-1 grid grid-cols-1 md:grid-cols-2 gap-2.5 bg-[#080B12] border border-[#162032] p-2">
                           {/* BIDS SIDE (BUY ORDERS FOR ACTIVE COIN) */}
                           <div className="flex flex-col">
                             <div className="flex items-center justify-between pb-1 mb-1 border-b border-[#1E2B40]">
@@ -2761,7 +2763,7 @@ export function App() {
                 </div>
 
                 {/* Right Confluence & 10-Level Live Orderbook Column (No Clipped Text) */}
-                <div className="col-span-3 flex flex-col p-2.5 bg-[#070A0F] overflow-y-auto text-[10.5px] space-y-3">
+                <div className="order-2 lg:order-3 lg:col-span-3 flex flex-col p-2.5 bg-[#070A0F] lg:overflow-y-auto text-[10.5px] space-y-3">
                   <div>
                     <div className="text-[#D500F9] font-extrabold text-[10px] border-b border-[#1E2736] pb-0.5 mb-1.5 uppercase flex items-center justify-between">
                       <span>4-AGENT FORUM SCORES</span>
@@ -2859,14 +2861,15 @@ export function App() {
                   isResizingPositionsDock ? '' : 'transition-[height] duration-200 ease-out'
                 }`}
               >
-                {/* DRAG HANDLE BAR (Pull Up to expand table / Push Down to expand chart) */}
+                {/* DRAG HANDLE BAR (Pull Up to expand table / Push Down to expand chart — Mouse & Touch) */}
                 <div
-                  onMouseDown={handlePositionsResizeMouseDown}
+                  onPointerDown={handlePositionsResizePointerDown}
                   data-testid="positions-dock-handle"
-                  className="h-2.5 bg-[#0D1524] hover:bg-[#00E5FF]/30 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group shrink-0 select-none"
+                  style={{ touchAction: 'none' }}
+                  className="h-5 sm:h-2.5 bg-[#0D1524] hover:bg-[#00E5FF]/30 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group shrink-0 select-none touch-drag-surface"
                   title="Tarik ke atas untuk memperbesar tabel Active Positions, atau tarik ke bawah untuk memperluas area Chart"
                 >
-                  <div className="w-16 h-1 rounded-full bg-[#334155] group-hover:bg-[#00E5FF] transition-colors" />
+                  <div className="w-16 h-1.5 sm:h-1 rounded-full bg-[#334155] group-hover:bg-[#00E5FF] transition-colors" />
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between px-3 py-1 bg-[#0B1018] border-b border-[#1E2736] text-[10.5px] gap-2 shrink-0">
@@ -2944,9 +2947,9 @@ export function App() {
                   {positions.map((pos) => (
                     <div
                       key={pos.id}
-                      className="px-3 py-1.5 flex items-center justify-between hover:bg-[#0D131F]"
+                      className="px-2.5 sm:px-3 py-2 sm:py-1.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-[#0D131F]"
                     >
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-start sm:items-center gap-2.5 sm:gap-3 min-w-0">
                         <span
                           className={`px-1.5 py-0.5 font-extrabold text-[10px] ${
                             pos.side === 'LONG'
@@ -3006,7 +3009,7 @@ export function App() {
                         </div>
                       </div>
 
-                      <div className="flex items-center gap-3">
+                      <div className="flex items-center justify-between sm:justify-end gap-2.5 sm:gap-3 shrink-0">
                         <div className="text-right">
                           <div
                             className={`font-extrabold ${
@@ -3045,8 +3048,8 @@ export function App() {
               </div>
             </div>
 
-            {/* RIGHT PANE (5 Columns): Interactive Whale Pipeline Chord Diagram ("Trade Viz") */}
-            <div className="col-span-12 lg:col-span-5 h-full overflow-hidden">
+            {/* RIGHT PANE (5 Columns on Desktop, Full-Width Touch-Draggable Canvas on Mobile) */}
+            <div className="w-full lg:col-span-5 min-h-[540px] lg:min-h-0 lg:h-full overflow-hidden">
               <WhaleChordViz
                 links={chordLinks}
                 recentWhales={
@@ -3069,18 +3072,18 @@ export function App() {
 
         {/* TAB 2: DEXSCREENER, RAYDIUM V3 & JUPITER V1 ON-CHAIN HUB */}
         {activeTopTab === 'DEX_SCREENER' && (
-          <div key="DEX_SCREENER" className="anim-panel p-4 h-full overflow-y-auto bg-[#06080C] space-y-4">
-            <div className="flex items-center justify-between border-b border-[#1E2736] pb-2">
+          <div key="DEX_SCREENER" className="anim-panel p-2.5 sm:p-4 lg:h-full overflow-y-auto bg-[#06080C] space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#1E2736] pb-2">
               <div>
-                <h2 className="text-sm font-extrabold text-[#FF9F1C] uppercase">
+                <h2 className="text-xs sm:text-sm font-extrabold text-[#FF9F1C] uppercase">
                   REAL-TIME ON-CHAIN DEX INTELLIGENCE: HYPERLIQUID L1 • RAYDIUM V3 CLMM • JUPITER V1 • DEXSCREENER
                 </h2>
-                <p className="text-xs text-[#94A3B8]">
+                <p className="text-[11px] sm:text-xs text-[#94A3B8]">
                   Seluruh data likuiditas, kuotasi rute swap Jupiter, rentang CLMM Raydium, serta
                   transaksi beli/jual on-chain masuk secara langsung ke backend Agent.
                 </p>
               </div>
-              <span className="px-3 py-1 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-xs font-extrabold">
+              <span className="px-2.5 py-1 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-[10px] sm:text-xs font-extrabold self-start sm:self-auto shrink-0">
                 4 DEX INDEXERS: LIVE SYNCED
               </span>
             </div>
@@ -3127,8 +3130,8 @@ export function App() {
             )}
 
             {/* TOP 10 COINMARKETCAP + ON-CHAIN ECOSYSTEM MATRIX */}
-            <div className="border border-[#1E2736] bg-[#080B11]">
-              <div className="flex items-center justify-between px-3 py-2 bg-[#0B111D] border-b border-[#1E2736]">
+            <div className="border border-[#1E2736] bg-[#080B11] overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-1.5 px-3 py-2 bg-[#0B111D] border-b border-[#1E2736]">
                 <span className="text-xs font-extrabold text-[#00E5FF] uppercase">
                   TOP 10 COINMARKETCAP & HIGH-LIQUIDITY ON-CHAIN ASSET MATRIX ({markets.length} MARKETS)
                 </span>
@@ -3136,6 +3139,8 @@ export function App() {
                   ● REAL-TIME MULTI-EXCHANGE & ON-CHAIN FEED
                 </span>
               </div>
+              <div className="overflow-x-auto touch-scroll-x">
+                <div className="min-w-[840px]">
               <div className="grid grid-cols-9 px-3 py-2 bg-[#0D131E] border-b border-[#1E2736] text-[10px] font-extrabold text-[#94A3B8]">
                 <span>CMC RANK & COIN</span>
                 <span>CHAIN / PRIMARY VENUE</span>
@@ -3211,6 +3216,8 @@ export function App() {
                     </div>
                   </div>
                 ))}
+              </div>
+                </div>
               </div>
             </div>
 
@@ -3550,7 +3557,8 @@ export function App() {
                       <strong className="text-white">ON-CHAIN WHALE TAPE</strong> untuk stream RPC langsung.
                     </div>
                   ) : (
-                    <div className="max-h-56 overflow-y-auto border border-[#1B2B44] bg-[#060911] divide-y divide-[#131C2D] text-[10px] font-mono">
+                    <div className="max-h-56 overflow-y-auto overflow-x-auto touch-scroll-x border border-[#1B2B44] bg-[#060911] divide-y divide-[#131C2D] text-[10px] font-mono">
+                      <div className="min-w-[660px] divide-y divide-[#131C2D]">
                       {inspectedPoolTrades.slice(0, 35).map((tr, i) => (
                         <div
                           key={`${tr.id}-${i}`}
@@ -3586,11 +3594,14 @@ export function App() {
                           </a>
                         </div>
                       ))}
+                      </div>
                     </div>
                   )}
                 </div>
               )}
 
+              <div className="overflow-x-auto touch-scroll-x">
+                <div className="min-w-[860px]">
               <div className="grid grid-cols-10 px-3 py-2 bg-[#0D131E] border-b border-[#1E2736] text-[10px] font-extrabold text-[#94A3B8]">
                 <span className="col-span-2">PAIR / TOKEN</span>
                 <span>CHAIN & DEX</span>
@@ -3684,6 +3695,8 @@ export function App() {
                     </div>
                   );
                 })}
+              </div>
+                </div>
               </div>
             </div>
           </div>
@@ -4152,7 +4165,7 @@ export function App() {
                   audit scratch kerugian ke Brankas Eksternal (klik baris untuk inspeksi di panggung 3D).
                 </p>
               </div>
-              <div className="flex items-center gap-2 font-mono text-[10.5px]">
+              <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 font-mono text-[10px] sm:text-[10.5px]">
                 <span className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] font-extrabold">
                   📥 MASUK BRANKAS: +${totalProfitInAudit.toFixed(2)}
                 </span>
@@ -4281,7 +4294,7 @@ export function App() {
               <span className="text-[11px] font-extrabold text-[#00E5FF]">
                 LOG AUDIT EKSEKUSI & SETTLEMENT ON-CHAIN ({filteredAuditTrades.length} POSISI DITUTUP)
               </span>
-              <div className="flex items-center gap-1.5">
+              <div className="flex flex-wrap items-center gap-1.5">
                 {(
                   [
                     { id: 'ALL', label: `SEMUA (${closedTrades.length})` },
@@ -4312,7 +4325,7 @@ export function App() {
                 <div
                   key={ct.id}
                   onClick={() => setSelectedAuditTradeId(ct.id)}
-                  className={`p-3 border flex items-center justify-between text-xs cursor-pointer ${
+                  className={`p-3 border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs cursor-pointer ${
                     isSelected
                       ? isWin
                         ? 'bg-[#071812] border-[#00E676]'
@@ -4385,23 +4398,23 @@ export function App() {
 
         {/* TAB 5: TRADER PROFILE, MULTI-CHAIN PORTFOLIO & FLEXIBLE NETWORK HUB */}
         {activeTopTab === 'PORTFOLIO_PROFILE' && (
-          <div key="PORTFOLIO_PROFILE" className="anim-panel p-4 h-full overflow-y-auto bg-[#06080C] space-y-4">
+          <div key="PORTFOLIO_PROFILE" className="anim-panel p-2.5 sm:p-4 lg:h-full overflow-y-auto bg-[#06080C] space-y-4">
             {/* Top Header Banner */}
             <div className="flex flex-wrap items-center justify-between border-b border-[#1E2736] pb-3 gap-2">
               <div>
-                <h2 className="text-sm font-extrabold text-[#FF9F1C] uppercase flex items-center gap-2">
+                <h2 className="text-xs sm:text-sm font-extrabold text-[#FF9F1C] uppercase flex flex-wrap items-center gap-2">
                   <span>👤 TRADER PROFILE, MULTI-CHAIN PORTFOLIO & FLEXIBLE NETWORK ROUTER</span>
                   <span className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-[10px]">
                     ✓ EIP-712 AUTO-CHAIN-ID SYNC ACTIVE
                   </span>
                 </h2>
-                <p className="text-xs text-[#94A3B8] mt-0.5">
+                <p className="text-[11px] sm:text-xs text-[#94A3B8] mt-0.5">
                   Pusat kendali identitas Wallet (Trust Wallet & Phantom), rincian saldo aset lintas
                   jaringan (Multi-Chain Portfolio), dan pemilih jaringan paling fleksibel tanpa
                   error ChainID.
                 </p>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <button
                   onClick={() => handleQuickConnectExtension('trust')}
                   disabled={isSyncingProfile}
@@ -4573,7 +4586,7 @@ export function App() {
                     return (
                       <div
                         key={w.id}
-                        className="py-2.5 flex items-center justify-between hover:bg-[#0D131E] px-2"
+                        className="py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-[#0D131E] px-2"
                       >
                         <div className="space-y-0.5">
                           <div className="flex items-center gap-2">
@@ -4597,7 +4610,7 @@ export function App() {
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center justify-between sm:justify-end gap-2.5 sm:gap-3 shrink-0">
                           <div className="text-right">
                             <div className="font-extrabold text-[#00E676]">
                               ${w.balanceUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
@@ -4718,18 +4731,18 @@ export function App() {
       </main>
 
       {/* 5. BOTTOM TERMINAL STATUS BAR */}
-      <footer className="flex items-center justify-between px-3 py-1 bg-[#080B10] border-t border-[#1E2736] text-[10px] text-[#94A3B8]">
-        <div className="flex items-center gap-4">
+      <footer className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 px-2.5 sm:px-3 py-1 bg-[#080B10] border-t border-[#1E2736] text-[10px] text-[#94A3B8]">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5">
           <span className="text-[#FF9F1C] font-bold">V5.1 REAL-MARKET OHLCV & GATEWAY</span>
-          <span>
+          <span className="hidden xl:inline">
             VENUES: <strong className="text-white">HYPERLIQUID L1 • BINANCE • BYBIT • OKX • JUPITER • DEXSCREENER</strong>
           </span>
-          <span>
-            CHART: <strong className="text-[#00E5FF]">WHEEL ZOOM + DRAG PAN + LIVE {chartTimeframe.toUpperCase()} KLINES</strong>
+          <span className="hidden md:inline">
+            CHART: <strong className="text-[#00E5FF]">WHEEL/PINCH ZOOM + DRAG PAN + LIVE {chartTimeframe.toUpperCase()} KLINES</strong>
           </span>
         </div>
-        <div className="flex items-center gap-3">
-          <span>ENV: {executionEnv}</span>
+        <div className="flex items-center gap-2.5 shrink-0">
+          <span className="hidden sm:inline">ENV: {executionEnv}</span>
           <span className="text-[#00E676] font-extrabold">● GATEWAY READY</span>
         </div>
       </footer>

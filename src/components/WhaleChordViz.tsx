@@ -151,6 +151,8 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
   const rootContainerRef = useRef<HTMLDivElement | null>(null);
   const svgContainerRef = useRef<HTMLDivElement | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
+  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchStartRef = useRef<{ dist: number; zoom: number } | null>(null);
 
   // Native non-passive Wheel Zoom listener on the SVG container, rAF-batched so
   // high-frequency trackpad deltas collapse into a single zoom update per frame
@@ -188,11 +190,11 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     []
   );
 
-  // Global MouseMove / MouseUp for smooth vertical resizing of the On-Chain Stream Drawer
+  // Global PointerMove / PointerUp for smooth mouse & touch vertical resizing of the On-Chain Stream Drawer
   useEffect(() => {
     if (!isResizingStream) return;
 
-    const handleGlobalMove = (e: MouseEvent) => {
+    const handleGlobalMove = (e: PointerEvent) => {
       const deltaY = streamResizeStartRef.current.startY - e.clientY;
       const rootH = rootContainerRef.current?.clientHeight || 680;
       const maxH = Math.max(320, rootH - 95);
@@ -204,15 +206,17 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
       setIsResizingStream(false);
     };
 
-    window.addEventListener('mousemove', handleGlobalMove);
-    window.addEventListener('mouseup', handleGlobalUp);
+    window.addEventListener('pointermove', handleGlobalMove);
+    window.addEventListener('pointerup', handleGlobalUp);
+    window.addEventListener('pointercancel', handleGlobalUp);
     return () => {
-      window.removeEventListener('mousemove', handleGlobalMove);
-      window.removeEventListener('mouseup', handleGlobalUp);
+      window.removeEventListener('pointermove', handleGlobalMove);
+      window.removeEventListener('pointerup', handleGlobalUp);
+      window.removeEventListener('pointercancel', handleGlobalUp);
     };
   }, [isResizingStream]);
 
-  const handleStreamResizeMouseDown = (e: React.MouseEvent) => {
+  const handleStreamResizePointerDown = (e: React.PointerEvent) => {
     e.preventDefault();
     e.stopPropagation();
     setIsResizingStream(true);
@@ -244,8 +248,29 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     if (onSelectNodeFilter) onSelectNodeFilter(null);
   };
 
-  const handleNodeMouseDown = (e: React.MouseEvent, nodeId: string) => {
+  const handleNodePointerDown = (e: React.PointerEvent, nodeId: string) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
     e.stopPropagation();
+    try {
+      svgContainerRef.current?.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore synthetic events
+    }
+    activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (activePointersRef.current.size === 2) {
+      const pts = Array.from(activePointersRef.current.values());
+      pinchStartRef.current = {
+        dist: Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)),
+        zoom,
+      };
+      dragModeRef.current = null;
+      draggingNodeIdRef.current = null;
+      setDraggingNodeId(null);
+      setIsPanningCanvas(false);
+      return;
+    }
+
+    pinchStartRef.current = null;
     const pos = nodePositions[nodeId] || { x: 280, y: 205 };
     setDraggingNodeId(nodeId);
     draggingNodeIdRef.current = nodeId;
@@ -261,8 +286,29 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     };
   };
 
-  const handleCanvasMouseDown = (e: React.MouseEvent) => {
-    if (draggingNodeId) return;
+  const handleCanvasPointerDown = (e: React.PointerEvent) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    try {
+      svgContainerRef.current?.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore synthetic events
+    }
+    activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (activePointersRef.current.size === 2) {
+      const pts = Array.from(activePointersRef.current.values());
+      pinchStartRef.current = {
+        dist: Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y)),
+        zoom,
+      };
+      dragModeRef.current = null;
+      draggingNodeIdRef.current = null;
+      setDraggingNodeId(null);
+      setIsPanningCanvas(false);
+      return;
+    }
+
+    if (draggingNodeIdRef.current) return;
+    pinchStartRef.current = null;
     setIsPanningCanvas(true);
     dragModeRef.current = 'pan';
     dragStartRef.current = {
@@ -322,9 +368,22 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     if (p) applyMove(p);
   };
 
-  const handleMouseMove = (e: React.MouseEvent) => {
+  const handlePointerMove = (e: React.PointerEvent) => {
+    if (activePointersRef.current.has(e.pointerId)) {
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    }
+
+    // 2-Finger Pinch Zoom for Android & iPhone
+    if (activePointersRef.current.size === 2 && pinchStartRef.current) {
+      const pts = Array.from(activePointersRef.current.values());
+      const dist = Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y));
+      const scale = dist / pinchStartRef.current.dist;
+      setZoom(Number(Math.max(0.45, Math.min(3.0, pinchStartRef.current.zoom * scale)).toFixed(2)));
+      return;
+    }
+
     // Drag-vs-click detection must be synchronous: the browser fires `click`
-    // right after `mouseup`, before any pending rAF gets a chance to run.
+    // right after `pointerup`, before any pending rAF gets a chance to run.
     if (dragModeRef.current && !dragStartRef.current.moved) {
       const dx = e.clientX - dragStartRef.current.clientX;
       const dy = e.clientY - dragStartRef.current.clientY;
@@ -332,6 +391,8 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
         dragStartRef.current.moved = true;
       }
     }
+
+    if (!dragModeRef.current) return;
 
     pendingMoveRef.current = { clientX: e.clientX, clientY: e.clientY };
     if (moveRafRef.current !== null) return;
@@ -357,8 +418,25 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     if (restoreHover && releasedNodeId) setHoveredNode(releasedNodeId);
   };
 
-  const handleMouseUp = () => endDrag(true);
-  const handleCanvasMouseLeave = () => endDrag(false);
+  const handlePointerUpOrCancel = (e: React.PointerEvent) => {
+    activePointersRef.current.delete(e.pointerId);
+    if (activePointersRef.current.size < 2) {
+      pinchStartRef.current = null;
+    }
+    try {
+      if (svgContainerRef.current?.hasPointerCapture(e.pointerId)) {
+        svgContainerRef.current.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore synthetic events
+    }
+    endDrag(e.pointerType === 'mouse');
+  };
+
+  const handleCanvasPointerLeave = (e: React.PointerEvent) => {
+    if (activePointersRef.current.has(e.pointerId) && dragModeRef.current) return;
+    endDrag(false);
+  };
 
   const handleNodeClick = (id: string) => {
     if (dragStartRef.current.moved) return;
@@ -602,15 +680,16 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
         {/* 3. Interactive Draggable & Zoomable SVG Topology Canvas */}
         <div
           ref={svgContainerRef}
-          onMouseDown={handleCanvasMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUp}
-          onMouseLeave={handleCanvasMouseLeave}
+          onPointerDown={handleCanvasPointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUpOrCancel}
+          onPointerCancel={handlePointerUpOrCancel}
+          onPointerLeave={handleCanvasPointerLeave}
           style={{ touchAction: 'none' }}
-          className={`relative flex-1 flex items-center justify-center bg-[#040609] overflow-hidden min-h-[110px] ${draggingNodeId || isPanningCanvas ? 'cursor-grabbing' : 'cursor-grab'
+          className={`relative flex-1 flex items-center justify-center bg-[#040609] overflow-hidden min-h-[260px] lg:min-h-[110px] touch-drag-surface ${draggingNodeId || isPanningCanvas ? 'cursor-grabbing' : 'cursor-grab'
             }`}
         >
-          <svg ref={svgRef} viewBox="0 0 560 410" className="w-full h-full">
+          <svg ref={svgRef} viewBox="0 0 560 410" style={{ touchAction: 'none' }} className="w-full h-full touch-drag-surface">
             <defs>
               <radialGradient id="radarGlow" cx="50%" cy="50%" r="50%">
                 <stop offset="0%" stopColor="#F5B74F" stopOpacity="0.16" />
@@ -783,7 +862,10 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                   <g
                     key={n.id}
                     data-testid={`viz-node-${n.id.replace(/\s+/g, '-')}`}
-                    onMouseDown={(e) => handleNodeMouseDown(e, n.id)}
+                    data-node-x={coord.x}
+                    data-node-y={coord.y}
+                    style={{ touchAction: 'none' }}
+                    onPointerDown={(e) => handleNodePointerDown(e, n.id)}
                     onClick={() => handleNodeClick(n.id)}
                     onMouseEnter={() => {
                       if (!draggingNodeId) setHoveredNode(n.id);
@@ -877,7 +959,8 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           </svg>
 
           <div className="absolute bottom-1.5 left-2 px-2 py-0.5 bg-[#0A0F1A]/90 border border-[#1E2B42] text-[9px] text-[#94A3B8] pointer-events-none">
-            💡 Geser kotak Node • Drag latar untuk Pan • Scroll Mouse untuk Zoom
+            <span className="hidden sm:inline">💡 Geser kotak Node • Drag latar untuk Pan • Scroll Mouse untuk Zoom</span>
+            <span className="sm:hidden">Geser Node / Pan 1 jari • Pinch 2 jari Zoom</span>
           </div>
 
           {selectedNode && (
@@ -897,18 +980,19 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           className={`fc-fade-slide-up border-t-2 border-[#00E5FF]/60 bg-[#06090F] flex flex-col shrink-0 ${isResizingStream ? '' : 'transition-[height] duration-[170ms] ease-out'
             }`}
         >
-          {/* DRAG HANDLE BAR (Pull Up / Push Down freely) */}
+          {/* DRAG HANDLE BAR (Pull Up / Push Down freely — Mouse & Touch) */}
           <div
             data-testid="stream-resize-handle"
-            onMouseDown={handleStreamResizeMouseDown}
-            className={`h-2.5 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group transition-colors duration-150 ${isResizingStream
+            onPointerDown={handleStreamResizePointerDown}
+            style={{ touchAction: 'none' }}
+            className={`h-5 sm:h-2.5 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group transition-colors duration-150 touch-drag-surface ${isResizingStream
                 ? 'bg-[#00E5FF]/40'
                 : 'bg-[#0D1524] hover:bg-[#00E5FF]/30'
               }`}
             title="Tarik ke atas untuk memperlebar tabel transaksi On-Chain, atau tarik ke bawah untuk mengecilkan"
           >
             <div
-              className={`w-16 h-1 rounded-full transition-colors duration-150 ${isResizingStream ? 'bg-[#00E5FF]' : 'bg-[#334155] group-hover:bg-[#00E5FF]'
+              className={`w-16 h-1.5 sm:h-1 rounded-full transition-colors duration-150 ${isResizingStream ? 'bg-[#00E5FF]' : 'bg-[#334155] group-hover:bg-[#00E5FF]'
                 }`}
             />
           </div>
@@ -916,14 +1000,14 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           {/* TAB BAR & HEIGHT CONTROLS (Can Expand Upwards or Shrink Downwards) */}
           <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#0B101B] border-b border-[#1A253A] gap-1.5 shrink-0">
             {/* Sub-Tabs */}
-            <div className="flex items-center gap-1 text-[9.5px]">
+            <div className="flex flex-nowrap sm:flex-wrap items-center gap-1 text-[9.5px] overflow-x-auto no-scrollbar touch-scroll-x max-w-full">
               <button
                 data-testid="stream-tab-ONCHAIN"
                 onClick={() => {
                   setStreamSubTab('TX_STREAM');
                   if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
                 }}
-                className={`fc-btn px-2 py-0.5 font-extrabold border ${streamSubTab === 'TX_STREAM'
+                className={`fc-btn px-2 py-0.5 font-extrabold border whitespace-nowrap shrink-0 ${streamSubTab === 'TX_STREAM'
                     ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
                     : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#00E5FF]/50'
                   }`}
@@ -936,7 +1020,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                   setStreamSubTab('VAULT_POSITIONS');
                   if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
                 }}
-                className={`fc-btn px-2 py-0.5 font-extrabold border ${streamSubTab === 'VAULT_POSITIONS'
+                className={`fc-btn px-2 py-0.5 font-extrabold border whitespace-nowrap shrink-0 ${streamSubTab === 'VAULT_POSITIONS'
                     ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
                     : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#FF9F1C]/50'
                   }`}
@@ -949,7 +1033,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                   setStreamSubTab('BLOCK_MATRIX');
                   if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
                 }}
-                className={`fc-btn px-2 py-0.5 font-extrabold border ${streamSubTab === 'BLOCK_MATRIX'
+                className={`fc-btn px-2 py-0.5 font-extrabold border whitespace-nowrap shrink-0 ${streamSubTab === 'BLOCK_MATRIX'
                     ? 'bg-[#00E676] text-black border-[#00E676]'
                     : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#00E676]/50'
                   }`}
@@ -959,13 +1043,13 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
             </div>
 
             {/* Quick Up / Down Size Controls + Search */}
-            <div className="flex items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1 max-w-full">
               <input
                 type="text"
                 value={txSearchQuery}
                 onChange={(e) => setTxSearchQuery(e.target.value)}
                 placeholder="Cari Hash 0x..., Block #, Wallet, Coin..."
-                className="w-40 px-2 py-0.5 bg-[#04070B] border border-[#243249] text-[9.5px] text-white focus:outline-none focus:border-[#00E5FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00E5FF]"
+                className="w-28 sm:w-40 px-2 py-0.5 bg-[#04070B] border border-[#243249] text-[9.5px] text-white focus:outline-none focus:border-[#00E5FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00E5FF]"
               />
               <button
                 data-testid="stream-size-small"
@@ -1175,7 +1259,8 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
               {/* SUB-TAB 1: STRUCTURED MULTI-COLUMN ON-CHAIN TRANSACTION TABLE */}
               {streamSubTab === 'TX_STREAM' && (
-                <div key="TX_STREAM" className="fc-fade-in flex-1 flex flex-col overflow-hidden">
+                <div key="TX_STREAM" className="fc-fade-in flex-1 flex flex-col overflow-x-auto touch-scroll-x overflow-y-hidden">
+                  <div className="flex-1 flex flex-col min-w-[640px] overflow-hidden">
                   {/* Sticky Table Column Header */}
                   <div className="grid grid-cols-12 px-2.5 py-1 bg-[#0A0F1A] border-b border-[#1A253A] text-[8.5px] font-extrabold text-[#94A3B8] uppercase shrink-0">
                     <span className="col-span-2">WAKTU & BLOCK #</span>
@@ -1300,12 +1385,14 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                       );
                     })}
                   </div>
+                  </div>
                 </div>
               )}
 
               {/* SUB-TAB 2: HLP INSTITUTIONAL VAULT & WHALE OPEN POSITIONS */}
               {streamSubTab === 'VAULT_POSITIONS' && (
-                <div key="VAULT_POSITIONS" className="fc-fade-in flex-1 flex flex-col overflow-hidden">
+                <div key="VAULT_POSITIONS" className="fc-fade-in flex-1 flex flex-col overflow-x-auto touch-scroll-x overflow-y-hidden">
+                  <div className="flex-1 flex flex-col min-w-[620px] overflow-hidden">
                   {hlpVaultSummary && (
                     <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#080E1A] border-b border-[#1A253A] text-[9px] font-mono gap-2 shrink-0">
                       <span className="text-[#FF9F1C] font-extrabold">
@@ -1410,6 +1497,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                         </div>
                       ))
                     )}
+                  </div>
                   </div>
                 </div>
               )}

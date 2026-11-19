@@ -96,14 +96,17 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
   });
   // Last hover position retained briefly so the crosshair fades out smoothly instead of popping
   const lastCrosshairRef = useRef<{ index: number; mouseY: number } | null>(null);
+  // Multi-pointer tracking for Android & iPhone 1-finger 2D drag + 2-finger pinch-to-zoom
+  const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchStartRef = useRef<{ dist: number; visibleCount: number } | null>(null);
 
   useEffect(() => {
     const el = containerRef.current;
     if (!el || typeof ResizeObserver === 'undefined') return;
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
-        const w = Math.max(360, Math.round(entry.contentRect.width));
-        const h = Math.max(110, Math.round(entry.contentRect.height));
+        const w = Math.max(280, Math.round(entry.contentRect.width));
+        const h = Math.max(180, Math.round(entry.contentRect.height));
         setDims({ width: w, height: h });
       }
     });
@@ -247,11 +250,28 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     };
   }, []);
 
-  // 2D Drag-to-Pan (Left/Right + Up/Down) & Right Price Axis Vertical Scale Drag
-  const handleMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+  // Unified Mouse + Touch Pointer 2D Drag-to-Pan (Left/Right + Up/Down), Right Axis Scale & 2-Finger Pinch Zoom
+  const handlePointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (!svgRef.current) return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {
+      // Ignore synthetic events without active pointerId
+    }
+    activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+    if (activePointersRef.current.size === 2) {
+      const pts = Array.from(activePointersRef.current.values());
+      const dist = Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y);
+      pinchStartRef.current = { dist: Math.max(10, dist), visibleCount: clampedVisibleCount };
+      setDragMode('NONE');
+      return;
+    }
+
+    pinchStartRef.current = null;
     const rect = svgRef.current.getBoundingClientRect();
-    const relX = ((e.clientX - rect.left) / rect.width) * dims.width;
+    const relX = ((e.clientX - rect.left) / Math.max(1, rect.width)) * dims.width;
     const isRightAxis = relX >= dims.width - 76;
 
     dragStartRef.current = {
@@ -331,18 +351,37 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     [dims, dragMode, clampedVisibleCount, maxPanOffset, priceScaleFactor, visibleCandles.length]
   );
 
-  // rAF-batched pointermove: coalesce high-frequency mousemove events to at most one update per frame
-  const handleMouseMove = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
-    pendingMoveRef.current = { clientX: e.clientX, clientY: e.clientY };
-    if (moveRafRef.current === null) {
-      moveRafRef.current = requestAnimationFrame(() => {
-        moveRafRef.current = null;
-        const pending = pendingMoveRef.current;
-        pendingMoveRef.current = null;
-        if (pending) latestRef.current.processMouseMove(pending.clientX, pending.clientY);
-      });
-    }
-  }, []);
+  // rAF-batched pointermove: handles 2-finger touch pinch-zoom and coalesces high-frequency moves to 1 update per frame
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<SVGSVGElement>) => {
+      if (activePointersRef.current.has(e.pointerId)) {
+        activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      }
+
+      if (activePointersRef.current.size === 2 && pinchStartRef.current) {
+        const pts = Array.from(activePointersRef.current.values());
+        const dist = Math.max(10, Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y));
+        const ratio = pinchStartRef.current.dist / dist;
+        const nextBars = Math.max(
+          8,
+          Math.min(maxBars, Math.round(pinchStartRef.current.visibleCount * ratio))
+        );
+        setVisibleCount(nextBars);
+        return;
+      }
+
+      pendingMoveRef.current = { clientX: e.clientX, clientY: e.clientY };
+      if (moveRafRef.current === null) {
+        moveRafRef.current = requestAnimationFrame(() => {
+          moveRafRef.current = null;
+          const pending = pendingMoveRef.current;
+          pendingMoveRef.current = null;
+          if (pending) latestRef.current.processMouseMove(pending.clientX, pending.clientY);
+        });
+      }
+    },
+    [maxBars]
+  );
 
   // Point rAF callbacks at the latest render's handlers/values without re-registering DOM listeners.
   // Layout effect so the refs are current before paint (and therefore before the next rAF tick).
@@ -372,17 +411,34 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     if (pending) processMouseMove(pending.clientX, pending.clientY);
   };
 
-  const handleMouseUpOrLeave = () => {
+  const handlePointerUpOrCancel = (e: React.PointerEvent<SVGSVGElement>) => {
+    activePointersRef.current.delete(e.pointerId);
+    if (activePointersRef.current.size < 2) {
+      pinchStartRef.current = null;
+    }
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {
+      // Ignore synthetic events
+    }
     flushPendingMove();
     setDragMode('NONE');
+    if (e.pointerType !== 'mouse') {
+      setHoverIndex(null);
+      setMouseY(null);
+    }
   };
 
-  const handleMouseLeave = () => {
+  const handlePointerLeave = (e: React.PointerEvent<SVGSVGElement>) => {
+    // If pointer is captured (mid-drag), keep dragging smoothly even outside SVG bounds
+    if (activePointersRef.current.has(e.pointerId) && dragMode !== 'NONE') {
+      return;
+    }
     if (dragMode !== 'NONE') {
-      // Mid-drag: commit the last drag position before ending the drag
       flushPendingMove();
     } else {
-      // Hovering only: drop any pending move so a stale position can't re-show the crosshair
       pendingMoveRef.current = null;
       if (moveRafRef.current !== null) {
         cancelAnimationFrame(moveRafRef.current);
@@ -523,9 +579,9 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
       `}</style>
 
       {/* 1. Top Toolbar: Timeframes + Bar Zoom Slider + 2D Pan Controls + Overlays */}
-      <div className="flex flex-wrap items-center justify-between px-2 py-1 bg-[#090D14] border-b border-[#1E2736] gap-1.5">
+      <div className="flex flex-nowrap sm:flex-wrap items-center justify-between px-2 py-1 bg-[#090D14] border-b border-[#1E2736] gap-1.5 overflow-x-auto no-scrollbar touch-scroll-x">
         {/* Timeframe Selector */}
-        <div className="flex items-center gap-0.5 text-[10px]">
+        <div className="flex items-center gap-0.5 text-[10px] shrink-0">
           <span className="text-[#94A3B8] font-bold mr-1">TF</span>
           {(
             [
@@ -554,7 +610,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
         </div>
 
         {/* Interactive Bar Zoom Slider + 2D Pan (Left/Right/Up/Down) & Vertical Price Scale Controls */}
-        <div className="flex items-center gap-1 text-[10px]">
+        <div className="flex items-center gap-1 text-[10px] shrink-0">
           <button
             data-testid="chart-zoom-in-btn"
             onClick={() => handleBarZoom(-10, 0.85)}
@@ -654,7 +710,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
         </div>
 
         {/* Overlays */}
-        <div className="flex items-center gap-1 text-[9.5px]">
+        <div className="flex items-center gap-1 text-[9.5px] shrink-0">
           <button
             data-testid="chart-legend-ema20-btn"
             onClick={() => setShowEma(!showEma)}
@@ -712,9 +768,9 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
       </div>
 
       {/* 2. Live OHLCV Telemetry Header */}
-      <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#070A10] border-b border-[#151D2A] text-[10px] font-mono">
+      <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#070A10] border-b border-[#151D2A] text-[10px] font-mono gap-y-0.5">
         {inspectedCandle ? (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className="text-[#FF9F1C] font-extrabold">
               {pair.symbol} · {timeframe.toUpperCase()} · {candleSource}
             </span>
@@ -747,8 +803,11 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
         ) : (
           <span className="text-[#94A3B8]">Loading Real Market OHLCV...</span>
         )}
-        <div className="text-[9.5px] text-[#00E5FF]">
+        <div className="text-[9.5px] text-[#00E5FF] hidden sm:block">
           Wheel: Zoom ({clampedVisibleCount} bars) | Drag Chart: Geser Kiri/Kanan/Atas/Bawah | Drag Sumbu Kanan: Skala Harga
+        </div>
+        <div className="text-[9px] text-[#00E5FF] sm:hidden">
+          Geser 1 jari: Pan 2D ({clampedVisibleCount} bars) • Pinch 2 jari: Zoom
         </div>
       </div>
 
@@ -820,10 +879,10 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
         </div>
       </div>
 
-      {/* 3. Main Interactive Chart SVG (Supports 2D Free Panning + Price Axis Dragging + Non-Passive Wheel Zoom) */}
+      {/* 3. Main Interactive Chart SVG (Supports 2D Free Panning + Price Axis Dragging + Pinch/Wheel Zoom) */}
       <div
         ref={containerRef}
-        className="relative flex-1 bg-[#05070B] min-h-[110px] overflow-hidden"
+        className="relative flex-1 bg-[#05070B] min-h-[220px] lg:min-h-[110px] overflow-hidden touch-drag-surface"
         style={{ touchAction: 'none' }}
       >
         {isLoadingCandles && (
@@ -837,16 +896,20 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
           key={`${pair.symbol}-${timeframe}`}
           viewBox={`0 0 ${width} ${height}`}
           data-testid="chart-svg"
-          className={`w-full h-full fincept-chart-enter ${dragMode === 'PRICE_AXIS_SCALE'
+          data-pan-offset={clampedPanOffset}
+          data-price-pan={pricePanRatio}
+          style={{ touchAction: 'none' }}
+          className={`w-full h-full fincept-chart-enter touch-drag-surface ${dragMode === 'PRICE_AXIS_SCALE'
               ? 'cursor-ns-resize'
               : dragMode === 'CHART_2D_PAN'
                 ? 'cursor-grabbing'
                 : 'cursor-grab'
             }`}
-          onMouseDown={handleMouseDown}
-          onMouseMove={handleMouseMove}
-          onMouseUp={handleMouseUpOrLeave}
-          onMouseLeave={handleMouseLeave}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUpOrCancel}
+          onPointerCancel={handlePointerUpOrCancel}
+          onPointerLeave={handlePointerLeave}
           onDoubleClick={handleResetView}
         >
           <defs>

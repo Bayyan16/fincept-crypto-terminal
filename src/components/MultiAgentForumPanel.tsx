@@ -73,11 +73,11 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
     >
       {/* 1. Forum Header & Consensus Verdict Banner */}
       <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-[#1E2736]">
-        <div className="flex items-center gap-2">
-          <span className="px-2 py-0.5 bg-[#FF9F1C] text-black font-extrabold text-[10px]">
+        <div className="flex flex-wrap items-center gap-2 min-w-0">
+          <span className="px-2 py-0.5 bg-[#FF9F1C] text-black font-extrabold text-[10px] shrink-0">
             4-AGENT CONSENSUS FORUM
           </span>
-          <span className="font-extrabold text-white text-xs">
+          <span className="font-extrabold text-white text-xs truncate">
             {consensus.symbol} — WAR-ROOM VERDICT
           </span>
           <span
@@ -88,11 +88,11 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
           </span>
         </div>
 
-        <div className="flex flex-wrap items-center gap-1.5">
+        <div className="flex flex-nowrap sm:flex-wrap items-center gap-1.5 overflow-x-auto no-scrollbar touch-scroll-x max-w-full pb-0.5 sm:pb-0">
           <button
             data-testid="forum-tab-consensus"
             onClick={() => setActiveForumView('CONSENSUS_4_AGENTS')}
-            className={`px-2 py-0.5 font-extrabold text-[9.5px] border ${
+            className={`px-2 py-0.5 font-extrabold text-[9.5px] border whitespace-nowrap shrink-0 ${
               activeForumView === 'CONSENSUS_4_AGENTS'
                 ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
                 : 'bg-[#0D1422] text-[#CBD5E1] border-[#1E2B40] hover:text-white'
@@ -103,7 +103,7 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
           <button
             data-testid="forum-tab-news"
             onClick={() => setActiveForumView('BLOOMBERG_NEWS_90_100')}
-            className={`px-2 py-0.5 font-extrabold text-[9.5px] border ${
+            className={`px-2 py-0.5 font-extrabold text-[9.5px] border whitespace-nowrap shrink-0 ${
               activeForumView === 'BLOOMBERG_NEWS_90_100'
                 ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
                 : 'bg-[#0D1422] text-[#CBD5E1] border-[#1E2B40] hover:text-white'
@@ -114,7 +114,7 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
           <button
             data-testid="forum-tab-scanner"
             onClick={() => setActiveForumView('ALL_MARKET_SCANNER')}
-            className={`px-2 py-0.5 font-extrabold text-[9.5px] border ${
+            className={`px-2 py-0.5 font-extrabold text-[9.5px] border whitespace-nowrap shrink-0 ${
               activeForumView === 'ALL_MARKET_SCANNER'
                 ? 'bg-[#00E676] text-black border-[#00E676]'
                 : 'bg-[#0D1422] text-[#CBD5E1] border-[#1E2B40] hover:text-white'
@@ -125,7 +125,7 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
           <button
             data-testid="forum-tab-accuracy-audit"
             onClick={() => setActiveForumView('POSITION_ACCURACY_AUDIT')}
-            className={`px-2 py-0.5 font-extrabold text-[9.5px] border ${
+            className={`px-2 py-0.5 font-extrabold text-[9.5px] border whitespace-nowrap shrink-0 ${
               activeForumView === 'POSITION_ACCURACY_AUDIT'
                 ? 'bg-[#D500F9] text-white border-[#D500F9]'
                 : 'bg-[#0D1422] text-[#CBD5E1] border-[#1E2B40] hover:text-white'
@@ -445,12 +445,12 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
               value={oppSearch}
               onChange={(e) => setOppSearch(e.target.value)}
               placeholder="Cari koin (cth: PEPE, TAO, ONDO, ARB, WIF, AAVE)..."
-              className="px-2 py-0.5 bg-[#05080E] border border-[#24324B] text-white text-[10px] w-60"
+              className="px-2 py-0.5 bg-[#05080E] border border-[#24324B] text-white text-[10px] w-full sm:w-60"
             />
           </div>
 
-          <div className="max-h-72 overflow-y-auto border border-[#1A2436]">
-            <table className="w-full text-left border-collapse font-mono text-[9.5px]">
+          <div className="max-h-72 overflow-y-auto overflow-x-auto touch-scroll-x border border-[#1A2436]">
+            <table className="w-full min-w-[660px] text-left border-collapse font-mono text-[9.5px]">
               <thead>
                 <tr className="bg-[#0B111D] text-[#94A3B8] border-b border-[#1E2736]">
                   <th className="py-1.5 px-2">MARKET / SEKTOR</th>
@@ -712,8 +712,8 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
               </div>
             </div>
 
-            <div className="max-h-56 overflow-y-auto mt-1">
-              <table className="w-full text-left border-collapse font-mono text-[9px]">
+            <div className="max-h-56 overflow-y-auto overflow-x-auto touch-scroll-x mt-1">
+              <table className="w-full min-w-[640px] text-left border-collapse font-mono text-[9px]">
                 <thead>
                   <tr className="bg-[#0B111D] text-[#94A3B8] border-b border-[#1E2736]">
                     <th className="py-1 px-1.5">MARKET</th>
