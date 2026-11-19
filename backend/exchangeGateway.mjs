@@ -1882,8 +1882,9 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
   });
 
   const mid = (bids[0].price + asks[0].price) / 2;
-  const spreadUsd = Math.max(0.0001, Math.abs(asks[0].price - bids[0].price));
-  const spreadBps = Number(((spreadUsd / mid) * 10000).toFixed(2));
+  const minRelTick = Math.max(1e-10, mid * 0.00001);
+  const spreadUsd = Math.max(minRelTick, Math.abs(asks[0].price - bids[0].price));
+  const spreadBps = Number(((spreadUsd / Math.max(1e-12, mid)) * 10000).toFixed(2));
 
   let wBid = 0;
   let wAsk = 0;

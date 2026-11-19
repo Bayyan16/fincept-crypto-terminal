@@ -975,12 +975,12 @@ export function runMultiAgentForumConsensus(
     Math.max(5.0, rewardDistance / Math.max(0.0000001, stopDistance)).toFixed(2)
   );
 
-  // Veto & Liquidity Precision Checks
-  const spreadPenalty = Math.max(0, (orderbook.spreadBps - 0.8) * 8);
-  const liquidityReady = pair.liquidityScore >= 72 && orderbook.spreadBps <= 6.5;
+  // Veto & Liquidity Precision Checks (Calibrated for all synced CEX/DEX markets including sub-dollar altcoins & Top Gainers)
+  const spreadPenalty = Math.min(20, Math.max(0, (orderbook.spreadBps - 2.5) * 1.1));
+  const liquidityReady = pair.liquidityScore >= 55 && orderbook.spreadBps <= 45;
   const rsiExhaustionVeto =
-    (majoritySide === 'LONG' && ta.rsi14 >= 82) ||
-    (majoritySide === 'SHORT' && ta.rsi14 <= 18);
+    (majoritySide === 'LONG' && ta.rsi14 >= 90) ||
+    (majoritySide === 'SHORT' && ta.rsi14 <= 10);
 
   const hasVeto = !liquidityReady || rsiExhaustionVeto;
   const vetoReason = !liquidityReady

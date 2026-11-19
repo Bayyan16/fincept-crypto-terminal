@@ -31,11 +31,15 @@ export function computeAgentConfluenceMatrix(
   orderbook: OrderbookState,
   recentWhales: WhaleTransaction[]
 ): ConfluenceResult {
-  // 1. Liquidity Gatekeeper Skill
-  const spreadPenalty = Math.max(0, (orderbook.spreadBps - 0.5) * 12);
-  const depthBonus = Math.min(25, pair.depthPlusMinusHalfPctUsd / 1_500_000);
-  const liquidityScore = Math.round(Math.max(20, Math.min(99, 76 + depthBonus - spreadPenalty)));
-  const liquidityGatePassed = liquidityScore >= 82 && orderbook.spreadBps <= 2.2;
+  // 1. Liquidity Gatekeeper Skill (Calibrated for Full 236+ CEX/DEX Market Universe, including sub-dollar altcoins)
+  const spreadPenalty = Math.min(24, Math.max(0, (orderbook.spreadBps - 2.0) * 1.4));
+  const depthBonus = Math.min(18, pair.depthPlusMinusHalfPctUsd / 1_200_000);
+  const volBonus = pair.volume24hUsd >= 10_000_000 ? 8 : pair.volume24hUsd >= 1_000_000 ? 5 : 2;
+  const baseLiq = Math.max(74, pair.liquidityScore || 80);
+  const liquidityScore = Math.round(
+    Math.max(55, Math.min(99, baseLiq * 0.85 + depthBonus * 0.6 + volBonus - spreadPenalty * 0.65))
+  );
+  const liquidityGatePassed = liquidityScore >= 60 && orderbook.spreadBps <= 45;
 
   // 2. Orderbook Imbalance & CVD Skill
   const obiNormalized = orderbook.obiPercent; // -100 to +100
@@ -157,7 +161,7 @@ export function scanAllMarketMultiAgentCandidates(
     (m) =>
       m.price > 0 &&
       !openSymbols.has(m.symbol) &&
-      m.liquidityScore >= Math.min(72, minLiquidityGate)
+      m.liquidityScore >= Math.min(60, minLiquidityGate)
   );
 
   if (eligible.length === 0) return [];

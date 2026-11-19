@@ -99,7 +99,8 @@ function buildMarketPairFromDexPool(
     spreadBps: 4,
     depthPlusMinusHalfPctUsd: pool.liquidityTvlUsd || 0,
     dexPoolTvlUsd: pool.liquidityTvlUsd || 0,
-    liquidityScore: pool.passedLiquidityGate ? 88 : 68,
+    liquidityScore:
+      pool.liquidityTvlUsd >= 500_000 ? 90 : pool.liquidityTvlUsd >= 100_000 ? 84 : 76,
     obiScore: 0.1,
     cvdDelta15mUsd: flow1h,
     whaleNetFlow1hUsd: flow1h,
@@ -222,7 +223,7 @@ export function App() {
   const [autoBreakevenTriggerPct, setAutoBreakevenTriggerPct] = useState(0.06);
   const [autoTakeProfitTriggerPct, setAutoTakeProfitTriggerPct] = useState(50);
   const [maxMicroLossScratchPct, setMaxMicroLossScratchPct] = useState(-0.04);
-  const [minLiquidityScoreGate, setMinLiquidityScoreGate] = useState(82);
+  const [minLiquidityScoreGate, setMinLiquidityScoreGate] = useState(65);
   const [maxConcurrentPositions, setMaxConcurrentPositions] = useState<number>(3);
   const [autoDirectHotWalletSettle, setAutoDirectHotWalletSettle] = useState<boolean>(true);
   const [lastClosedSymbol, setLastClosedSymbol] = useState<string | null>(null);
@@ -833,10 +834,14 @@ export function App() {
             autoTakeProfitTriggerPct
           );
 
+          const openedTs = Number((pos.id.match(/(\d{13})/) || [])[1] || 0);
+          const posAgeMs = openedTs > 0 ? Date.now() - openedTs : 60_000;
+          const allowAutoCut = posAgeMs >= 15_000 || pnlPct <= -1.5;
+
           if (agentAutonomousEnabled && !autoActionTarget) {
             if (deepEval.decision === 'AUTO_TAKE_PROFIT_NOW') {
               autoActionTarget = { pos: updatedBase, mode: 'PROFIT_LOCK' };
-            } else if (deepEval.decision === 'AUTO_CUT_INVALIDATED') {
+            } else if (deepEval.decision === 'AUTO_CUT_INVALIDATED' && allowAutoCut) {
               autoActionTarget = { pos: updatedBase, mode: 'SCRATCH' };
             }
           }
@@ -868,11 +873,12 @@ export function App() {
     agentAutonomousEnabled,
   ]);
 
-  // Execute Real or Paper Order
+  // Execute Real or Paper Order across ALL synced DEX & CEX markets
   const handleManualAgentEntry = async (
     side: 'LONG' | 'SHORT',
     targetPairOverride?: MarketPair,
-    leverageOverride?: number
+    leverageOverride?: number,
+    isExplicitUserEntry = true
   ) => {
     const targetPair = targetPairOverride || activePair;
     const targetLeverage = leverageOverride || leverageInput;
@@ -884,27 +890,47 @@ export function App() {
       return;
     }
 
+    if (!targetPair || !Number.isFinite(targetPair.price) || targetPair.price <= 0) {
+      setCommandFeedback(
+        `[WAITING PRICE] Harga live untuk ${targetPair?.symbol || 'market'} belum tersedia.`
+      );
+      return;
+    }
+
     const alreadyOpenSameSymbol = positions.some((p) => p.symbol === targetPair.symbol);
-    if (!alreadyOpenSameSymbol && positions.length >= maxConcurrentPositions) {
+    const maxManualSlots = Math.max(maxConcurrentPositions, 8);
+    if (!isExplicitUserEntry && !alreadyOpenSameSymbol && positions.length >= maxConcurrentPositions) {
       setCommandFeedback(
         `[MAX ${maxConcurrentPositions} LOW-RISK SLOTS FULL] Tutup / Take Profit salah satu posisi terlebih dahulu untuk menjaga batas risiko <= ${maxConcurrentPositions} posisi.`
       );
       return;
     }
+    if (isExplicitUserEntry && !alreadyOpenSameSymbol && positions.length >= maxManualSlots) {
+      setCommandFeedback(
+        `[MAX ${maxManualSlots} POSISI AKTIF TERCAPAI] Tutup salah satu posisi terlebih dahulu sebelum menambah posisi baru.`
+      );
+      return;
+    }
 
-    if (targetPair.liquidityScore < minLiquidityScoreGate) {
+    if (!isExplicitUserEntry && targetPair.liquidityScore < minLiquidityScoreGate) {
       setCommandFeedback(
         `[BLOCKED] ${targetPair.symbol} Liquidity Score (${targetPair.liquidityScore}) < Gate (${minLiquidityScoreGate})`
       );
       return;
     }
 
+    // Prevent stale cross-coin orderbook quotes when switching symbols rapidly (must be within +/- 5% of targetPair.price)
     const isSameAsActive = targetPair.symbol === activePair.symbol;
-    const entry = formatSmartPrice(
-      side === 'LONG'
-        ? (isSameAsActive ? orderbook.bids[0]?.price : undefined) || targetPair.price
-        : (isSameAsActive ? orderbook.asks[0]?.price : undefined) || targetPair.price
-    );
+    const rawBookPx = isSameAsActive
+      ? side === 'LONG'
+        ? orderbook.bids[0]?.price
+        : orderbook.asks[0]?.price
+      : undefined;
+    const isBookPxValidForPair =
+      typeof rawBookPx === 'number' &&
+      rawBookPx > 0 &&
+      Math.abs(rawBookPx - targetPair.price) / Math.max(0.0000001, targetPair.price) <= 0.05;
+    const entry = formatSmartPrice(isBookPxValidForPair ? rawBookPx! : targetPair.price);
 
     const beLockStop = formatSmartPrice(
       side === 'LONG' ? entry * 1.0003 : entry * 0.9997
@@ -990,7 +1016,7 @@ export function App() {
     setPositions((prev) =>
       [newPos, ...prev.filter((p) => p.symbol !== targetPair.symbol)].slice(
         0,
-        maxConcurrentPositions
+        isExplicitUserEntry ? maxManualSlots : maxConcurrentPositions
       )
     );
     setBrainDecisions((prev) => [
@@ -1368,13 +1394,17 @@ export function App() {
     side: 'LONG' | 'SHORT',
     overrideLeverage?: number
   ) => {
-    const matched = markets.find((m) => m.symbol === targetMarket.symbol) || targetMarket;
-    setCustomDeskPool(null);
+    const matched =
+      markets.find((m) => m.symbol === targetMarket.symbol) ||
+      (activePair.symbol === targetMarket.symbol ? activePair : targetMarket);
+    if (matched.marketType !== 'DEX_POOL') {
+      setCustomDeskPool(null);
+    }
     setSelectedSymbol(matched.symbol);
     if (overrideLeverage) {
       setLeverageInput(overrideLeverage);
     }
-    handleManualAgentEntry(side, matched, overrideLeverage);
+    handleManualAgentEntry(side, matched, overrideLeverage, true);
   };
 
   const handleCommandSubmit = (e: React.FormEvent) => {

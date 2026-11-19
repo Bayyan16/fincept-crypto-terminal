@@ -630,10 +630,19 @@ export function mergeDynamicAllCryptoMarkets(
       volume24hUsd: vol,
       openInterestUsd: oi,
       fundingRate: asset.fundingRate ?? 0.0085,
-      spreadBps: vol >= 50_000_000 ? 0.45 : vol >= 5_000_000 ? 0.75 : 1.15,
+      spreadBps: vol >= 50_000_000 ? 0.45 : vol >= 5_000_000 ? 0.75 : vol >= 1_000_000 ? 1.25 : 2.1,
       depthPlusMinusHalfPctUsd: Math.max(850_000, Math.round(oi * 0.06)),
       dexPoolTvlUsd: Math.max(1_200_000, Math.round(oi * 0.18)),
-      liquidityScore: vol >= 50_000_000 ? 92 : vol >= 5_000_000 ? 86 : 80,
+      liquidityScore:
+        vol >= 20_000_000
+          ? 94
+          : vol >= 5_000_000
+            ? 90
+            : vol >= 1_000_000
+              ? 86
+              : vol >= 250_000
+                ? 82
+                : 76,
       obiScore: Number(Math.max(-0.58, Math.min(0.58, change / 14)).toFixed(2)),
       cvdDelta15mUsd: Math.round(estWhaleFlow * 0.55),
       whaleNetFlow1hUsd: estWhaleFlow,
@@ -1305,8 +1314,9 @@ export async function fetchBackendRealOrderbook(
         });
         if (bids.length > 0 && asks.length > 0) {
           const mid = (bids[0].price + asks[0].price) / 2;
-          const spreadUsd = Number(Math.max(0.0001, asks[0].price - bids[0].price).toFixed(4));
-          const spreadBps = Number(((spreadUsd / mid) * 10000).toFixed(2));
+          const minRelTick = Math.max(1e-10, mid * 0.00001);
+          const spreadUsd = Math.max(minRelTick, Math.abs(asks[0].price - bids[0].price));
+          const spreadBps = Number(((spreadUsd / Math.max(1e-12, mid)) * 10000).toFixed(2));
           const obiPercent = Math.round(((cumBid - cumAsk) / Math.max(1, cumBid + cumAsk)) * 100);
           return {
             bids,

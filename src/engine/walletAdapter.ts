@@ -570,7 +570,10 @@ export async function executeRealOrderOnVenue(params: {
   const wallet =
     params.exchange === 'HYPERLIQUID'
       ? (trustWallet?.connected ? trustWallet : hlAgentWallet)
-      : params.wallets.find((w) => w.id === targetWalletId);
+      : params.exchange === 'DEXSCREENER'
+        ? (params.wallets.find((w) => w.id === 'phantom' && w.connected) ||
+            (trustWallet?.connected ? trustWallet : params.wallets.find((w) => w.id === targetWalletId)))
+        : params.wallets.find((w) => w.id === targetWalletId);
 
   if (!wallet || !wallet.connected) {
     return {

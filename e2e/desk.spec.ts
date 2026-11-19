@@ -147,4 +147,30 @@ test.describe('terminal desk', () => {
     await expect(page.getByTestId('accuracy-audit-kpis')).toBeVisible();
     await expect(page.getByTestId('vault-settlement-courier-3d-viz')).toHaveCount(0);
   });
+
+  test('TOP GAINERS dynamic markets can execute precision entry directly into Active Positions', async ({
+    page,
+  }) => {
+    await gotoDesk(page);
+    await page.getByTestId('watchlist-sector-TOP_GAINERS').click();
+
+    // Pick the first displayed Top Gainer market button
+    const firstGainerBtn = page.locator('[data-testid^="market-"]').first();
+    await expect(firstGainerBtn).toBeVisible();
+    const gainerTestId = (await firstGainerBtn.getAttribute('data-testid')) || '';
+    const gainerSymbol = gainerTestId.replace(/^market-/, '');
+    expect(gainerSymbol.length).toBeGreaterThan(2);
+    await firstGainerBtn.click();
+
+    // Open 4-Agent Consensus Forum and execute precision entry
+    await page.getByTestId('subtab-AGENT_BRAIN').click();
+    const execBtn = page.getByTestId('forum-execute-consensus-btn');
+    await expect(execBtn).toBeVisible();
+    await expect(execBtn).toBeEnabled();
+    await execBtn.click();
+
+    // Confirm the Top Gainer position immediately appears inside ACTIVE POSITIONS dock
+    const positionsDock = page.getByTestId('positions-dock');
+    await expect(positionsDock).toContainText(gainerSymbol, { timeout: 5_000 });
+  });
 });
