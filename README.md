@@ -1,95 +1,112 @@
-# FINCEPT WHALE QUANT TERMINAL (v5.1)
-### Autonomous Multi-Exchange Crypto Spot & Futures Trading Terminal & Real-Time On-Chain Whale Intelligence Agent
+# Fincept Whale Quant Terminal
 
-Terminal trading crypto **Spot & Perpetual Futures** otonom bergaya *Fincept / Bloomberg High-Contrast Dark* yang menggabungkan agregasi data **On-Chain & Multi-Exchange secara Real-Time**, visualisasi interaktif **Whale Pipeline & Blockchain Explorer**, serta **Autonomous AI/Quant Trading Agent (6 Smart Skills)** dengan proteksi risiko *Zero-Slop* dan pencairan profit otomatis langsung ke *Hot Wallet* (**Trust Wallet & Phantom Wallet**).
+### Autonomous Multi-Exchange Crypto Spot & Perpetual Futures Trading Terminal with 4-Agent Consensus Intelligence
+
+Fincept Whale Quant Terminal is an institutional-style, high-contrast dark trading terminal for cryptocurrency spot and perpetual futures markets. It combines real-time multi-exchange and on-chain market data aggregation, a 4-Agent Consensus Forum with 12 specialized sub-skills, isometric 3D visualizers for multi-agent coordination and profit/loss vault settlement, zero-slop risk controls, and automated direct-to-hot-wallet profit settlement for Trust Wallet and Phantom Wallet.
 
 ---
 
-## 🌟 Fitur Utama (Built & Verified)
+## Core Capabilities
 
-### 1. Cakupan 14 Market Real-Time (Top 10 CoinMarketCap + Leading DEX Assets)
-Mendukung pemantauan mikrostruktur, *candlestick*, *orderbook*, dan *whale flow* secara langsung untuk:
-- **Top 10 CoinMarketCap**: `BTC-PERP` (#1), `ETH-PERP` (#2), `XRP-PERP` (#3), `BNB-PERP` (#4), `SOL-PERP` (#5), `DOGE-PERP` (#6), `ADA-PERP` (#7), `TRX-PERP` (#8), `AVAX-PERP` (#9), `LINK-PERP` (#10).
-- **High-Velocity DEX & L1**: `HYPE-USDC` (Hyperliquid L1), `SUI-PERP`, `JUP-SOL` (Jupiter), dan `RAY-SOL` (Raydium).
+### 1. Full Crypto Market Universe (236+ Live Markets)
+Monitors real-time market microstructure, OHLCV candlesticks, L2 orderbooks, and whale flows beyond top market-cap assets across all major sectors:
+- **Core Large-Cap Markets**: `BTC-PERP`, `ETH-PERP`, `XRP-PERP`, `BNB-PERP`, `SOL-PERP`, `DOGE-PERP`, `ADA-PERP`, `TRX-PERP`, `AVAX-PERP`, `LINK-PERP`, `HYPE-USDC`, `SUI-PERP`, `JUP-SOL`, and `RAY-SOL`.
+- **Expanded Multi-Sector Coverage**: AI & DePIN (`TAO`, `RENDER`, `FET`, `WLD`, `VIRTUAL`, `IO`, `AR`), DeFi & RWA (`AAVE`, `UNI`, `ONDO`, `ENA`, `PENDLE`, `MKR`), L1/L2 Ecosystems (`ARB`, `OP`, `APT`, `NEAR`, `INJ`, `TIA`, `SEI`, `TON`, `DOT`), and Meme/Alpha assets (`PEPE`, `WIF`, `BONK`, `SHIB`, `FARTCOIN`), dynamically merged with 236+ live Hyperliquid L1 markets and authentic token icons.
 
 ### 2. Unified On-Chain & Multi-Exchange Backend Gateway (`backend/exchangeGateway.mjs` & `server.mjs`)
 - **Hyperliquid L1 Mainnet (`api.hyperliquid.xyz/info`)**:
-  - Live `metaAndAssetCtxs`, `candleSnapshot` (1m, 5m, 15m, 1h, 4h, 1d), `l2Book`, `recentTrades`, serta pelacakan posisi institusional langsung pada **HLP Vault (`0xdfc24b077bc1425ad1dea75bcb6f8158e10df303`)**.
+  - Live `metaAndAssetCtxs`, `candleSnapshot` (`1m`, `5m`, `15m`, `1h`, `4h`, `1d`), batch multi-market OHLCV candles (`/api/live/batch-candles`), `l2Book`, `recentTrades`, and institutional position tracking for the **HLP Vault (`0xdfc24b077bc1425ad1dea75bcb6f8158e10df303`)**.
+- **Official Institutional News Wire**:
+  - Aggregates official **Bloomberg Crypto RSS**, **CoinDesk Institutional RSS**, and crypto/macro-filtered **Bloomberg Markets RSS** through a semantic relevance gate so unrelated general-commodity or equity headlines are excluded.
 - **Solana DEX Aggregators**:
-  - **Raydium V3 CLMM (`api-v3.raydium.io`)** & **DexScreener (`api.dexscreener.com`)** untuk TVL, volume 24 jam, dan *price impact* pool on-chain.
-  - **Jupiter V1 Quote API (`lite-api.jup.ag/swap/v1/quote`)** untuk kutipan rute *swap* terbaik.
-- **Live Multi-Chain EVM Block & Transaction Stream (`eth_getBlockByNumber`)**:
-  - Membaca blok dan transaksi *real-time* langsung dari RPC publik **Ethereum Mainnet**, **Arbitrum One**, dan **BNB Smart Chain (BSC)** lengkap dengan **Tx Hash (`0x...`)**, **Block Number**, **Sender/Receiver Wallet**, dan **Gas/Value**.
+  - **Raydium V3 CLMM (`api-v3.raydium.io`)** and **DexScreener (`api.dexscreener.com`)** for TVL, 24h volume, and on-chain pool price impact.
+  - **Jupiter V1 Quote API (`lite-api.jup.ag/swap/v1/quote`)** for live swap route quoting.
+- **Multi-Chain EVM Block & Transaction Telemetry (`eth_getBlockByNumber`)**:
+  - Streams live block heights and transactions from public RPC endpoints across **Ethereum Mainnet**, **Arbitrum One**, and **BNB Smart Chain (BSC)** with transaction hashes, block numbers, wallet addresses, and explorer links.
 - **Dual-Path Cloud Resilience (`src/engine/liveConnectors.ts`)**:
-  - Mendukung koneksi ke Backend Gateway maupun *Direct Browser-to-OnChain Fallback* sehingga terminal siap di-deploy ke layanan cloud/hosting publik kapan saja.
+  - Supports both the local/cloud Backend Gateway and a direct browser-to-on-chain fallback for uninterrupted operation.
 
-### 3. Autonomous Agent Brain — 6 Smart Skills (`src/engine/agentSkills.ts`)
-1. **Skill 1 — Liquidity Gatekeeper**: Menolak eksekusi pada market dengan likuiditas tipis atau *spread* lebar.
-2. **Skill 2 — Weighted Orderbook Imbalance (W-OBI) & CVD Absorption**: Mendeteksi tembok *Bid/Ask* institusional pada 18 level kedalaman L2.
-3. **Skill 3 — On-Chain Whale & HLP Vault Alignment**: Menyelaraskan arah order dengan aliran dana *Smart Money* on-chain.
-4. **Skill 4 — Zero-Slop Micro-Loss Prevention**: Eksekusi *Post-Only Maker* + *Auto-Breakeven + Fee Lock (`+0.06%`)*.
-5. **Skill 5 — Continuous Post-TP Opportunity Hunter (`4x–8x` Conservative Leverage)**:
-   - Otomatis mencari dan membuka posisi berisiko rendah baru pasca *Take Profit* hingga **maksimal 3 posisi paralel** dengan *leverage* konservatif adaptif **`4x–8x`**.
-6. **Skill 6 — 3-Pillar Deep Position Intelligence & Direct-to-Hot-Wallet Settlement**:
-   - Menganalisis setiap posisi terbuka secara *real-time* berdasarkan **Orderbook Defense (`0–100`)**, **On-Chain Whale Conviction (`0–100`)**, dan **Market Sentiment (`0–100`)** untuk memutuskan apakah harus **menahan *floating loss* (`HOLD_FLOATING_LOSS`)**, **mengawal profit (`RIDE_PROFIT_TRAIL`)**, **Take Profit otomatis (`AUTO_TAKE_PROFIT_NOW`)**, atau **Cut Loss cepat (`AUTO_CUT_INVALIDATED`)**.
-   - **Auto Hot-Wallet Profit Settlement**: Setiap profit dari posisi yang ditutup otomatis langsung ditransfer/disinkronkan ke saldo **Trust Wallet / Phantom Wallet** pengguna tanpa perlu *withdraw* manual.
+### 3. 4-Agent Consensus Forum & 12 Specialized Sub-Skills (`src/engine/multiAgentForum.ts` & `src/engine/agentSkills.ts`)
+Every trade setup is evaluated collaboratively across four specialized agents before execution:
+1. **Agent 1 — Bloomberg & Macro News Intelligence (90%–100% Credibility Gate)**:
+   - *Skill 1A*: Crypto/Macro Semantic Relevance Gate.
+   - *Skill 1B*: Cross-Chain News Truth Audit (90%–100% verified threshold).
+   - *Skill 1C*: Catalyst Impact & Urgency Matrix across 21+ ticker profiles.
+2. **Agent 2 — Quantitative Technical & Price Action Analyst**:
+   - *Skill 2A*: Price Action Market Structure (`BOS` / `CHoCH`) and Key Support/Resistance (`S1/S2`, `R1/R2`).
+   - *Skill 2B*: `EMA 20 / 50 / 200` Trend Stack and `Bollinger Bands (20, 2σ)` Volatility Regime.
+   - *Skill 2C*: `RSI(14)` and `MACD(12, 26, 9)` Momentum Impulse & Exhaustion Filter.
+3. **Agent 3 — Institutional Whale Wallet Tracker**:
+   - *Skill 3A*: Institutional Wallet & HLP Vault Exposure Tracking (filtering out generic stablecoin bridge noise).
+   - *Skill 3B*: Real-Time L2 Orderbook Wall & Orderbook Imbalance (`OBI`) Alignment.
+   - *Skill 3C*: Smart-Money Cumulative Volume Delta (`CVD`) Absorption Detection.
+4. **Agent 4 — Execution Precision & Risk Arbiter**:
+   - *Skill 4A*: 4-Agent Quorum Verification & Extremes Veto Guard.
+   - *Skill 4B*: ATR Structural Stop-Loss & Uncapped Asymmetric Take-Profit Engine.
+   - *Skill 4C*: Zero-Slop Post-Only Maker Execution & Automatic Breakeven + Fee Lock.
 
-### 4. Interactive High-Contrast Terminal UI
-- **2D Free-Pan & Wheel-Zoom Orderflow Chart (`src/components/CandlestickOrderflowChart.tsx`)**:
-  - Mendukung *drag* bebas 2 arah (geser kiri-kanan untuk waktu & geser atas-bawah untuk skala harga), *mouse wheel zoom* (`8` hingga `140` bar), *slider* jumlah bar, serta tombol `AUTO-FIT`.
-- **Interactive Whale Pipeline Visualizer & Resizable On-Chain Blockchain Stream (`src/components/WhaleChordViz.tsx`)**:
-  - **Drag-and-Drop Node**, **Canvas Pan**, **Wheel Zoom (`45%–300%`)**, serta mode tata letak **Radial Chord** & **3-Tier Pipeline**.
-  - **Resizable Multi-Tab On-Chain Drawer**: Panel tabel di bagian bawah dapat ditarik naik/turun secara fleksibel (*drag handle bar* + tombol cepat `▼ KECIL`, `▬ NORMAL`, `▲ NAIKKAN PENUH`) dengan 3 sub-tab:
-    1. `⛓️ ON-CHAIN STREAM`: Tabel lengkap *Time, Chain & Block, Tx Hash (`0x...`), Sender -> Receiver Wallet, Action, Coin, Value ($), Impact*, dan tombol `🔍 Lacak` (membuka panel *On-Chain Audit Detail* + tautan langsung ke *Etherscan, Arbiscan, BscScan, Solscan, Hyperliquid Explorer*).
-    2. `🐋 WHALE & HLP POSITIONS`: Daftar posisi terbuka *whale* & *HLP Vault* beserta jarak likuidasi dan *Unrealized PnL*.
-    3. `🧱 LIVE BLOCKS & AI MATRIX`: Kartu telemetri blok terbaru per *blockchain* dan matriks keputusan *Agent AI*.
-- **18-Level Multi-Exchange Orderbook (`src/App.tsx`)**:
-  - Menampilkan header koin aktif secara eksplisit, pemilih cepat 14 market, 4 kartu mikrostruktur, dan tabel 18-level *Bid vs Ask* lengkap dengan label bursa (`HL-L1`, `BINANCE`, `BYBIT`, `OKX`, `JUPITER`, `RAYDIUM`).
+### 4. Uncapped Take-Profit Policy (Minimum 50% ROI Floor) & Deep Position Intelligence
+- **Minimum 50% ROI Floor, Unlimited Upside**: Positions are never closed early below the mandatory `+50%` take-profit floor. Once above `+50%`, there is no hard maximum cap; the agent dynamically rides momentum using 3-pillar telemetry (**Orderbook Defense**, **On-Chain Whale Conviction**, and **Market Sentiment**) until detecting orderflow exhaustion or a trailing pullback from peak profit.
+- **8-Point Pre-Trade Precision Checklist & Walk-Forward Accuracy Auditor**: Validates every entry against 8 mandatory quantitative checks and continuously tests active positions and historical real OHLCV candles without lookahead bias.
+- **Continuous Post-TP Opportunity Hunter**: Automatically scans the full market universe after a position settles and opens low-risk replacement positions (up to 3 concurrent slots) with direct-to-hot-wallet profit settlement.
+
+### 5. Interactive Terminal Workspace & 3D Isometric Visualizers
+- **3D Isometric Multi-Agent Neural War-Room (`src/components/AgentWarRoom3DViz.tsx`)**: Interactive isometric arena displaying all four specialist agents, animated neural consensus beams, live verdict core, and clickable per-agent sub-skill inspection.
+- **3D Dual-Vault Settlement Courier (`src/components/VaultSettlementCourier3DViz.tsx`)**: Real-time visual courier routing realized profits into the Internal Profit Vault and micro-scratch losses out to the External Liquidity Vault, synchronized with the Execution & Settlement Audit Log.
+- **2D Free-Pan & Wheel-Zoom Orderflow Chart (`src/components/CandlestickOrderflowChart.tsx`)**: Supports 2-axis free panning, mouse-wheel zoom (`8` to `140` bars), bar-count slider, and auto-fit controls.
+- **Interactive Whale Pipeline Visualizer (`src/components/WhaleChordViz.tsx`)**: Draggable nodes, canvas panning, wheel zoom (`45%–300%`), Radial Chord and 3-Tier Pipeline layouts, and a resizable multi-tab On-Chain Drawer (On-Chain Stream, Whale & HLP Positions, and Live Blocks & AI Matrix).
+- **18-Level Multi-Exchange Orderbook (`src/App.tsx`)**: Displays active coin telemetry, microstructure summary cards, and 18 bid/ask depth levels tagged by venue (`HL-L1`, `BINANCE`, `BYBIT`, `OKX`, `JUPITER`, `RAYDIUM`).
 
 ---
 
-## 🚀 Cara Menjalankan (Local Development & Cloud Production)
+## Getting Started
 
-### 1. Instalasi Dependensi
+### 1. Install Dependencies
 ```bash
 npm install
 ```
 
-### 2. Menjalankan Mode Development (Vite + Embedded On-Chain Gateway)
+### 2. Run in Development Mode (Vite + Embedded On-Chain Gateway)
 ```bash
 npm run dev
 ```
-Buka `http://localhost:5173/` di browser.
+Open `http://localhost:5173/` in your browser.
 
-### 3. Build & Menjalankan Mode Production (Online / Cloud Server)
+### 3. Build and Run in Production Mode
 ```bash
 npm run build
 npm start
 ```
-Server produksi (`server.mjs`) akan melayani aplikasi *frontend* sekaligus seluruh *endpoint* API `/api/gateway/*` pada port `8080` (atau sesuai variabel lingkungan `PORT`).
+The standalone production server (`server.mjs`) serves the compiled frontend bundle alongside all `/api/live/*` and `/api/gateway/*` endpoints on port `8080` (or the configured `PORT` environment variable).
 
-### 4. Menjalankan E2E Test (Playwright)
-Test end-to-end memvalidasi shell terminal, navigasi 5 tab, watchlist 14 market, command bar, orderbook 18-level, DEX Screener, resizable dock, modal wallet, serta regresi *smoothness* UI (transisi, animasi mount, dan dukungan `prefers-reduced-motion`).
+### 4. Run End-to-End Tests (Playwright)
+The Playwright E2E suite validates all 50 tests across desktop (`1600px`) and narrow tablet (`900px`) viewports, covering terminal navigation, multi-sector market explorer, token icons, 4-Agent Consensus Forum, 3D visualizers, accuracy auditor, execution audit cockpit, DEX Screener, orderbook depth, wallet modal, and UI motion/accessibility (`prefers-reduced-motion`).
 
 ```bash
-npm run e2e              # semua project (desktop 1600px + tablet 900px)
-npm run e2e -- --project=desktop-chrome   # hanya desktop
-npm run e2e -- e2e/motion.spec.ts         # hanya satu file
-npm run e2e:report       # buka HTML report hasil terakhir
+npm run e2e                                # Run full suite (desktop + tablet)
+npm run e2e -- --project=desktop-chrome    # Run desktop suite only
+npm run e2e -- e2e/desk.spec.ts            # Run a single spec file
+npm run e2e:report                         # Open the latest HTML test report
 ```
 
-Catatan: test memakai Chrome/Edge yang sudah terpasang di sistem (`channel: 'chrome'`) sehingga tidak perlu mengunduh browser Playwright. Server dev (`npm run dev`) digunakan kembali bila sudah berjalan di port `5173`.
+Note: Playwright uses the locally installed Chrome binary (`channel: 'chrome'`) and reuses an existing dev server if one is already running on port `5173`.
 
 ---
 
-## 📂 Struktur Direktori
-- `src/App.tsx` — Antarmuka utama 5-Tab Fincept Whale Quant Terminal.
-- `src/components/CandlestickOrderflowChart.tsx` — Grafik *Candlestick & Orderflow* interaktif (2D Pan + Wheel Zoom).
-- `src/components/WhaleChordViz.tsx` — Visualisasi *Whale Pipeline* interaktif + *Resizable Multi-Tab On-Chain Blockchain Stream*.
-- `src/engine/agentSkills.ts` — Mesin kecerdasan *6 Smart Skills*, *3-Pillar Deep Position Intelligence*, dan *Post-TP Continuous Hunter (`4x–8x`)*.
-- `src/engine/liveConnectors.ts` — Konektor real-time 14 market (*Top 10 CMC + DEX*) dengan *Dual-Path Fallback*.
-- `src/engine/walletAdapter.ts` — Konektor *Trust Wallet (EIP-6963)*, *Phantom Wallet (Solana)*, dan *Multi-Chain Network Switcher*.
-- `backend/exchangeGateway.mjs` — Middleware *On-Chain RPC, Hyperliquid L1, Raydium, Jupiter, DexScreener & Multi-Exchange Execution Gateway*.
-- `backend/terminal_agent_daemon.py` — Modul referensi daemon kuantitatif Python.
-- `server.mjs` — Server HTTP produksi mandiri untuk deployment *cloud/online*.
-- `docs/ARCHITECTURE_BLUEPRINT.md` — Dokumen rancangan arsitektur sistem dari awal pengembangan.
+## Project Structure
+
+- `src/App.tsx` — Main 5-tab Fincept Whale Quant Terminal interface and execution state management.
+- `src/components/MultiAgentForumPanel.tsx` — 4-Agent Consensus Forum, Verified News Wire, All-Market Scanner, and Position Accuracy Auditor.
+- `src/components/AgentWarRoom3DViz.tsx` — Interactive 3D Isometric Multi-Agent War-Room and sub-skill inspector.
+- `src/components/VaultSettlementCourier3DViz.tsx` — Interactive 3D Dual-Vault Profit Inflow & External Loss Outflow Courier visualizer.
+- `src/components/CandlestickOrderflowChart.tsx` — Interactive candlestick and orderflow chart with 2D pan and wheel zoom.
+- `src/components/WhaleChordViz.tsx` — Interactive Whale Pipeline visualizer and resizable on-chain blockchain stream drawer.
+- `src/components/CoinIcon.tsx` — Multi-source authentic token icon resolver with automatic fallback.
+- `src/engine/multiAgentForum.ts` — 4-Agent Consensus engine, technical indicators (`EMA`, `RSI`, `MACD`, `Bollinger`, `ATR`, `S/R`), 8-point checklist, and walk-forward accuracy auditor.
+- `src/engine/agentSkills.ts` — Multi-market scanner, 3-pillar deep position intelligence, uncapped 50%+ take-profit engine, and post-TP continuous hunter.
+- `src/engine/liveConnectors.ts` — Real-time multi-exchange and on-chain data connectors with dual-path fallback.
+- `src/engine/walletAdapter.ts` — Trust Wallet (`EIP-6963`), Phantom Wallet (Solana), and multi-chain network switcher.
+- `backend/exchangeGateway.mjs` — Middleware for Hyperliquid L1, Bloomberg/CoinDesk RSS wire, Raydium, Jupiter, DexScreener, multi-chain EVM RPCs, and order execution.
+- `backend/terminal_agent_daemon.py` — Reference Python quantitative daemon module.
+- `server.mjs` — Standalone production HTTP server for cloud deployment.
+- `docs/ARCHITECTURE_BLUEPRINT.md` — System architecture specification and design reference.
