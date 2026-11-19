@@ -98,7 +98,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
       </div>
 
       {/* 2D / Semi-3D Isometric Dual-Vault & Courier Agent SVG Stage */}
-      <div className="w-full bg-gradient-to-b from-[#070E1C] via-[#050912] to-[#04070D] border border-[#16243B] relative overflow-hidden">
+      <div className="w-full bg-gradient-to-b from-[#111927] via-[#0E1522] to-[#0C121D] border border-[#223047] relative overflow-hidden rounded-lg">
         <svg
           viewBox="0 0 900 230"
           className="w-full h-[210px] sm:h-[235px] block select-none"
@@ -107,17 +107,17 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
         >
           <defs>
             <radialGradient id="profitVaultGlow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#00E676" stopOpacity="0.38" />
-              <stop offset="70%" stopColor="#00E676" stopOpacity="0.06" />
+              <stop offset="0%" stopColor="#34D399" stopOpacity="0.38" />
+              <stop offset="70%" stopColor="#34D399" stopOpacity="0.06" />
               <stop offset="100%" stopColor="#050811" stopOpacity="0" />
             </radialGradient>
             <radialGradient id="lossVaultGlow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#FF1744" stopOpacity="0.34" />
-              <stop offset="70%" stopColor="#FF1744" stopOpacity="0.06" />
+              <stop offset="0%" stopColor="#F87171" stopOpacity="0.34" />
+              <stop offset="70%" stopColor="#F87171" stopOpacity="0.06" />
               <stop offset="100%" stopColor="#050811" stopOpacity="0" />
             </radialGradient>
             <radialGradient id="courierHubGlow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#00E5FF" stopOpacity="0.32" />
+              <stop offset="0%" stopColor="#56B6F7" stopOpacity="0.32" />
               <stop offset="100%" stopColor="#050811" stopOpacity="0" />
             </radialGradient>
           </defs>
@@ -146,9 +146,9 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
             {/* Isometric 3D Conveyor Track (Center Hub -> Left Profit Vault) */}
             <polygon
               points="410,112 410,126 215,118 215,104"
-              fill="#00E676"
+              fill="#34D399"
               fillOpacity="0.12"
-              stroke="#00E676"
+              stroke="#34D399"
               strokeWidth="1"
               strokeOpacity="0.45"
             />
@@ -157,7 +157,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
               y1="119"
               x2="215"
               y2="111"
-              stroke="#00E676"
+              stroke="#34D399"
               strokeWidth="3"
               className="iso-beam-anim"
             />
@@ -168,7 +168,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 {/* 3D Isometric Gold/Emerald Cargo Pod starting at x=395, y=102 */}
                 <polygon
                   points="395,86 420,96 395,106 370,96"
-                  fill="#00E676"
+                  fill="#34D399"
                   fillOpacity="0.85"
                   stroke="#B9F6CA"
                   strokeWidth="1.2"
@@ -176,13 +176,13 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 <polygon
                   points="370,96 395,106 395,120 370,110"
                   fill="#00C853"
-                  stroke="#00E676"
+                  stroke="#34D399"
                   strokeWidth="1"
                 />
                 <polygon
                   points="395,106 420,96 420,110 395,120"
                   fill="#009624"
-                  stroke="#00E676"
+                  stroke="#34D399"
                   strokeWidth="1"
                 />
                 {/* Floating Profit Tag above Courier Capsule */}
@@ -193,14 +193,14 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                   height="19"
                   rx="2"
                   fill="#04120B"
-                  stroke="#00E676"
+                  stroke="#34D399"
                   strokeWidth="1.4"
                 />
                 <text
                   x="395"
                   y="76"
                   textAnchor="middle"
-                  fill="#00E676"
+                  fill="#34D399"
                   fontSize="9"
                   fontWeight="900"
                 >
@@ -215,9 +215,9 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
             {/* Isometric 3D Disposal Conduit (Center Hub -> Right External Vault) */}
             <polygon
               points="490,112 490,126 685,118 685,104"
-              fill="#FF1744"
+              fill="#F87171"
               fillOpacity="0.12"
-              stroke="#FF1744"
+              stroke="#F87171"
               strokeWidth="1"
               strokeOpacity="0.45"
             />
@@ -226,7 +226,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
               y1="119"
               x2="685"
               y2="111"
-              stroke="#FF1744"
+              stroke="#F87171"
               strokeWidth="2.5"
               className="iso-beam-anim"
             />
@@ -237,7 +237,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 {/* 3D Isometric Crimson/Amber Loss Extraction Pod starting at x=505, y=102 */}
                 <polygon
                   points="505,86 530,96 505,106 480,96"
-                  fill="#FF1744"
+                  fill="#F87171"
                   fillOpacity="0.85"
                   stroke="#FF8A80"
                   strokeWidth="1.2"
@@ -245,13 +245,13 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 <polygon
                   points="480,96 505,106 505,120 480,110"
                   fill="#D50000"
-                  stroke="#FF1744"
+                  stroke="#F87171"
                   strokeWidth="1"
                 />
                 <polygon
                   points="505,106 530,96 530,110 505,120"
                   fill="#9B0000"
-                  stroke="#FF1744"
+                  stroke="#F87171"
                   strokeWidth="1"
                 />
                 {/* Floating Loss Tag above Capsule */}
@@ -262,7 +262,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                   height="19"
                   rx="2"
                   fill="#1A060B"
-                  stroke="#FF1744"
+                  stroke="#F87171"
                   strokeWidth="1.4"
                 />
                 <text
@@ -290,19 +290,19 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
             <polygon
               points="155,102 225,130 155,158 85,130"
               fill="#071A12"
-              stroke="#00E676"
+              stroke="#34D399"
               strokeWidth="1.8"
             />
             <polygon
               points="85,130 155,158 155,174 85,146"
               fill="#05130D"
-              stroke="#00E676"
+              stroke="#34D399"
               strokeWidth="1.2"
             />
             <polygon
               points="155,158 225,130 225,146 155,174"
               fill="#030D09"
-              stroke="#00E676"
+              stroke="#34D399"
               strokeWidth="1.2"
             />
 
@@ -312,21 +312,21 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
               <polygon
                 points="155,40 202,60 155,80 108,60"
                 fill="#0D2E20"
-                stroke="#00E676"
+                stroke="#34D399"
                 strokeWidth="1.6"
               />
               {/* Left Armored Vault Wall */}
               <polygon
                 points="108,60 155,80 155,132 108,112"
                 fill="#0A2419"
-                stroke="#00E676"
+                stroke="#34D399"
                 strokeWidth="1.5"
               />
               {/* Right Armored Vault Door Face */}
               <polygon
                 points="155,80 202,60 202,112 155,132"
                 fill="#071A12"
-                stroke="#00E676"
+                stroke="#34D399"
                 strokeWidth="1.5"
               />
               {/* Glowing Gold Bullion Stack & Vault Lock Wheel */}
@@ -335,7 +335,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 cy="95"
                 r="12"
                 fill="#04120B"
-                stroke="#FF9F1C"
+                stroke="#F5B74F"
                 strokeWidth="1.6"
               />
               <circle
@@ -343,7 +343,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 cy="95"
                 r="8"
                 fill="none"
-                stroke="#00E676"
+                stroke="#34D399"
                 strokeWidth="1.4"
                 strokeDasharray="3 2"
                 className="iso-orbit-spin"
@@ -355,7 +355,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 width="22"
                 height="8"
                 rx="1"
-                fill="#FF9F1C"
+                fill="#F5B74F"
                 stroke="#FFE082"
                 strokeWidth="0.8"
               />
@@ -365,7 +365,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 width="22"
                 height="8"
                 rx="1"
-                fill="#00E676"
+                fill="#34D399"
                 stroke="#B9F6CA"
                 strokeWidth="0.8"
               />
@@ -374,7 +374,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 x="155"
                 y="27"
                 textAnchor="middle"
-                fill="#00E676"
+                fill="#34D399"
                 fontSize="10"
                 fontWeight="900"
               >
@@ -390,7 +390,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
               height="36"
               rx="3"
               fill="#04120C"
-              stroke="#00E676"
+              stroke="#34D399"
               strokeWidth="1.5"
             />
             <text
@@ -407,7 +407,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
               x="155"
               y="209"
               textAnchor="middle"
-              fill="#00E676"
+              fill="#34D399"
               fontSize="12"
               fontWeight="900"
             >
@@ -422,19 +422,19 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
             <polygon
               points="450,104 516,130 450,156 384,130"
               fill="#0A1528"
-              stroke="#00E5FF"
+              stroke="#56B6F7"
               strokeWidth="1.8"
             />
             <polygon
               points="384,130 450,156 450,170 384,144"
               fill="#07101F"
-              stroke="#00E5FF"
+              stroke="#56B6F7"
               strokeWidth="1.2"
             />
             <polygon
               points="450,156 516,130 516,144 450,170"
               fill="#050B16"
-              stroke="#00E5FF"
+              stroke="#56B6F7"
               strokeWidth="1.2"
             />
 
@@ -443,27 +443,27 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
               {/* Courier Robot Body (3D Isometric Chest Prism) */}
               <polygon
                 points="450,58 476,70 450,82 424,70"
-                fill="#00E5FF"
+                fill="#56B6F7"
                 fillOpacity="0.35"
-                stroke="#00E5FF"
+                stroke="#56B6F7"
                 strokeWidth="1.4"
               />
               <polygon
                 points="424,70 450,82 450,114 424,102"
                 fill="#0D2542"
-                stroke="#00E5FF"
+                stroke="#56B6F7"
                 strokeWidth="1.3"
               />
               <polygon
                 points="450,82 476,70 476,102 450,114"
                 fill="#08182E"
-                stroke="#00E5FF"
+                stroke="#56B6F7"
                 strokeWidth="1.3"
               />
               {/* Courier Agent Head / Visor */}
               <polygon
                 points="450,36 466,44 450,52 434,44"
-                fill="#FF9F1C"
+                fill="#F5B74F"
                 stroke="#FFE082"
                 strokeWidth="1.2"
               />
@@ -473,19 +473,19 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 width="22"
                 height="7"
                 rx="2"
-                fill="#00E5FF"
+                fill="#56B6F7"
               />
               {/* Left & Right Mechanical Courier Arms pointing to Vaults */}
-              <line x1="424" y1="84" x2="398" y2="94" stroke="#00E676" strokeWidth="2.5" />
-              <circle cx="396" cy="95" r="4" fill="#00E676" />
-              <line x1="476" y1="84" x2="502" y2="94" stroke="#FF1744" strokeWidth="2.5" />
-              <circle cx="504" cy="95" r="4" fill="#FF1744" />
+              <line x1="424" y1="84" x2="398" y2="94" stroke="#34D399" strokeWidth="2.5" />
+              <circle cx="396" cy="95" r="4" fill="#34D399" />
+              <line x1="476" y1="84" x2="502" y2="94" stroke="#F87171" strokeWidth="2.5" />
+              <circle cx="504" cy="95" r="4" fill="#F87171" />
 
               <text
                 x="450"
                 y="24"
                 textAnchor="middle"
-                fill="#00E5FF"
+                fill="#56B6F7"
                 fontSize="9.5"
                 fontWeight="900"
               >
@@ -543,19 +543,19 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
             <polygon
               points="745,102 815,130 745,158 675,130"
               fill="#1F0810"
-              stroke="#FF1744"
+              stroke="#F87171"
               strokeWidth="1.8"
             />
             <polygon
               points="675,130 745,158 745,174 675,146"
               fill="#16050B"
-              stroke="#FF1744"
+              stroke="#F87171"
               strokeWidth="1.2"
             />
             <polygon
               points="745,158 815,130 815,146 745,174"
               fill="#100308"
-              stroke="#FF1744"
+              stroke="#F87171"
               strokeWidth="1.2"
             />
 
@@ -564,19 +564,19 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
               <polygon
                 points="745,40 792,60 745,80 698,60"
                 fill="#330B17"
-                stroke="#FF1744"
+                stroke="#F87171"
                 strokeWidth="1.6"
               />
               <polygon
                 points="698,60 745,80 745,132 698,112"
                 fill="#260711"
-                stroke="#FF1744"
+                stroke="#F87171"
                 strokeWidth="1.5"
               />
               <polygon
                 points="745,80 792,60 792,112 745,132"
                 fill="#1B050C"
-                stroke="#FF1744"
+                stroke="#F87171"
                 strokeWidth="1.5"
               />
               {/* Outward Extraction Portal Ring */}
@@ -585,14 +585,14 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                 cy="95"
                 r="11"
                 fill="#140308"
-                stroke="#FF9F1C"
+                stroke="#F5B74F"
                 strokeWidth="1.4"
                 strokeDasharray="4 2"
                 className="iso-sonar-pulse"
               />
               <path
                 d="M 760 88 L 778 88 L 778 104 L 760 104 Z"
-                fill="#FF1744"
+                fill="#F87171"
                 fillOpacity="0.35"
                 stroke="#FF8A80"
                 strokeWidth="1"
@@ -617,7 +617,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
               height="36"
               rx="3"
               fill="#17050A"
-              stroke="#FF1744"
+              stroke="#F87171"
               strokeWidth="1.5"
             />
             <text
@@ -634,7 +634,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
               x="745"
               y="209"
               textAnchor="middle"
-              fill="#FF1744"
+              fill="#F87171"
               fontSize="12"
               fontWeight="900"
             >

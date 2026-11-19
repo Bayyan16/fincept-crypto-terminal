@@ -17,10 +17,10 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
   onSelectAgent,
 }) => {
   const getVoteColor = (vote: SpecialistAgentVote['vote']) => {
-    if (vote === 'LONG') return '#00E676';
-    if (vote === 'SHORT') return '#FF1744';
-    if (vote === 'VETO') return '#FF1744';
-    return '#FF9F1C';
+    if (vote === 'LONG') return '#34D399';
+    if (vote === 'SHORT') return '#F87171';
+    if (vote === 'VETO') return '#F87171';
+    return '#F5B74F';
   };
 
   const agent1 = consensus.votes.find((v) => v.agentId === 'BLOOMBERG_NEWS') || consensus.votes[0];
@@ -33,10 +33,10 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
     consensus.votes.find((v) => v.agentId === selectedAgentId) || consensus.votes[0];
 
   const coreColor = consensus.hasVeto
-    ? '#FF1744'
+    ? '#F87171'
     : consensus.recommendedSide === 'LONG'
-      ? '#00E676'
-      : '#FF1744';
+      ? '#34D399'
+      : '#F87171';
 
   const renderIsoPedestal = (
     cx: number,
@@ -112,7 +112,7 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
       className="bg-[#050811] border border-[#1B2A44] p-2.5 flex flex-col gap-2 h-full"
     >
       {/* Top Stage: 2D / Semi-3D Isometric Cybernetic Arena SVG */}
-      <div className="w-full bg-gradient-to-b from-[#070D1A] via-[#050912] to-[#04070E] border border-[#162338] relative overflow-hidden">
+      <div className="w-full bg-gradient-to-b from-[#111927] via-[#0E1522] to-[#0C121D] border border-[#223047] relative overflow-hidden rounded-lg">
         <div className="flex flex-wrap items-center justify-between gap-1 px-2.5 py-1.5 border-b border-[#142034] bg-[#080E1C]/90 text-[9.5px]">
           <div className="flex items-center gap-2">
             <span className="px-1.5 py-0.5 bg-[#00E5FF] text-black font-extrabold text-[9px]">
@@ -146,7 +146,7 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
             </radialGradient>
             <linearGradient id="isoGridLine" x1="0%" y1="0%" x2="100%" y2="0%">
               <stop offset="0%" stopColor="#1E293B" stopOpacity="0.1" />
-              <stop offset="50%" stopColor="#00E5FF" stopOpacity="0.24" />
+              <stop offset="50%" stopColor="#56B6F7" stopOpacity="0.24" />
               <stop offset="100%" stopColor="#1E293B" stopOpacity="0.1" />
             </linearGradient>
           </defs>
@@ -212,27 +212,27 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
 
           {/* ==================== POD 1: AGENT 1 BLOOMBERG & MACRO NEWS (TOP-LEFT: 160, 68) ==================== */}
           <g className="cursor-pointer" onClick={() => onSelectAgent('BLOOMBERG_NEWS')}>
-            {renderIsoPedestal(160, 68, '#FF9F1C', selectedAgentId === 'BLOOMBERG_NEWS')}
+            {renderIsoPedestal(160, 68, '#F5B74F', selectedAgentId === 'BLOOMBERG_NEWS')}
             <g className="iso-float-1" pointerEvents="none">
               <polygon
                 points="160,22 181,32 160,42 139,32"
-                fill="#FF9F1C"
+                fill="#F5B74F"
                 fillOpacity="0.28"
-                stroke="#FF9F1C"
+                stroke="#F5B74F"
                 strokeWidth="1.3"
               />
               <polygon
                 points="139,32 160,42 160,62 139,52"
                 fill="#B45309"
                 fillOpacity="0.45"
-                stroke="#FF9F1C"
+                stroke="#F5B74F"
                 strokeWidth="1.1"
               />
               <polygon
                 points="160,42 181,32 181,52 160,62"
                 fill="#78350F"
                 fillOpacity="0.55"
-                stroke="#FF9F1C"
+                stroke="#F5B74F"
                 strokeWidth="1.1"
               />
               <ellipse
@@ -241,16 +241,16 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
                 rx="26"
                 ry="10"
                 fill="none"
-                stroke="#FF9F1C"
+                stroke="#F5B74F"
                 strokeWidth="1.1"
                 strokeDasharray="4 3"
               />
-              <circle cx="160" cy="40" r="4.5" fill="#FF9F1C" />
+              <circle cx="160" cy="40" r="4.5" fill="#F5B74F" />
               <text
                 x="160"
                 y="14"
                 textAnchor="middle"
-                fill="#FF9F1C"
+                fill="#F5B74F"
                 fontSize="9.5"
                 fontWeight="900"
               >
@@ -291,37 +291,37 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
 
           {/* ==================== POD 2: AGENT 2 TECHNICAL & PRICE ACTION (BOTTOM-LEFT: 160, 198) ==================== */}
           <g className="cursor-pointer" onClick={() => onSelectAgent('TECHNICAL_ANALYST')}>
-            {renderIsoPedestal(160, 198, '#00E5FF', selectedAgentId === 'TECHNICAL_ANALYST')}
+            {renderIsoPedestal(160, 198, '#56B6F7', selectedAgentId === 'TECHNICAL_ANALYST')}
             <g className="iso-float-2" pointerEvents="none">
-              <line x1="142" y1="150" x2="142" y2="188" stroke="#FF1744" strokeWidth="1.5" />
+              <line x1="142" y1="150" x2="142" y2="188" stroke="#F87171" strokeWidth="1.5" />
               <rect
                 x="137"
                 y="160"
                 width="10"
                 height="18"
-                fill="#FF1744"
+                fill="#F87171"
                 fillOpacity="0.75"
                 stroke="#FF8A80"
                 strokeWidth="0.9"
               />
-              <line x1="160" y1="142" x2="160" y2="185" stroke="#00E5FF" strokeWidth="1.5" />
+              <line x1="160" y1="142" x2="160" y2="185" stroke="#56B6F7" strokeWidth="1.5" />
               <rect
                 x="155"
                 y="150"
                 width="10"
                 height="24"
-                fill="#00E5FF"
+                fill="#56B6F7"
                 fillOpacity="0.8"
                 stroke="#E0F7FA"
                 strokeWidth="1"
               />
-              <line x1="178" y1="146" x2="178" y2="186" stroke="#00E676" strokeWidth="1.5" />
+              <line x1="178" y1="146" x2="178" y2="186" stroke="#34D399" strokeWidth="1.5" />
               <rect
                 x="173"
                 y="153"
                 width="10"
                 height="22"
-                fill="#00E676"
+                fill="#34D399"
                 fillOpacity="0.8"
                 stroke="#B9F6CA"
                 strokeWidth="0.9"
@@ -329,14 +329,14 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
               <path
                 d="M 130 176 Q 147 148, 161 162 T 192 147"
                 fill="none"
-                stroke="#FF9F1C"
+                stroke="#F5B74F"
                 strokeWidth="2"
               />
               <text
                 x="160"
                 y="135"
                 textAnchor="middle"
-                fill="#00E5FF"
+                fill="#56B6F7"
                 fontSize="9.5"
                 fontWeight="900"
               >
@@ -377,7 +377,7 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
 
           {/* ==================== POD 3: AGENT 3 WHALE WALLET TRACKER (TOP-RIGHT: 760, 68) ==================== */}
           <g className="cursor-pointer" onClick={() => onSelectAgent('WHALE_WALLET')}>
-            {renderIsoPedestal(760, 68, '#D500F9', selectedAgentId === 'WHALE_WALLET')}
+            {renderIsoPedestal(760, 68, '#A78BFA', selectedAgentId === 'WHALE_WALLET')}
             <g className="iso-float-2" pointerEvents="none">
               <ellipse
                 cx="760"
@@ -385,13 +385,13 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
                 rx="30"
                 ry="11"
                 fill="none"
-                stroke="#D500F9"
+                stroke="#A78BFA"
                 strokeWidth="1.2"
                 className="iso-sonar-pulse"
               />
               <polygon
                 points="760,21 781,31 760,41 739,31"
-                fill="#D500F9"
+                fill="#A78BFA"
                 fillOpacity="0.35"
                 stroke="#EA80FC"
                 strokeWidth="1.3"
@@ -400,17 +400,17 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
                 points="739,31 760,41 760,62 739,52"
                 fill="#6A1B9A"
                 fillOpacity="0.55"
-                stroke="#D500F9"
+                stroke="#A78BFA"
                 strokeWidth="1.1"
               />
               <polygon
                 points="760,41 781,31 781,52 760,62"
                 fill="#4A148C"
                 fillOpacity="0.65"
-                stroke="#D500F9"
+                stroke="#A78BFA"
                 strokeWidth="1.1"
               />
-              <circle cx="760" cy="41" r="4.5" fill="#00E5FF" />
+              <circle cx="760" cy="41" r="4.5" fill="#56B6F7" />
               <text
                 x="760"
                 y="14"
@@ -457,13 +457,13 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
 
           {/* ==================== POD 4: AGENT 4 EXECUTION PRECISION ARBITER (BOTTOM-RIGHT: 760, 198) ==================== */}
           <g className="cursor-pointer" onClick={() => onSelectAgent('EXECUTION_PRECISION')}>
-            {renderIsoPedestal(760, 198, '#00E676', selectedAgentId === 'EXECUTION_PRECISION')}
+            {renderIsoPedestal(760, 198, '#34D399', selectedAgentId === 'EXECUTION_PRECISION')}
             <g className="iso-float-1" pointerEvents="none">
               <polygon
                 points="760,141 781,152 781,174 760,185 739,174 739,152"
-                fill="#00E676"
+                fill="#34D399"
                 fillOpacity="0.18"
-                stroke="#00E676"
+                stroke="#34D399"
                 strokeWidth="1.5"
               />
               <circle
@@ -471,19 +471,19 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
                 cy="163"
                 r="13"
                 fill="none"
-                stroke="#00E5FF"
+                stroke="#56B6F7"
                 strokeWidth="1.2"
                 strokeDasharray="5 3"
                 className="iso-orbit-spin"
               />
-              <line x1="743" y1="163" x2="777" y2="163" stroke="#00E676" strokeWidth="1.2" />
-              <line x1="760" y1="146" x2="760" y2="180" stroke="#00E676" strokeWidth="1.2" />
-              <circle cx="760" cy="163" r="3.5" fill="#00E676" />
+              <line x1="743" y1="163" x2="777" y2="163" stroke="#34D399" strokeWidth="1.2" />
+              <line x1="760" y1="146" x2="760" y2="180" stroke="#34D399" strokeWidth="1.2" />
+              <circle cx="760" cy="163" r="3.5" fill="#34D399" />
               <text
                 x="760"
                 y="135"
                 textAnchor="middle"
-                fill="#00E676"
+                fill="#34D399"
                 fontSize="9.5"
                 fontWeight="900"
               >
@@ -564,7 +564,7 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
               rx="52"
               ry="18"
               fill="none"
-              stroke="#00E5FF"
+              stroke="#56B6F7"
               strokeWidth="1.2"
               strokeDasharray="6 4"
             />
@@ -648,7 +648,7 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
               x="460"
               y="180"
               textAnchor="middle"
-              fill="#00E5FF"
+              fill="#56B6F7"
               fontSize="9"
               fontWeight="800"
             >

@@ -9,32 +9,45 @@
 html {
   color-scheme: dark;
   scroll-behavior: smooth;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
 }
 
 body {
+  background-color: #0b0f17;
+  color: #e2e8f0;
+  font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  letter-spacing: -0.005em;
+  line-height: 1.42;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
 ::selection {
-  background: #ff9f1c;
-  color: #06080c;
+  background: rgba(86, 182, 247, 0.32);
+  color: #f8fafc;
 }
 
-/* ---------- Baseline smoothness: every interactive element animates ----------
-   Elements that carry an explicit Tailwind transition-* class keep their own
-   transition (class beats element selector); everything else gets this soft
-   150ms ease-out baseline so hover/press/state changes never snap abruptly. */
+/* ---------- Baseline smoothness & friendly modern geometry ----------
+   Every interactive control has soft rounded corners and gentle 180ms
+   cubic-bezier transitions so the workspace feels calm and fluid rather
+   than stiff or blocky. */
 button,
 a,
 input,
 select,
 textarea,
 [role='button'] {
+  border-radius: 6px;
   transition-property: color, background-color, border-color, box-shadow, opacity, transform, filter;
-  transition-duration: 150ms;
-  transition-timing-function: cubic-bezier(0.25, 0.6, 0.3, 1);
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* Keep top tab navigation flush at the bottom underline */
+nav button {
+  border-radius: 6px 6px 0 0;
 }
 
 button:active:not(:disabled),
@@ -47,9 +60,246 @@ button:disabled {
   opacity: 0.55;
 }
 
+/* Smooth rounded cards & pill badges without breaking full-bleed sections */
+[data-testid='app-root'] div.border:not(header):not(nav):not(footer) {
+  border-radius: 8px;
+}
+
+[data-testid='app-root'] span[class*='px-'] {
+  border-radius: 5px;
+}
+
+/* ---------- Eye-Friendly Typography Calibration ----------
+   Softens overly heavy 800-weight LED-like strokes into crisp 600 semibold
+   for effortless readability across dense financial screens. */
+.font-extrabold {
+  font-weight: 600 !important;
+  letter-spacing: 0.005em;
+}
+
+.font-bold {
+  font-weight: 600 !important;
+}
+
+.font-mono {
+  font-family: 'JetBrains Mono', 'Fira Code', ui-monospace, SFMono-Regular, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---------- Anti-LED Eye-Comfort Palette Harmonization ----------
+   Replaces pitch-black halation backgrounds and 100%-saturated neon LED
+   accents with studio-calibrated deep slate surfaces and gentle fintech
+   tones designed for multi-hour trading comfort. */
+.bg-\[\#050608\],
+.bg-\[\#06080C\],
+.bg-\[\#05080D\],
+.bg-\[\#050811\],
+.bg-\[\#04070E\],
+.bg-\[\#04070D\] {
+  background-color: #0b0f17 !important;
+}
+
+.bg-\[\#06090F\],
+.bg-\[\#06090E\],
+.bg-\[\#060910\],
+.bg-\[\#060911\],
+.bg-\[\#060A12\],
+.bg-\[\#060A13\],
+.bg-\[\#070A0F\],
+.bg-\[\#070B12\],
+.bg-\[\#070B14\],
+.bg-\[\#070C16\],
+.bg-\[\#070C17\],
+.bg-\[\#070D18\] {
+  background-color: #101622 !important;
+}
+
+.bg-\[\#080B11\],
+.bg-\[\#080C14\],
+.bg-\[\#090C12\],
+.bg-\[\#090D14\],
+.bg-\[\#090D15\],
+.bg-\[\#090E18\],
+.bg-\[\#090F1C\],
+.bg-\[\#0A0E17\],
+.bg-\[\#0A0F1A\],
+.bg-\[\#0A101A\],
+.bg-\[\#0A101B\],
+.bg-\[\#0A101E\],
+.bg-\[\#0A111E\],
+.bg-\[\#0A1120\] {
+  background-color: #141c2b !important;
+}
+
+.bg-\[\#0B0F17\],
+.bg-\[\#0B111C\],
+.bg-\[\#0B111D\],
+.bg-\[\#0B1220\],
+.bg-\[\#0C121D\],
+.bg-\[\#0C1320\],
+.bg-\[\#0C1422\],
+.bg-\[\#0C1424\],
+.bg-\[\#0D131E\],
+.bg-\[\#0D131F\],
+.bg-\[\#0D1420\],
+.bg-\[\#0D1422\] {
+  background-color: #182234 !important;
+}
+
+/* Soft calibrated borders (eliminates harsh boxy wireframe glare) */
+.border-\[\#1E2736\],
+.border-\[\#1E2B40\],
+.border-\[\#1E2B42\],
+.border-\[\#1B263B\],
+.border-\[\#1B283E\],
+.border-\[\#1B2942\],
+.border-\[\#1B2A44\],
+.border-\[\#1B2B44\],
+.border-\[\#1B2B45\],
+.border-\[\#192438\],
+.border-\[\#19263D\],
+.border-\[\#192842\],
+.border-\[\#1A2436\],
+.border-\[\#1A2538\],
+.border-\[\#1A273E\],
+.border-\[\#161F2E\],
+.border-\[\#162032\],
+.border-\[\#162238\],
+.border-\[\#162338\],
+.border-\[\#16243B\],
+.border-\[\#172338\],
+.border-\[\#17243A\],
+.border-\[\#151E2E\],
+.border-\[\#141C2B\],
+.border-\[\#141D2C\],
+.border-\[\#141D2E\],
+.border-\[\#141F32\],
+.border-\[\#141F33\],
+.border-\[\#142034\],
+.border-\[\#121A28\],
+.border-\[\#182336\],
+.border-\[\#182338\] {
+  border-color: rgba(148, 163, 184, 0.16) !important;
+}
+
+/* Calibrated eye-friendly accent text (replaces harsh 100%-neon LED glare) */
+.text-white,
+.text-\[\#F8FAFC\] {
+  color: #e6edf7 !important;
+}
+
+.text-\[\#00E676\] {
+  color: #34d399 !important;
+}
+
+.text-\[\#00E5FF\] {
+  color: #56b6f7 !important;
+}
+
+.text-\[\#FF1744\] {
+  color: #f87171 !important;
+}
+
+.text-\[\#FF9F1C\] {
+  color: #f5b74f !important;
+}
+
+.text-\[\#D500F9\],
+.text-\[\#EA80FC\] {
+  color: #b794f4 !important;
+}
+
+/* Calibrated solid accent badges & primary action buttons */
+.bg-\[\#00E676\] {
+  background-color: #10b981 !important;
+  color: #04130d !important;
+}
+
+.bg-\[\#00E5FF\] {
+  background-color: #38bdf8 !important;
+  color: #07131f !important;
+}
+
+.bg-\[\#FF1744\] {
+  background-color: #dc4c5e !important;
+  color: #fff5f6 !important;
+}
+
+.bg-\[\#FF9F1C\] {
+  background-color: #e5a33b !important;
+  color: #171104 !important;
+}
+
+.bg-\[\#D500F9\] {
+  background-color: #8b5cf6 !important;
+  color: #f8f5ff !important;
+}
+
+/* Calibrated subtle tinted accent borders (no harsh glowing outlines) */
+.border-\[\#00E676\] {
+  border-color: rgba(52, 211, 153, 0.42) !important;
+}
+
+.border-\[\#00E5FF\] {
+  border-color: rgba(86, 182, 247, 0.42) !important;
+}
+
+.border-\[\#FF1744\] {
+  border-color: rgba(248, 113, 113, 0.42) !important;
+}
+
+.border-\[\#FF9F1C\] {
+  border-color: rgba(245, 183, 79, 0.42) !important;
+}
+
+.border-\[\#D500F9\] {
+  border-color: rgba(183, 148, 244, 0.42) !important;
+}
+
+.border-l-\[\#00E5FF\] {
+  border-left-color: #56b6f7 !important;
+}
+
+.border-l-\[\#00E676\] {
+  border-left-color: #34d399 !important;
+}
+
+.border-l-\[\#FF9F1C\] {
+  border-left-color: #f5b74f !important;
+}
+
+.border-l-\[\#D500F9\] {
+  border-left-color: #a78bfa !important;
+}
+
+/* Subtle tinted translucent accent backgrounds */
+.bg-\[\#00E676\]\/15,
+.bg-\[\#00E676\]\/20 {
+  background-color: rgba(52, 211, 153, 0.12) !important;
+}
+
+.bg-\[\#00E5FF\]\/15,
+.bg-\[\#00E5FF\]\/20 {
+  background-color: rgba(86, 182, 247, 0.12) !important;
+}
+
+.bg-\[\#FF1744\]\/15,
+.bg-\[\#FF1744\]\/20 {
+  background-color: rgba(248, 113, 113, 0.12) !important;
+}
+
+.bg-\[\#FF9F1C\]\/15,
+.bg-\[\#FF9F1C\]\/20 {
+  background-color: rgba(245, 183, 79, 0.12) !important;
+}
+
+.bg-\[\#D500F9\]\/15 {
+  background-color: rgba(167, 139, 250, 0.12) !important;
+}
+
 /* ---------- Keyboard focus (accessibility) ---------- */
 :focus-visible {
-  outline: 1.5px solid #ff9f1c;
+  outline: 1.5px solid #56b6f7;
   outline-offset: 1px;
 }
 
@@ -57,32 +307,32 @@ input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
   outline: none;
-  border-color: #ff9f1c !important;
-  box-shadow: 0 0 0 1px rgba(255, 159, 28, 0.35);
+  border-color: #56b6f7 !important;
+  box-shadow: 0 0 0 2px rgba(86, 182, 247, 0.22);
 }
 
 /* ---------- Scrollbars (WebKit + Firefox) ---------- */
 ::-webkit-scrollbar {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #06080c;
+  background: #0b0f17;
 }
 
 ::-webkit-scrollbar-thumb {
   background: #1e2736;
-  border-radius: 4px;
+  border-radius: 6px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #ff9f1c;
+  background: #334155;
 }
 
 * {
   scrollbar-width: thin;
-  scrollbar-color: #1e2736 #06080c;
+  scrollbar-color: #1e2736 #0b0f17;
 }
 
 .no-scrollbar {
@@ -98,7 +348,7 @@ textarea:focus-visible {
 @keyframes fin-fade-up {
   from {
     opacity: 0;
-    transform: translateY(6px);
+    transform: translateY(5px);
   }
   to {
     opacity: 1;
@@ -118,7 +368,7 @@ textarea:focus-visible {
 @keyframes fin-pop {
   from {
     opacity: 0;
-    transform: scale(0.97) translateY(4px);
+    transform: scale(0.98) translateY(3px);
   }
   to {
     opacity: 1;
@@ -127,50 +377,50 @@ textarea:focus-visible {
 }
 
 .anim-panel {
-  animation: fin-fade-up 220ms cubic-bezier(0.25, 0.6, 0.3, 1) both;
+  animation: fin-fade-up 240ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
 .anim-fade {
-  animation: fin-fade 180ms ease-out both;
+  animation: fin-fade 200ms ease-out both;
 }
 
 .anim-pop {
-  animation: fin-pop 200ms cubic-bezier(0.25, 0.6, 0.3, 1) both;
+  animation: fin-pop 220ms cubic-bezier(0.22, 0.61, 0.36, 1) both;
 }
 
-/* ---------- Live price tick flash (plays on every price change) ---------- */
+/* ---------- Live price tick flash (calm gentle pulse) ---------- */
 @keyframes fin-price-up {
   0% {
-    background-color: rgba(0, 230, 118, 0);
+    background-color: rgba(52, 211, 153, 0);
   }
   35% {
-    background-color: rgba(0, 230, 118, 0.22);
+    background-color: rgba(52, 211, 153, 0.16);
   }
   100% {
-    background-color: rgba(0, 230, 118, 0);
+    background-color: rgba(52, 211, 153, 0);
   }
 }
 
 @keyframes fin-price-down {
   0% {
-    background-color: rgba(255, 23, 68, 0);
+    background-color: rgba(248, 113, 113, 0);
   }
   35% {
-    background-color: rgba(255, 23, 68, 0.22);
+    background-color: rgba(248, 113, 113, 0.16);
   }
   100% {
-    background-color: rgba(255, 23, 68, 0);
+    background-color: rgba(248, 113, 113, 0);
   }
 }
 
 .price-flash-up {
   animation: fin-price-up 420ms ease-out both;
-  border-radius: 2px;
+  border-radius: 4px;
 }
 
 .price-flash-down {
   animation: fin-price-down 420ms ease-out both;
-  border-radius: 2px;
+  border-radius: 4px;
 }
 
 /* ---------- 2D / Semi-3D Isometric Multi-Agent War-Room Animations ---------- */
@@ -180,14 +430,14 @@ textarea:focus-visible {
     transform: translateY(0px);
   }
   50% {
-    transform: translateY(-5px);
+    transform: translateY(-4px);
   }
 }
 
 @keyframes fin-iso-float-alt {
   0%,
   100% {
-    transform: translateY(-4px);
+    transform: translateY(-3px);
   }
   50% {
     transform: translateY(2px);
@@ -214,42 +464,42 @@ textarea:focus-visible {
 
 @keyframes fin-sonar-pulse {
   0% {
-    opacity: 0.75;
-    transform: scale(0.88);
+    opacity: 0.65;
+    transform: scale(0.9);
   }
   50% {
     opacity: 0.25;
-    transform: scale(1.08);
+    transform: scale(1.06);
   }
   100% {
-    opacity: 0.75;
-    transform: scale(0.88);
+    opacity: 0.65;
+    transform: scale(0.9);
   }
 }
 
 .iso-float-1 {
-  animation: fin-iso-float 3.4s ease-in-out infinite;
+  animation: fin-iso-float 3.8s ease-in-out infinite;
 }
 
 .iso-float-2 {
-  animation: fin-iso-float-alt 3.8s ease-in-out infinite;
+  animation: fin-iso-float-alt 4.2s ease-in-out infinite;
 }
 
 .iso-beam-anim {
   stroke-dasharray: 8 6;
-  animation: fin-beam-flow 1.15s linear infinite;
+  animation: fin-beam-flow 1.35s linear infinite;
 }
 
 .iso-orbit-spin {
   transform-box: fill-box;
   transform-origin: center;
-  animation: fin-orbit-spin 9s linear infinite;
+  animation: fin-orbit-spin 11s linear infinite;
 }
 
 .iso-sonar-pulse {
   transform-box: fill-box;
   transform-origin: center;
-  animation: fin-sonar-pulse 2.6s ease-in-out infinite;
+  animation: fin-sonar-pulse 2.8s ease-in-out infinite;
 }
 
 @keyframes fin-courier-to-profit-vault {
@@ -287,11 +537,11 @@ textarea:focus-visible {
 }
 
 .iso-courier-profit {
-  animation: fin-courier-to-profit-vault 2.4s cubic-bezier(0.25, 0.7, 0.35, 1) infinite;
+  animation: fin-courier-to-profit-vault 2.6s cubic-bezier(0.25, 0.7, 0.35, 1) infinite;
 }
 
 .iso-courier-loss {
-  animation: fin-courier-to-loss-vault 2.8s cubic-bezier(0.25, 0.7, 0.35, 1) infinite;
+  animation: fin-courier-to-loss-vault 3s cubic-bezier(0.25, 0.7, 0.35, 1) infinite;
 }
 
 /* ---------- Respect users who prefer reduced motion ---------- */

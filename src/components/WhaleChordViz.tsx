@@ -74,8 +74,8 @@ function computeDefaultPositions(mode: LayoutMode): Record<string, { x: number; 
         n.id === 'WHALE CORE'
           ? 205
           : n.id === 'WINTERMUTE MM'
-          ? 95
-          : 58 + n.pipelineRow * 72;
+            ? 95
+            : 58 + n.pipelineRow * 72;
       pos[n.id] = { x: colX, y: rowY };
     }
   });
@@ -488,1050 +488,1024 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
         data-testid="whale-chord-viz"
         className="flex flex-col h-full bg-[#06080C] border border-[#1E2736] select-none overflow-hidden"
       >
-      {/* 1. Top Header Bar */}
-      <div className="flex flex-wrap items-center justify-between px-2.5 py-1.5 bg-[#0B0F17] border-b border-[#1E2736] gap-1 shrink-0">
-        <div className="flex items-center gap-2">
-          <span className="inline-block w-2 h-2 rounded-full bg-[#FF9F1C] animate-pulse" />
-          <span className="text-[11px] font-extrabold tracking-wider text-[#F8FAFC] uppercase">
-            WHALE PIPELINE VIZ — {activeSymbol}
-          </span>
-          <span className="text-[9px] px-1.5 py-0.2 bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/40 font-bold">
-            DRAG NODE • PAN • ZOOM
-          </span>
-        </div>
+        {/* 1. Top Header Bar */}
+        <div className="flex flex-wrap items-center justify-between px-2.5 py-1.5 bg-[#0B0F17] border-b border-[#1E2736] gap-1 shrink-0">
+          <div className="flex items-center gap-2">
+            <span className="inline-block w-2 h-2 rounded-full bg-[#FF9F1C] animate-pulse" />
+            <span className="text-[11px] font-extrabold tracking-wider text-[#F8FAFC] uppercase">
+              WHALE PIPELINE VIZ — {activeSymbol}
+            </span>
+            <span className="text-[9px] px-1.5 py-0.2 bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/40 font-bold">
+              DRAG NODE • PAN • ZOOM
+            </span>
+          </div>
 
-        <div className="flex items-center gap-1 text-[9.5px]">
-          <button
-            onClick={() => setFlowFilter('ALL')}
-            className={`fc-btn px-1.5 py-0.5 border ${
-              flowFilter === 'ALL'
-                ? 'bg-[#FF9F1C] text-black border-[#FF9F1C] font-extrabold'
-                : 'bg-[#090C10] text-[#94A3B8] border-[#1E2736] hover:text-white'
-            }`}
-          >
-            ALL FLOWS
-          </button>
-          <button
-            onClick={() => setFlowFilter('BULLISH')}
-            className={`fc-btn px-1.5 py-0.5 border ${
-              flowFilter === 'BULLISH'
-                ? 'bg-[#00E676] text-black border-[#00E676] font-extrabold'
-                : 'bg-[#090C10] text-[#94A3B8] border-[#1E2736] hover:text-white'
-            }`}
-          >
-            ACCUMULATION
-          </button>
-          <button
-            onClick={() => setFlowFilter('BEARISH')}
-            className={`fc-btn px-1.5 py-0.5 border ${
-              flowFilter === 'BEARISH'
-                ? 'bg-[#FF1744] text-white border-[#FF1744] font-extrabold'
-                : 'bg-[#090C10] text-[#94A3B8] border-[#1E2736] hover:text-white'
-            }`}
-          >
-            DISTRIBUTION
-          </button>
-        </div>
-      </div>
-
-      {/* 2. Interactive Zoom, Layout & Telemetry Sub-Toolbar */}
-      <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#080B10] border-b border-[#151C28] text-[9.5px] text-[#94A3B8] gap-1.5 shrink-0">
-        <div className="flex items-center gap-2">
-          <span>
-            VOL (1H):{' '}
-            <strong className="text-[#FF9F1C]">${(totalWhaleVolume / 1_000_000).toFixed(2)}M</strong>
-          </span>
-          <span className="text-[#475569]">|</span>
-          <button
-            onClick={() => switchLayoutMode('RADIAL')}
-            data-testid="viz-layout-radial"
-            className={`fc-btn px-1.5 py-0.2 border font-bold ${
-              layoutMode === 'RADIAL'
-                ? 'bg-[#162235] text-[#00E5FF] border-[#00E5FF]'
-                : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736] hover:text-white hover:border-[#00E5FF]/50'
-            }`}
-          >
-            RADIAL CHORD
-          </button>
-          <button
-            onClick={() => switchLayoutMode('PIPELINE')}
-            data-testid="viz-layout-pipeline"
-            className={`fc-btn px-1.5 py-0.2 border font-bold ${
-              layoutMode === 'PIPELINE'
-                ? 'bg-[#162235] text-[#00E5FF] border-[#00E5FF]'
-                : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736] hover:text-white hover:border-[#00E5FF]/50'
-            }`}
-          >
-            3-TIER PIPELINE
-          </button>
-        </div>
-
-        {/* Zoom Controls */}
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setZoom((z) => Number(Math.max(0.45, z - 0.15).toFixed(2)))}
-            className="fc-btn px-1.5 py-0.2 bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
-            title="Zoom Out"
-          >
-            🔍-
-          </button>
-          <input
-            type="range"
-            min={45}
-            max={260}
-            value={Math.round(zoom * 100)}
-            onChange={(e) => setZoom(Number(e.target.value) / 100)}
-            className="w-14 accent-[#FF9F1C] cursor-pointer h-1"
-            title="Zoom Scale"
-          />
-          <span data-testid="viz-zoom-indicator" className="text-[#00E5FF] font-bold w-8 text-center">
-            {Math.round(zoom * 100)}%
-          </span>
-          <button
-            onClick={() => setZoom((z) => Number(Math.min(3.0, z + 0.15).toFixed(2)))}
-            className="fc-btn px-1.5 py-0.2 bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
-            title="Zoom In"
-          >
-            🔍+
-          </button>
-          <button
-            onClick={handleResetView}
-            className="fc-btn px-1.5 py-0.2 bg-[#172133] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/50 font-bold"
-            title="Reset Posisi Node & Zoom"
-          >
-            RESET
-          </button>
-        </div>
-      </div>
-
-      {/* 3. Interactive Draggable & Zoomable SVG Topology Canvas */}
-      <div
-        ref={svgContainerRef}
-        onMouseDown={handleCanvasMouseDown}
-        onMouseMove={handleMouseMove}
-        onMouseUp={handleMouseUp}
-        onMouseLeave={handleCanvasMouseLeave}
-        style={{ touchAction: 'none' }}
-        className={`relative flex-1 flex items-center justify-center bg-[#040609] overflow-hidden min-h-[110px] ${
-          draggingNodeId || isPanningCanvas ? 'cursor-grabbing' : 'cursor-grab'
-        }`}
-      >
-        <svg ref={svgRef} viewBox="0 0 560 410" className="w-full h-full">
-          <defs>
-            <radialGradient id="radarGlow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor="#FF9F1C" stopOpacity="0.16" />
-              <stop offset="55%" stopColor="#D500F9" stopOpacity="0.06" />
-              <stop offset="100%" stopColor="#040609" stopOpacity="0" />
-            </radialGradient>
-          </defs>
-
-          <g
-            transform={`translate(${pan.x + 280 * (1 - zoom)}, ${
-              pan.y + 205 * (1 - zoom)
-            }) scale(${zoom})`}
-          >
-            {layoutMode === 'RADIAL' && (
-              <>
-                <circle
-                  cx={cx}
-                  cy={cy}
-                  r={radius}
-                  fill="url(#radarGlow)"
-                  stroke="#161F2E"
-                  strokeWidth="1"
-                />
-                <circle
-                  cx={cx}
-                  cy={cy}
-                  r={radius * 0.7}
-                  fill="none"
-                  stroke="#121926"
-                  strokeWidth="1"
-                  strokeDasharray="3 3"
-                />
-                <circle
-                  cx={cx}
-                  cy={cy}
-                  r={radius * 0.4}
-                  fill="none"
-                  stroke="#121926"
-                  strokeWidth="1"
-                />
-              </>
-            )}
-
-            {ALL_NODES.filter((n) => n.id !== 'WHALE CORE').map((n) => {
-              const hub = nodePositions['WHALE CORE'] || { x: cx, y: cy };
-              const c = nodePositions[n.id] || { x: cx, y: cy };
-              return (
-                <line
-                  key={`spoke-${n.id}`}
-                  x1={hub.x}
-                  y1={hub.y}
-                  x2={c.x}
-                  y2={c.y}
-                  stroke="#101724"
-                  strokeWidth="0.9"
-                />
-              );
-            })}
-
-            {filteredLinks.map((link, idx) => {
-              const s = nodePositions[link.source] || { x: cx, y: cy };
-              const t = nodePositions[link.target] || { x: cx, y: cy };
-
-              const strokeColor =
-                link.direction === 'INFLOW_BULLISH'
-                  ? idx % 2 === 0
-                    ? '#FF9F1C'
-                    : '#00E676'
-                  : link.direction === 'DEX_LIQUIDITY'
-                  ? '#D500F9'
-                  : link.direction === 'ARB_ROTATION'
-                  ? '#00E5FF'
-                  : '#FF1744';
-
-              const isHighlighted =
-                hoveredNode === link.source ||
-                hoveredNode === link.target ||
-                selectedNode === link.source ||
-                selectedNode === link.target;
-
-              const strandCount = Math.min(5, Math.max(2, Math.round(link.volumeUsd / 8_000_000)));
-              const strands = Array.from({ length: strandCount }, (_, sIdx) => {
-                const offset = (sIdx - (strandCount - 1) / 2) * 7;
-                const midX = (s.x + t.x) / 2 + (cy - (s.y + t.y) / 2) * 0.18 + offset;
-                const midY = (s.y + t.y) / 2 + ((s.x + t.x) / 2 - cx) * 0.18 + offset;
-                return {
-                  d: `M ${s.x} ${s.y} Q ${midX} ${midY} ${t.x} ${t.y}`,
-                  midX,
-                  midY,
-                };
-              });
-
-              return (
-                <g key={link.id}>
-                  {strands.map((st, sIdx) => (
-                    <path
-                      key={`${link.id}-strand-${sIdx}`}
-                      d={st.d}
-                      fill="none"
-                      stroke={strokeColor}
-                      strokeWidth={
-                        isHighlighted ? (sIdx === 0 ? 2.8 : 1.6) : sIdx === 0 ? 2.1 : 1.15
-                      }
-                      strokeOpacity={isHighlighted ? 0.96 : sIdx === 0 ? 0.85 : 0.45}
-                    />
-                  ))}
-
-                  <text
-                    x={(s.x + t.x) / 2}
-                    y={(s.y + t.y) / 2 - 4}
-                    textAnchor="middle"
-                    className="fill-[#CBD5E1] text-[7.5px] font-mono font-bold pointer-events-none"
-                    opacity={isHighlighted ? 1 : 0.72}
-                  >
-                    ${(link.volumeUsd / 1e6).toFixed(1)}M
-                  </text>
-
-                  {link.activePulse && (
-                    <circle
-                      r={isHighlighted ? '3.8' : '3'}
-                      fill="#FFF"
-                      stroke={strokeColor}
-                      strokeWidth="2"
-                    >
-                      <animateMotion
-                        dur={`${2.0 + (idx % 3) * 0.5}s`}
-                        repeatCount="indefinite"
-                        path={strands[0].d}
-                      />
-                    </circle>
-                  )}
-                </g>
-              );
-            })}
-
-            {ALL_NODES.map((n) => {
-              const coord = nodePositions[n.id] || { x: cx, y: cy };
-              const isHub = n.id === 'WHALE CORE';
-              const isSelected = selectedNode === n.id;
-              const isHovered = hoveredNode === n.id;
-              const isDraggingThis = draggingNodeId === n.id;
-              const isHyperliquid = n.id === 'HYPERLIQUID';
-              const isWallet = n.tag === 'WALLET';
-              const nodeVolUsd = nodeVolumeMap[n.id] || 0;
-
-              const borderColor =
-                isSelected || isDraggingThis
-                  ? '#00E5FF'
-                  : isHub
-                  ? '#FF9F1C'
-                  : isHyperliquid
-                  ? '#00E676'
-                  : isWallet
-                  ? '#FF9F1C'
-                  : '#334155';
-
-              const boxW = isHub ? 82 : 66;
-              const boxH = isHub ? 34 : 26;
-              const dxFromCenter = coord.x - cx;
-              const dyFromCenter = coord.y - cy;
-              const isNearEquator = layoutMode === 'RADIAL' && Math.abs(dyFromCenter) < 35;
-              const labelXOffset = isNearEquator ? (dxFromCenter < 0 ? -38 : 38) : 0;
-              const labelYOffset = isNearEquator ? 3 : dyFromCenter < 0 ? -19 : 24;
-              const labelAnchor: 'middle' | 'end' | 'start' = isNearEquator
-                ? dxFromCenter < 0
-                  ? 'end'
-                  : 'start'
-                : 'middle';
-
-              return (
-                <g
-                  key={n.id}
-                  data-testid={`viz-node-${n.id.replace(/\s+/g, '-')}`}
-                  onMouseDown={(e) => handleNodeMouseDown(e, n.id)}
-                  onClick={() => handleNodeClick(n.id)}
-                  onMouseEnter={() => {
-                    if (!draggingNodeId) setHoveredNode(n.id);
-                  }}
-                  onMouseLeave={() => setHoveredNode(null)}
-                  className="cursor-grab active:cursor-grabbing"
-                >
-                  {/* Inner transform group: transition is disabled while dragging so the
-                      node tracks the pointer 1:1; on release the ease-out "settle"
-                      animates the scale back to rest. */}
-                  <g
-                    style={{
-                      transform: `scale(${isDraggingThis ? 1.08 : isHovered ? 1.04 : 1})`,
-                      transformOrigin: `${coord.x}px ${coord.y}px`,
-                      transition: isDraggingThis
-                        ? 'none'
-                        : 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1)',
-                      filter: isDraggingThis
-                        ? 'drop-shadow(0 6px 12px rgba(0, 229, 255, 0.45))'
-                        : 'none',
-                    }}
-                  >
-                    {(isDraggingThis || isHovered) && (
-                      <rect
-                        x={coord.x - boxW / 2 - (isDraggingThis ? 4 : 2.5)}
-                        y={coord.y - boxH / 2 - (isDraggingThis ? 4 : 2.5)}
-                        width={boxW + (isDraggingThis ? 8 : 5)}
-                        height={boxH + (isDraggingThis ? 8 : 5)}
-                        rx={4}
-                        fill="none"
-                        stroke="#00E5FF"
-                        strokeWidth={isDraggingThis ? 1.6 : 1}
-                        strokeOpacity={isDraggingThis ? 0.5 : 0.28}
-                      />
-                    )}
-                    <rect
-                      x={coord.x - boxW / 2}
-                      y={coord.y - boxH / 2}
-                      width={boxW}
-                      height={boxH}
-                      rx={3}
-                      fill={
-                        isSelected || isHovered
-                          ? '#17253B'
-                          : isHub
-                          ? '#181207'
-                          : '#0D131F'
-                      }
-                      stroke={borderColor}
-                      strokeWidth={isSelected || isHovered || isHub ? '1.9' : '1.2'}
-                    />
-                    <text
-                      x={coord.x}
-                      y={coord.y - 2}
-                      textAnchor="middle"
-                      className={`font-extrabold pointer-events-none ${
-                        isHub
-                          ? 'fill-[#FF9F1C] text-[8.5px]'
-                          : 'fill-[#E2E8F0] text-[7.5px]'
-                      }`}
-                    >
-                      {n.tag}
-                    </text>
-                    <text
-                      x={coord.x}
-                      y={coord.y + 8}
-                      textAnchor="middle"
-                      className="fill-[#00E5FF] text-[7px] font-mono font-bold pointer-events-none"
-                    >
-                      ${(nodeVolUsd / 1e6).toFixed(1)}M
-                    </text>
-                    {!isHub && (
-                      <text
-                        x={coord.x + labelXOffset}
-                        y={coord.y + labelYOffset}
-                        textAnchor={labelAnchor}
-                        className={`text-[9px] font-extrabold pointer-events-none ${
-                          isSelected
-                            ? 'fill-[#00E5FF]'
-                            : isHyperliquid
-                            ? 'fill-[#00E676]'
-                            : 'fill-[#F8FAFC]'
-                        }`}
-                      >
-                        {n.short}
-                      </text>
-                    )}
-                  </g>
-                </g>
-              );
-            })}
-          </g>
-        </svg>
-
-        <div className="absolute bottom-1.5 left-2 px-2 py-0.5 bg-[#0A0F1A]/90 border border-[#1E2B42] text-[9px] text-[#94A3B8] pointer-events-none">
-          💡 Geser kotak Node • Drag latar untuk Pan • Scroll Mouse untuk Zoom
-        </div>
-
-        {selectedNode && (
-          <button
-            onClick={() => handleNodeClick(selectedNode)}
-            className="fc-btn absolute top-2 right-2 px-2 py-0.5 bg-[#161F30] hover:bg-[#00E5FF] hover:text-black border border-[#00E5FF] text-[#00E5FF] text-[10px] font-extrabold"
-          >
-            FILTER NODE: {selectedNode} ✕
-          </button>
-        )}
-      </div>
-
-      {/* 4. RESIZABLE ON-CHAIN BLOCKCHAIN STREAM DRAWER (DRAG HANDLE + EXPAND/COLLAPSE TABS) */}
-      <div
-        data-testid="stream-drawer"
-        style={{ height: `${streamHeightPx}px` }}
-        className={`fc-fade-slide-up border-t-2 border-[#00E5FF]/60 bg-[#06090F] flex flex-col shrink-0 ${
-          isResizingStream ? '' : 'transition-[height] duration-[170ms] ease-out'
-        }`}
-      >
-        {/* DRAG HANDLE BAR (Pull Up / Push Down freely) */}
-        <div
-          data-testid="stream-resize-handle"
-          onMouseDown={handleStreamResizeMouseDown}
-          className={`h-2.5 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group transition-colors duration-150 ${
-            isResizingStream
-              ? 'bg-[#00E5FF]/40'
-              : 'bg-[#0D1524] hover:bg-[#00E5FF]/30'
-          }`}
-          title="Tarik ke atas untuk memperlebar tabel transaksi On-Chain, atau tarik ke bawah untuk mengecilkan"
-        >
-          <div
-            className={`w-16 h-1 rounded-full transition-colors duration-150 ${
-              isResizingStream ? 'bg-[#00E5FF]' : 'bg-[#334155] group-hover:bg-[#00E5FF]'
-            }`}
-          />
-        </div>
-
-        {/* TAB BAR & HEIGHT CONTROLS (Can Expand Upwards or Shrink Downwards) */}
-        <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#0B101B] border-b border-[#1A253A] gap-1.5 shrink-0">
-          {/* Sub-Tabs */}
           <div className="flex items-center gap-1 text-[9.5px]">
             <button
-              data-testid="stream-tab-ONCHAIN"
-              onClick={() => {
-                setStreamSubTab('TX_STREAM');
-                if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
-              }}
-              className={`fc-btn px-2 py-0.5 font-extrabold border ${
-                streamSubTab === 'TX_STREAM'
-                  ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
-                  : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#00E5FF]/50'
-              }`}
+              onClick={() => setFlowFilter('ALL')}
+              className={`fc-btn px-1.5 py-0.5 border ${flowFilter === 'ALL'
+                  ? 'bg-[#FF9F1C] text-black border-[#FF9F1C] font-extrabold'
+                  : 'bg-[#090C10] text-[#94A3B8] border-[#1E2736] hover:text-white'
+                }`}
             >
-              ⛓️ ON-CHAIN STREAM ({filteredWhaleStream.length} TXs)
+              ALL FLOWS
             </button>
             <button
-              data-testid="stream-tab-WHALE"
-              onClick={() => {
-                setStreamSubTab('VAULT_POSITIONS');
-                if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
-              }}
-              className={`fc-btn px-2 py-0.5 font-extrabold border ${
-                streamSubTab === 'VAULT_POSITIONS'
-                  ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
-                  : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#FF9F1C]/50'
-              }`}
+              onClick={() => setFlowFilter('BULLISH')}
+              className={`fc-btn px-1.5 py-0.5 border ${flowFilter === 'BULLISH'
+                  ? 'bg-[#00E676] text-black border-[#00E676] font-extrabold'
+                  : 'bg-[#090C10] text-[#94A3B8] border-[#1E2736] hover:text-white'
+                }`}
             >
-              🐋 WHALE & HLP POSITIONS ({whalePositions.length || 6})
+              ACCUMULATION
             </button>
             <button
-              data-testid="stream-tab-BLOCKS"
-              onClick={() => {
-                setStreamSubTab('BLOCK_MATRIX');
-                if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
-              }}
-              className={`fc-btn px-2 py-0.5 font-extrabold border ${
-                streamSubTab === 'BLOCK_MATRIX'
-                  ? 'bg-[#00E676] text-black border-[#00E676]'
-                  : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#00E676]/50'
-              }`}
+              onClick={() => setFlowFilter('BEARISH')}
+              className={`fc-btn px-1.5 py-0.5 border ${flowFilter === 'BEARISH'
+                  ? 'bg-[#FF1744] text-white border-[#FF1744] font-extrabold'
+                  : 'bg-[#090C10] text-[#94A3B8] border-[#1E2736] hover:text-white'
+                }`}
             >
-              🧱 LIVE BLOCKS & AI MATRIX
-            </button>
-          </div>
-
-          {/* Quick Up / Down Size Controls + Search */}
-          <div className="flex items-center gap-1">
-            <input
-              type="text"
-              value={txSearchQuery}
-              onChange={(e) => setTxSearchQuery(e.target.value)}
-              placeholder="Cari Hash 0x..., Block #, Wallet, Coin..."
-              className="w-40 px-2 py-0.5 bg-[#04070B] border border-[#243249] text-[9.5px] text-white focus:outline-none focus:border-[#00E5FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00E5FF]"
-            />
-            <button
-              data-testid="stream-size-small"
-              onClick={() => setPresetStreamHeight('MIN')}
-              className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${
-                streamHeightPx <= 55
-                  ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
-                  : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
-              }`}
-              title="Kecilkan panel tabel ke bawah"
-            >
-              ▼ KECIL
-            </button>
-            <button
-              data-testid="stream-size-normal"
-              onClick={() => setPresetStreamHeight('SPLIT')}
-              className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${
-                streamHeightPx > 55 && streamHeightPx < 360
-                  ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
-                  : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
-              }`}
-              title="Ukuran menengah (Split 50/50)"
-            >
-              ▬ NORMAL
-            </button>
-            <button
-              data-testid="stream-size-max"
-              onClick={() => setPresetStreamHeight('MAX')}
-              className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${
-                streamHeightPx >= 360
-                  ? 'bg-[#00E676] text-black border-[#00E676]'
-                  : 'bg-[#111927] text-[#00E676] border-[#00E676]/50 hover:bg-[#00E676] hover:text-black'
-              }`}
-              title="Naikkan / Lebarkan tabel ke atas untuk melihat banyak transaksi"
-            >
-              ▲ NAIKKAN PENUH
+              DISTRIBUTION
             </button>
           </div>
         </div>
 
-        {/* BODY OF RESIZABLE DRAWER (Hidden when minimized to <= 48px) */}
-        {streamHeightPx > 48 && (
-          <div className="flex-1 flex flex-col overflow-hidden">
-            {/* Chain Filter & Real-Time AI Net Flow Bar */}
-            <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#080C14] border-b border-[#141D2D] text-[9px] gap-1.5 shrink-0">
-              <div className="flex items-center gap-1 flex-wrap">
-                <span className="text-[#64748B] font-bold">FILTER CHAIN:</span>
-                {[
-                  { id: 'ALL', label: 'ALL CHAINS' },
-                  { id: 'SOLANA', label: 'SOLANA' },
-                  { id: 'BNB', label: 'BSC BEP20' },
-                  { id: 'HYPERLIQUID', label: 'HL / HYPEREVM' },
-                  { id: 'ROBINHOOD', label: 'ROBINHOOD' },
-                  { id: 'ETHEREUM', label: 'ETH L1' },
-                  { id: 'ARBITRUM', label: 'ARB L2' },
-                ].map((cf) => (
-                  <button
-                    key={cf.id}
-                    onClick={() => setChainFilter(cf.id)}
-                    className={`fc-btn px-1.5 py-0.2 font-bold border ${
-                      chainFilter === cf.id
-                        ? 'bg-[#17253A] text-[#00E5FF] border-[#00E5FF]'
-                        : 'bg-[#06090F] text-[#94A3B8] border-[#1A2436] hover:text-white'
-                    }`}
-                  >
-                    {cf.label}
-                  </button>
-                ))}
-              </div>
+        {/* 2. Interactive Zoom, Layout & Telemetry Sub-Toolbar */}
+        <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#080B10] border-b border-[#151C28] text-[9.5px] text-[#94A3B8] gap-1.5 shrink-0">
+          <div className="flex items-center gap-2">
+            <span>
+              VOL (1H):{' '}
+              <strong className="text-[#FF9F1C]">${(totalWhaleVolume / 1_000_000).toFixed(2)}M</strong>
+            </span>
+            <span className="text-[#475569]">|</span>
+            <button
+              onClick={() => switchLayoutMode('RADIAL')}
+              data-testid="viz-layout-radial"
+              className={`fc-btn px-1.5 py-0.2 border font-bold ${layoutMode === 'RADIAL'
+                  ? 'bg-[#162235] text-[#00E5FF] border-[#00E5FF]'
+                  : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736] hover:text-white hover:border-[#00E5FF]/50'
+                }`}
+            >
+              RADIAL CHORD
+            </button>
+            <button
+              onClick={() => switchLayoutMode('PIPELINE')}
+              data-testid="viz-layout-pipeline"
+              className={`fc-btn px-1.5 py-0.2 border font-bold ${layoutMode === 'PIPELINE'
+                  ? 'bg-[#162235] text-[#00E5FF] border-[#00E5FF]'
+                  : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736] hover:text-white hover:border-[#00E5FF]/50'
+                }`}
+            >
+              3-TIER PIPELINE
+            </button>
+          </div>
 
-              <div className="flex items-center gap-2 font-mono">
-                <span className="text-[#00E676] font-bold">
-                  BUY: ${(streamMetrics.bullishUsd / 1e6).toFixed(2)}M ({streamMetrics.bullishCount})
-                </span>
-                <span className="text-[#FF1744] font-bold">
-                  SELL: ${(streamMetrics.bearishUsd / 1e6).toFixed(2)}M ({streamMetrics.bearishCount})
-                </span>
-                <span
-                  className={`px-1.5 py-0.2 font-extrabold border ${
-                    streamMetrics.bullishSharePct >= 52
-                      ? 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]/50'
-                      : 'bg-[#FF1744]/15 text-[#FF1744] border-[#FF1744]/50'
+          {/* Zoom Controls */}
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setZoom((z) => Number(Math.max(0.45, z - 0.15).toFixed(2)))}
+              className="fc-btn px-1.5 py-0.2 bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
+              title="Zoom Out"
+            >
+              🔍-
+            </button>
+            <input
+              type="range"
+              min={45}
+              max={260}
+              value={Math.round(zoom * 100)}
+              onChange={(e) => setZoom(Number(e.target.value) / 100)}
+              className="w-14 accent-[#FF9F1C] cursor-pointer h-1"
+              title="Zoom Scale"
+            />
+            <span data-testid="viz-zoom-indicator" className="text-[#00E5FF] font-bold w-8 text-center">
+              {Math.round(zoom * 100)}%
+            </span>
+            <button
+              onClick={() => setZoom((z) => Number(Math.min(3.0, z + 0.15).toFixed(2)))}
+              className="fc-btn px-1.5 py-0.2 bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
+              title="Zoom In"
+            >
+              🔍+
+            </button>
+            <button
+              onClick={handleResetView}
+              className="fc-btn px-1.5 py-0.2 bg-[#172133] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/50 font-bold"
+              title="Reset Posisi Node & Zoom"
+            >
+              RESET
+            </button>
+          </div>
+        </div>
+
+        {/* 3. Interactive Draggable & Zoomable SVG Topology Canvas */}
+        <div
+          ref={svgContainerRef}
+          onMouseDown={handleCanvasMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          onMouseLeave={handleCanvasMouseLeave}
+          style={{ touchAction: 'none' }}
+          className={`relative flex-1 flex items-center justify-center bg-[#040609] overflow-hidden min-h-[110px] ${draggingNodeId || isPanningCanvas ? 'cursor-grabbing' : 'cursor-grab'
+            }`}
+        >
+          <svg ref={svgRef} viewBox="0 0 560 410" className="w-full h-full">
+            <defs>
+              <radialGradient id="radarGlow" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stopColor="#F5B74F" stopOpacity="0.16" />
+                <stop offset="55%" stopColor="#A78BFA" stopOpacity="0.06" />
+                <stop offset="100%" stopColor="#040609" stopOpacity="0" />
+              </radialGradient>
+            </defs>
+
+            <g
+              transform={`translate(${pan.x + 280 * (1 - zoom)}, ${pan.y + 205 * (1 - zoom)
+                }) scale(${zoom})`}
+            >
+              {layoutMode === 'RADIAL' && (
+                <>
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={radius}
+                    fill="url(#radarGlow)"
+                    stroke="#161F2E"
+                    strokeWidth="1"
+                  />
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={radius * 0.7}
+                    fill="none"
+                    stroke="#121926"
+                    strokeWidth="1"
+                    strokeDasharray="3 3"
+                  />
+                  <circle
+                    cx={cx}
+                    cy={cy}
+                    r={radius * 0.4}
+                    fill="none"
+                    stroke="#121926"
+                    strokeWidth="1"
+                  />
+                </>
+              )}
+
+              {ALL_NODES.filter((n) => n.id !== 'WHALE CORE').map((n) => {
+                const hub = nodePositions['WHALE CORE'] || { x: cx, y: cy };
+                const c = nodePositions[n.id] || { x: cx, y: cy };
+                return (
+                  <line
+                    key={`spoke-${n.id}`}
+                    x1={hub.x}
+                    y1={hub.y}
+                    x2={c.x}
+                    y2={c.y}
+                    stroke="#101724"
+                    strokeWidth="0.9"
+                  />
+                );
+              })}
+
+              {filteredLinks.map((link, idx) => {
+                const s = nodePositions[link.source] || { x: cx, y: cy };
+                const t = nodePositions[link.target] || { x: cx, y: cy };
+
+                const strokeColor =
+                  link.direction === 'INFLOW_BULLISH'
+                    ? idx % 2 === 0
+                      ? '#F5B74F'
+                      : '#34D399'
+                    : link.direction === 'DEX_LIQUIDITY'
+                      ? '#A78BFA'
+                      : link.direction === 'ARB_ROTATION'
+                        ? '#56B6F7'
+                        : '#F87171';
+
+                const isHighlighted =
+                  hoveredNode === link.source ||
+                  hoveredNode === link.target ||
+                  selectedNode === link.source ||
+                  selectedNode === link.target;
+
+                const strandCount = Math.min(5, Math.max(2, Math.round(link.volumeUsd / 8_000_000)));
+                const strands = Array.from({ length: strandCount }, (_, sIdx) => {
+                  const offset = (sIdx - (strandCount - 1) / 2) * 7;
+                  const midX = (s.x + t.x) / 2 + (cy - (s.y + t.y) / 2) * 0.18 + offset;
+                  const midY = (s.y + t.y) / 2 + ((s.x + t.x) / 2 - cx) * 0.18 + offset;
+                  return {
+                    d: `M ${s.x} ${s.y} Q ${midX} ${midY} ${t.x} ${t.y}`,
+                    midX,
+                    midY,
+                  };
+                });
+
+                return (
+                  <g key={link.id}>
+                    {strands.map((st, sIdx) => (
+                      <path
+                        key={`${link.id}-strand-${sIdx}`}
+                        d={st.d}
+                        fill="none"
+                        stroke={strokeColor}
+                        strokeWidth={
+                          isHighlighted ? (sIdx === 0 ? 2.8 : 1.6) : sIdx === 0 ? 2.1 : 1.15
+                        }
+                        strokeOpacity={isHighlighted ? 0.96 : sIdx === 0 ? 0.85 : 0.45}
+                      />
+                    ))}
+
+                    <text
+                      x={(s.x + t.x) / 2}
+                      y={(s.y + t.y) / 2 - 4}
+                      textAnchor="middle"
+                      className="fill-[#CBD5E1] text-[7.5px] font-mono font-bold pointer-events-none"
+                      opacity={isHighlighted ? 1 : 0.72}
+                    >
+                      ${(link.volumeUsd / 1e6).toFixed(1)}M
+                    </text>
+
+                    {link.activePulse && (
+                      <circle
+                        r={isHighlighted ? '3.8' : '3'}
+                        fill="#FFF"
+                        stroke={strokeColor}
+                        strokeWidth="2"
+                      >
+                        <animateMotion
+                          dur={`${2.0 + (idx % 3) * 0.5}s`}
+                          repeatCount="indefinite"
+                          path={strands[0].d}
+                        />
+                      </circle>
+                    )}
+                  </g>
+                );
+              })}
+
+              {ALL_NODES.map((n) => {
+                const coord = nodePositions[n.id] || { x: cx, y: cy };
+                const isHub = n.id === 'WHALE CORE';
+                const isSelected = selectedNode === n.id;
+                const isHovered = hoveredNode === n.id;
+                const isDraggingThis = draggingNodeId === n.id;
+                const isHyperliquid = n.id === 'HYPERLIQUID';
+                const isWallet = n.tag === 'WALLET';
+                const nodeVolUsd = nodeVolumeMap[n.id] || 0;
+
+                const borderColor =
+                  isSelected || isDraggingThis
+                    ? '#56B6F7'
+                    : isHub
+                      ? '#F5B74F'
+                      : isHyperliquid
+                        ? '#34D399'
+                        : isWallet
+                          ? '#F5B74F'
+                          : '#334155';
+
+                const boxW = isHub ? 82 : 66;
+                const boxH = isHub ? 34 : 26;
+                const dxFromCenter = coord.x - cx;
+                const dyFromCenter = coord.y - cy;
+                const isNearEquator = layoutMode === 'RADIAL' && Math.abs(dyFromCenter) < 35;
+                const labelXOffset = isNearEquator ? (dxFromCenter < 0 ? -38 : 38) : 0;
+                const labelYOffset = isNearEquator ? 3 : dyFromCenter < 0 ? -19 : 24;
+                const labelAnchor: 'middle' | 'end' | 'start' = isNearEquator
+                  ? dxFromCenter < 0
+                    ? 'end'
+                    : 'start'
+                  : 'middle';
+
+                return (
+                  <g
+                    key={n.id}
+                    data-testid={`viz-node-${n.id.replace(/\s+/g, '-')}`}
+                    onMouseDown={(e) => handleNodeMouseDown(e, n.id)}
+                    onClick={() => handleNodeClick(n.id)}
+                    onMouseEnter={() => {
+                      if (!draggingNodeId) setHoveredNode(n.id);
+                    }}
+                    onMouseLeave={() => setHoveredNode(null)}
+                    className="cursor-grab active:cursor-grabbing"
+                  >
+                    {/* Inner transform group: transition is disabled while dragging so the
+                      node tracks the pointer 1:1; on release the ease-out "settle"
+                      animates the scale back to rest. */}
+                    <g
+                      style={{
+                        transform: `scale(${isDraggingThis ? 1.08 : isHovered ? 1.04 : 1})`,
+                        transformOrigin: `${coord.x}px ${coord.y}px`,
+                        transition: isDraggingThis
+                          ? 'none'
+                          : 'transform 200ms cubic-bezier(0.22, 1, 0.36, 1)',
+                        filter: isDraggingThis
+                          ? 'drop-shadow(0 6px 12px rgba(0, 229, 255, 0.45))'
+                          : 'none',
+                      }}
+                    >
+                      {(isDraggingThis || isHovered) && (
+                        <rect
+                          x={coord.x - boxW / 2 - (isDraggingThis ? 4 : 2.5)}
+                          y={coord.y - boxH / 2 - (isDraggingThis ? 4 : 2.5)}
+                          width={boxW + (isDraggingThis ? 8 : 5)}
+                          height={boxH + (isDraggingThis ? 8 : 5)}
+                          rx={4}
+                          fill="none"
+                          stroke="#56B6F7"
+                          strokeWidth={isDraggingThis ? 1.6 : 1}
+                          strokeOpacity={isDraggingThis ? 0.5 : 0.28}
+                        />
+                      )}
+                      <rect
+                        x={coord.x - boxW / 2}
+                        y={coord.y - boxH / 2}
+                        width={boxW}
+                        height={boxH}
+                        rx={3}
+                        fill={
+                          isSelected || isHovered
+                            ? '#17253B'
+                            : isHub
+                              ? '#181207'
+                              : '#0D131F'
+                        }
+                        stroke={borderColor}
+                        strokeWidth={isSelected || isHovered || isHub ? '1.9' : '1.2'}
+                      />
+                      <text
+                        x={coord.x}
+                        y={coord.y - 2}
+                        textAnchor="middle"
+                        className={`font-extrabold pointer-events-none ${isHub
+                            ? 'fill-[#FF9F1C] text-[8.5px]'
+                            : 'fill-[#E2E8F0] text-[7.5px]'
+                          }`}
+                      >
+                        {n.tag}
+                      </text>
+                      <text
+                        x={coord.x}
+                        y={coord.y + 8}
+                        textAnchor="middle"
+                        className="fill-[#00E5FF] text-[7px] font-mono font-bold pointer-events-none"
+                      >
+                        ${(nodeVolUsd / 1e6).toFixed(1)}M
+                      </text>
+                      {!isHub && (
+                        <text
+                          x={coord.x + labelXOffset}
+                          y={coord.y + labelYOffset}
+                          textAnchor={labelAnchor}
+                          className={`text-[9px] font-extrabold pointer-events-none ${isSelected
+                              ? 'fill-[#00E5FF]'
+                              : isHyperliquid
+                                ? 'fill-[#00E676]'
+                                : 'fill-[#F8FAFC]'
+                            }`}
+                        >
+                          {n.short}
+                        </text>
+                      )}
+                    </g>
+                  </g>
+                );
+              })}
+            </g>
+          </svg>
+
+          <div className="absolute bottom-1.5 left-2 px-2 py-0.5 bg-[#0A0F1A]/90 border border-[#1E2B42] text-[9px] text-[#94A3B8] pointer-events-none">
+            💡 Geser kotak Node • Drag latar untuk Pan • Scroll Mouse untuk Zoom
+          </div>
+
+          {selectedNode && (
+            <button
+              onClick={() => handleNodeClick(selectedNode)}
+              className="fc-btn absolute top-2 right-2 px-2 py-0.5 bg-[#161F30] hover:bg-[#00E5FF] hover:text-black border border-[#00E5FF] text-[#00E5FF] text-[10px] font-extrabold"
+            >
+              FILTER NODE: {selectedNode} ✕
+            </button>
+          )}
+        </div>
+
+        {/* 4. RESIZABLE ON-CHAIN BLOCKCHAIN STREAM DRAWER (DRAG HANDLE + EXPAND/COLLAPSE TABS) */}
+        <div
+          data-testid="stream-drawer"
+          style={{ height: `${streamHeightPx}px` }}
+          className={`fc-fade-slide-up border-t-2 border-[#00E5FF]/60 bg-[#06090F] flex flex-col shrink-0 ${isResizingStream ? '' : 'transition-[height] duration-[170ms] ease-out'
+            }`}
+        >
+          {/* DRAG HANDLE BAR (Pull Up / Push Down freely) */}
+          <div
+            data-testid="stream-resize-handle"
+            onMouseDown={handleStreamResizeMouseDown}
+            className={`h-2.5 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group transition-colors duration-150 ${isResizingStream
+                ? 'bg-[#00E5FF]/40'
+                : 'bg-[#0D1524] hover:bg-[#00E5FF]/30'
+              }`}
+            title="Tarik ke atas untuk memperlebar tabel transaksi On-Chain, atau tarik ke bawah untuk mengecilkan"
+          >
+            <div
+              className={`w-16 h-1 rounded-full transition-colors duration-150 ${isResizingStream ? 'bg-[#00E5FF]' : 'bg-[#334155] group-hover:bg-[#00E5FF]'
+                }`}
+            />
+          </div>
+
+          {/* TAB BAR & HEIGHT CONTROLS (Can Expand Upwards or Shrink Downwards) */}
+          <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#0B101B] border-b border-[#1A253A] gap-1.5 shrink-0">
+            {/* Sub-Tabs */}
+            <div className="flex items-center gap-1 text-[9.5px]">
+              <button
+                data-testid="stream-tab-ONCHAIN"
+                onClick={() => {
+                  setStreamSubTab('TX_STREAM');
+                  if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
+                }}
+                className={`fc-btn px-2 py-0.5 font-extrabold border ${streamSubTab === 'TX_STREAM'
+                    ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
+                    : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#00E5FF]/50'
                   }`}
-                >
-                  AI BIAS: {streamMetrics.bullishSharePct}% BULLISH
-                </span>
-              </div>
+              >
+                ⛓️ ON-CHAIN STREAM ({filteredWhaleStream.length} TXs)
+              </button>
+              <button
+                data-testid="stream-tab-WHALE"
+                onClick={() => {
+                  setStreamSubTab('VAULT_POSITIONS');
+                  if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
+                }}
+                className={`fc-btn px-2 py-0.5 font-extrabold border ${streamSubTab === 'VAULT_POSITIONS'
+                    ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
+                    : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#FF9F1C]/50'
+                  }`}
+              >
+                🐋 WHALE & HLP POSITIONS ({whalePositions.length || 6})
+              </button>
+              <button
+                data-testid="stream-tab-BLOCKS"
+                onClick={() => {
+                  setStreamSubTab('BLOCK_MATRIX');
+                  if (streamHeightPx < 120) setPresetStreamHeight('SPLIT');
+                }}
+                className={`fc-btn px-2 py-0.5 font-extrabold border ${streamSubTab === 'BLOCK_MATRIX'
+                    ? 'bg-[#00E676] text-black border-[#00E676]'
+                    : 'bg-[#070B12] text-[#94A3B8] border-[#1E2B40] hover:text-white hover:border-[#00E676]/50'
+                  }`}
+              >
+                🧱 LIVE BLOCKS & AI MATRIX
+              </button>
             </div>
 
-            {/* Selected Transaction Full On-Chain Audit Drawer */}
-            {inspectedTx && (
-              <div
-                key={inspectedTx.id}
-                data-testid="stream-audit-panel"
-                className="fc-fade-slide-up p-2 bg-[#0B1322] border-b-2 border-[#00E5FF] text-[9.5px] space-y-1 shrink-0"
+            {/* Quick Up / Down Size Controls + Search */}
+            <div className="flex items-center gap-1">
+              <input
+                type="text"
+                value={txSearchQuery}
+                onChange={(e) => setTxSearchQuery(e.target.value)}
+                placeholder="Cari Hash 0x..., Block #, Wallet, Coin..."
+                className="w-40 px-2 py-0.5 bg-[#04070B] border border-[#243249] text-[9.5px] text-white focus:outline-none focus:border-[#00E5FF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#00E5FF]"
+              />
+              <button
+                data-testid="stream-size-small"
+                onClick={() => setPresetStreamHeight('MIN')}
+                className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${streamHeightPx <= 55
+                    ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
+                    : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
+                  }`}
+                title="Kecilkan panel tabel ke bawah"
               >
-                <div className="flex items-center justify-between">
-                  <span className="font-extrabold text-[#00E5FF] uppercase">
-                    🔍 DETAIL AUDIT TRANSAKSI ON-CHAIN — {inspectedTx.symbol} (
-                    {inspectedTx.chainName || inspectedTx.exchange})
-                  </span>
-                  <div className="flex items-center gap-1.5">
-                    {copiedText && (
-                      <span className="px-1.5 py-0.2 bg-[#00E676] text-black font-extrabold text-[9px]">
-                        ✓ {copiedText} DISALIN!
-                      </span>
-                    )}
-                    <button
-                      onClick={() => setInspectedTx(null)}
-                      className="fc-btn px-1.5 py-0.2 bg-[#1E293B] text-white font-bold hover:bg-[#FF1744]"
-                    >
-                      TUTUP ✕
-                    </button>
-                  </div>
-                </div>
-
-                <div className="grid grid-cols-2 gap-1.5 bg-[#060911] p-1.5 border border-[#1A263B] font-mono text-[9px]">
-                  <div>
-                    <span className="text-[#64748B]">BLOCK / SLOT:</span>{' '}
-                    <strong className="text-[#FF9F1C]">
-                      #{inspectedTx.blockNumber ? inspectedTx.blockNumber.toLocaleString() : 'LIVE'}
-                    </strong>{' '}
-                    <span className="text-[#00E676]">
-                      [{inspectedTx.isLiveVerified ? 'LIVE RPC VERIFIED' : 'ON-CHAIN'}]
-                    </span>
-                    {inspectedTx.blockTimestamp && (
-                      <div className="text-[8.5px] text-[#94A3B8]">
-                        UTC: {inspectedTx.blockTimestamp}
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <span className="text-[#64748B]">SIZE & PRICE:</span>{' '}
-                    <strong className="text-white">
-                      {inspectedTx.sizeCoins ? `${inspectedTx.sizeCoins} ${inspectedTx.tokenSymbol || 'Coins'} ` : ''}
-                      (${inspectedTx.sizeUsd.toLocaleString()}) @ ${inspectedTx.price.toLocaleString()}
-                    </strong>
-                    <div className="text-[8.5px] text-[#00E5FF]">
-                      Method: {inspectedTx.methodName || inspectedTx.action}
-                      {typeof inspectedTx.gasFeeUsd === 'number' &&
-                        ` • Gas: $${inspectedTx.gasFeeUsd.toFixed(4)}`}
-                      {typeof inspectedTx.gasPriceGwei === 'number' && inspectedTx.gasPriceGwei > 0
-                        ? ` (${inspectedTx.gasPriceGwei} Gwei)`
-                        : ''}
-                      {typeof inspectedTx.nonce === 'number' ? ` • Nonce #${inspectedTx.nonce}` : ''}
-                    </div>
-                  </div>
-                  <div className="col-span-2 flex items-center justify-between gap-1">
-                    <div className="truncate">
-                      <span className="text-[#64748B]">FULL TX HASH:</span>{' '}
-                      <strong className="text-[#00E5FF]">
-                        {inspectedTx.fullTxHash || inspectedTx.txHash}
-                      </strong>
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        onClick={() =>
-                          handleCopyText('TX HASH', inspectedTx.fullTxHash || inspectedTx.txHash)
-                        }
-                        className="fc-btn px-1.5 py-0.2 bg-[#162032] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/40 font-bold"
-                      >
-                        COPY HASH
-                      </button>
-                      {inspectedTx.explorerTxUrl && (
-                        <a
-                          href={inspectedTx.explorerTxUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="fc-btn px-1.5 py-0.2 bg-[#00E676]/20 hover:bg-[#00E676] hover:text-black text-[#00E676] border border-[#00E676] font-bold"
-                        >
-                          EXPLORER ↗
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                  <div className="col-span-2 flex items-center justify-between gap-1">
-                    <div className="truncate">
-                      <span className="text-[#64748B]">INITIATOR WALLET:</span>{' '}
-                      <strong className="text-[#FF9F1C]">{inspectedTx.walletAddress}</strong>
-                      {inspectedTx.counterpartyAddress && (
-                        <>
-                          {' '}
-                          <span className="text-[#64748B]">→ TO/POOL:</span>{' '}
-                          <span className="text-[#CBD5E1]">
-                            {inspectedTx.counterpartyAddress.slice(0, 10)}...
-                          </span>
-                        </>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-1 shrink-0">
-                      <button
-                        onClick={() => handleCopyText('WALLET', inspectedTx.walletAddress)}
-                        className="fc-btn px-1.5 py-0.2 bg-[#162032] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/40 font-bold"
-                      >
-                        COPY WALLET
-                      </button>
-                      {inspectedTx.explorerWalletUrl && (
-                        <a
-                          href={inspectedTx.explorerWalletUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="fc-btn px-1.5 py-0.2 bg-[#FF9F1C]/20 hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C] font-bold"
-                        >
-                          TRACK WALLET ↗
-                        </a>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* SUB-TAB 1: STRUCTURED MULTI-COLUMN ON-CHAIN TRANSACTION TABLE */}
-            {streamSubTab === 'TX_STREAM' && (
-              <div key="TX_STREAM" className="fc-fade-in flex-1 flex flex-col overflow-hidden">
-                {/* Sticky Table Column Header */}
-                <div className="grid grid-cols-12 px-2.5 py-1 bg-[#0A0F1A] border-b border-[#1A253A] text-[8.5px] font-extrabold text-[#94A3B8] uppercase shrink-0">
-                  <span className="col-span-2">WAKTU & BLOCK #</span>
-                  <span className="col-span-2">MARKET & AKSI</span>
-                  <span className="col-span-3">WALLET ADDRESS → TARGET</span>
-                  <span className="col-span-2">TX HASH (ON-CHAIN)</span>
-                  <span className="col-span-2 text-right">SIZE & HARGA</span>
-                  <span className="col-span-1 text-right">AI CONF</span>
-                </div>
-
-                {/* Scrollable Table Rows (Up to 60 Live Transactions) */}
-                <div className="flex-1 overflow-y-auto divide-y divide-[#111826]">
-                  {filteredWhaleStream.map((w) => {
-                    const isSelectedRow = inspectedTx?.id === w.id;
-                    return (
-                      <div
-                        key={w.id}
-                        onClick={() => setInspectedTx(w)}
-                        className={`grid grid-cols-12 px-2.5 py-1.5 items-center text-[9.5px] font-mono hover:bg-[#0E1626] cursor-pointer transition-colors ${
-                          isSelectedRow ? 'bg-[#111E34] border-l-2 border-[#00E5FF]' : ''
-                        }`}
-                      >
-                        {/* Col 1: Time + Block + Chain */}
-                        <div className="col-span-2 pr-1">
-                          <div className="text-[#CBD5E1] font-bold flex items-center gap-1">
-                            <span>{w.timestamp}</span>
-                            {w.isLiveVerified && (
-                              <span className="text-[7.5px] px-1 bg-[#00E676]/15 text-[#00E676] font-extrabold">
-                                LIVE
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-[8.5px] text-[#00E5FF] truncate">
-                            #{w.blockNumber ? w.blockNumber.toLocaleString() : 'LIVE'} •{' '}
-                            {(w.chainName || w.exchange).replace(' Mainnet', '')}
-                          </div>
-                        </div>
-
-                        {/* Col 2: Symbol + Action */}
-                        <div className="col-span-2 pr-1">
-                          <div
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              if (onSelectSymbol) onSelectSymbol(w.symbol);
-                            }}
-                            className="font-extrabold text-white hover:text-[#FF9F1C]"
-                          >
-                            {w.symbol}
-                          </div>
-                          <span
-                            className={`inline-block px-1 py-0.1 text-[8px] font-extrabold ${
-                              w.direction === 'BULLISH'
-                                ? 'bg-[#00E676]/15 text-[#00E676] border border-[#00E676]/40'
-                                : 'bg-[#FF1744]/15 text-[#FF1744] border border-[#FF1744]/40'
-                            }`}
-                          >
-                            {w.action}
-                          </span>
-                        </div>
-
-                        {/* Col 3: Initiator Wallet Address -> Target */}
-                        <div className="col-span-3 pr-1 min-w-0">
-                          <div className="text-[#FF9F1C] font-semibold truncate">
-                            {w.walletAddress.slice(0, 8)}...{w.walletAddress.slice(-6)}
-                          </div>
-                          <div className="text-[8.5px] text-[#94A3B8] truncate">
-                            {w.sourceNode} → <span className="text-[#00E5FF]">{w.targetNode}</span>
-                          </div>
-                        </div>
-
-                        {/* Col 4: TX Hash + Method/Gas + Direct Explorer Link */}
-                        <div className="col-span-2 pr-1 min-w-0">
-                          <div className="text-[#CBD5E1] truncate" title={w.methodName || w.txHash}>
-                            {w.txHash}
-                          </div>
-                          <div className="flex items-center gap-1 text-[8px] truncate">
-                            <span className="text-[#94A3B8] truncate">
-                              {w.methodName ? w.methodName.slice(0, 12) : '🔍 Detail'}
-                            </span>
-                            {w.explorerTxUrl && (
-                              <a
-                                href={w.explorerTxUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                onClick={(e) => e.stopPropagation()}
-                                className="fc-btn text-[#00E676] hover:underline font-bold shrink-0"
-                              >
-                                ↗ Explorer
-                              </a>
-                            )}
-                          </div>
-                        </div>
-
-                        {/* Col 5: USD Notional + Coin Size + Price */}
-                        <div className="col-span-2 text-right pr-1">
-                          <div
-                            className={`font-extrabold ${
-                              w.direction === 'BULLISH' ? 'text-[#00E676]' : 'text-[#FF1744]'
-                            }`}
-                          >
-                            $
-                            {w.sizeUsd >= 1_000_000
-                              ? `${(w.sizeUsd / 1_000_000).toFixed(2)}M`
-                              : `${(w.sizeUsd / 1000).toFixed(1)}K`}
-                          </div>
-                          <div className="text-[8.5px] text-[#94A3B8] truncate">
-                            {w.sizeCoins ? `${Number(w.sizeCoins).toFixed(2)} @ ` : '@ '}$
-                            {w.price.toLocaleString()}
-                          </div>
-                        </div>
-
-                        {/* Col 6: AI Confidence & Impact */}
-                        <div className="col-span-1 text-right">
-                          <span
-                            className={`px-1 py-0.2 text-[8.5px] font-extrabold ${
-                              w.direction === 'BULLISH'
-                                ? 'bg-[#00E676]/20 text-[#00E676]'
-                                : 'bg-[#FF1744]/20 text-[#FF1744]'
-                            }`}
-                          >
-                            {w.direction === 'BULLISH' ? '+' : '-'}
-                            {w.confidence}%
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
-
-            {/* SUB-TAB 2: HLP INSTITUTIONAL VAULT & WHALE OPEN POSITIONS */}
-            {streamSubTab === 'VAULT_POSITIONS' && (
-              <div key="VAULT_POSITIONS" className="fc-fade-in flex-1 flex flex-col overflow-hidden">
-                {hlpVaultSummary && (
-                  <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#080E1A] border-b border-[#1A253A] text-[9px] font-mono gap-2 shrink-0">
-                    <span className="text-[#FF9F1C] font-extrabold">
-                      HLP VAULT ({hlpVaultSummary.vaultAddress.slice(0, 8)}...
-                      {hlpVaultSummary.vaultAddress.slice(-4)})
-                    </span>
-                    <div className="flex items-center gap-3">
-                      <span className="text-[#94A3B8]">
-                        Account:{' '}
-                        <strong className="text-white">
-                          ${(hlpVaultSummary.accountValueUsd / 1e6).toFixed(2)}M
-                        </strong>
-                      </span>
-                      <span className="text-[#94A3B8]">
-                        Total OI:{' '}
-                        <strong className="text-[#00E5FF]">
-                          ${(hlpVaultSummary.totalNotionalPosUsd / 1e6).toFixed(2)}M
-                        </strong>
-                      </span>
-                      <span className="text-[#94A3B8]">
-                        Margin Used:{' '}
-                        <strong className="text-[#00E676]">
-                          ${(hlpVaultSummary.totalMarginUsedUsd / 1e6).toFixed(2)}M
-                        </strong>
-                      </span>
-                    </div>
-                  </div>
-                )}
-                <div className="grid grid-cols-12 px-2.5 py-1 bg-[#0A0F1A] border-b border-[#1A253A] text-[8.5px] font-extrabold text-[#94A3B8] uppercase shrink-0">
-                  <span className="col-span-2">COIN & LEV</span>
-                  <span className="col-span-2">SIDE / MARGIN</span>
-                  <span className="col-span-3">ENTRY → MARK / LIQ</span>
-                  <span className="col-span-2 text-right">SIZE (COINS)</span>
-                  <span className="col-span-2 text-right">NOTIONAL $</span>
-                  <span className="col-span-1 text-right">uPnL / ROE</span>
-                </div>
-                <div className="flex-1 overflow-y-auto divide-y divide-[#111826] font-mono text-[9.5px]">
-                  {whalePositions.length === 0 ? (
-                    <div className="p-4 text-center text-[10px] text-[#94A3B8]">
-                      Menunggu sinkronisasi posisi on-chain live dari Hyperliquid L1 HLP Vault...
-                    </div>
-                  ) : (
-                    whalePositions.map((wp, idx) => (
-                      <div
-                        key={`${wp.symbol}-${idx}`}
-                        onClick={() => onSelectSymbol && onSelectSymbol(wp.symbol)}
-                        className="grid grid-cols-12 px-2.5 py-1.5 items-center hover:bg-[#0E1626] cursor-pointer transition-colors duration-150"
-                      >
-                        <div className="col-span-2">
-                          <div className="font-extrabold text-white">{wp.symbol}</div>
-                          <div className="text-[8px] text-[#00E5FF]">
-                            {wp.leverage ? `${wp.leverage}x ${wp.leverageType || 'cross'}` : 'HLP Vault'}
-                          </div>
-                        </div>
-                        <div className="col-span-2">
-                          <span
-                            className={`px-1.5 py-0.2 text-[8.5px] font-extrabold ${
-                              wp.side === 'LONG'
-                                ? 'bg-[#00E676] text-black'
-                                : 'bg-[#FF1744] text-white'
-                            }`}
-                          >
-                            {wp.side}
-                          </span>
-                          {typeof wp.marginUsedUsd === 'number' && wp.marginUsedUsd > 0 && (
-                            <div className="text-[8px] text-[#94A3B8] mt-0.5">
-                              Mgn: ${(wp.marginUsedUsd / 1000).toFixed(1)}K
-                            </div>
-                          )}
-                        </div>
-                        <div className="col-span-3 text-[8.5px]">
-                          <div className="text-[#CBD5E1]">
-                            E: ${wp.entryPrice.toLocaleString()}
-                            {wp.markPrice ? ` → $${wp.markPrice.toLocaleString()}` : ''}
-                          </div>
-                          <div className="text-[#FF9F1C]">
-                            Liq: {wp.liquidationPrice && wp.liquidationPrice > 0 ? `$${wp.liquidationPrice.toLocaleString()}` : 'Cross Safe'}
-                          </div>
-                        </div>
-                        <span className="col-span-2 text-right text-[#CBD5E1]">
-                          {wp.sizeCoins.toLocaleString(undefined, { maximumFractionDigits: 2 })} {wp.coin}
-                        </span>
-                        <span className="col-span-2 text-right font-extrabold text-[#FF9F1C]">
-                          ${wp.positionValueUsd >= 1_000_000
-                            ? `${(wp.positionValueUsd / 1e6).toFixed(2)}M`
-                            : `${(wp.positionValueUsd / 1000).toFixed(1)}K`}
-                        </span>
-                        <div
-                          className={`col-span-1 text-right font-bold ${
-                            wp.unrealizedPnlUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
-                          }`}
-                        >
-                          <div>
-                            {wp.unrealizedPnlUsd >= 0 ? '+' : ''}$
-                            {(wp.unrealizedPnlUsd / 1000).toFixed(1)}K
-                          </div>
-                          {typeof wp.roePct === 'number' && (
-                            <div className="text-[8px]">
-                              {wp.roePct >= 0 ? '+' : ''}
-                              {wp.roePct}%
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* SUB-TAB 3: LIVE MULTI-CHAIN BLOCK HEIGHTS & AI DECISION MATRIX */}
-            {streamSubTab === 'BLOCK_MATRIX' && (
-              <div key="BLOCK_MATRIX" className="fc-fade-in flex-1 overflow-y-auto p-2.5 space-y-2 text-[10px]">
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2 font-mono">
-                  <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
-                    <div className="text-[8.5px] text-[#94A3B8]">ETHEREUM MAINNET (ERC20)</div>
-                    <div className="text-xs font-extrabold text-[#00E5FF] mt-0.5">
-                      {liveBlocks?.ethereumL1
-                        ? `Block #${liveBlocks.ethereumL1.toLocaleString()}`
-                        : 'Syncing RPC...'}
-                    </div>
-                    <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (12s block)</div>
-                  </div>
-                  <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
-                    <div className="text-[8.5px] text-[#94A3B8]">ARBITRUM ONE (L2 BRIDGE)</div>
-                    <div className="text-xs font-extrabold text-[#FF9F1C] mt-0.5">
-                      {liveBlocks?.arbitrumL2
-                        ? `Block #${liveBlocks.arbitrumL2.toLocaleString()}`
-                        : 'Syncing RPC...'}
-                    </div>
-                    <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (250ms block)</div>
-                  </div>
-                  <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
-                    <div className="text-[8.5px] text-[#94A3B8]">SOLANA MAINNET (JUP/RAY)</div>
-                    <div className="text-xs font-extrabold text-[#00E676] mt-0.5">
-                      {liveBlocks?.solanaSlot
-                        ? `Slot #${liveBlocks.solanaSlot.toLocaleString()}`
-                        : 'Syncing RPC...'}
-                    </div>
-                    <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (400ms slot)</div>
-                  </div>
-                  <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
-                    <div className="text-[8.5px] text-[#94A3B8]">BNB SMART CHAIN (BEP20)</div>
-                    <div className="text-xs font-extrabold text-[#F8FAFC] mt-0.5">
-                      {liveBlocks?.bscMainnet
-                        ? `Block #${liveBlocks.bscMainnet.toLocaleString()}`
-                        : 'Syncing RPC...'}
-                    </div>
-                    <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (3s block)</div>
-                  </div>
-                  <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
-                    <div className="text-[8.5px] text-[#94A3B8]">HYPEREVM / HYPERLIQUID (#999)</div>
-                    <div className="text-xs font-extrabold text-[#00E5FF] mt-0.5">
-                      {liveBlocks?.hyperEvmBlock
-                        ? `Block #${liveBlocks.hyperEvmBlock.toLocaleString()}`
-                        : 'Syncing RPC...'}
-                    </div>
-                    <div className="text-[8.5px] text-[#00E676]">● HYPEREVM + HL L1 LIVE</div>
-                  </div>
-                  <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
-                    <div className="text-[8.5px] text-[#94A3B8]">ROBINHOOD CHAIN (#4663)</div>
-                    <div className="text-xs font-extrabold text-[#00E676] mt-0.5">
-                      {liveBlocks?.robinhoodBlock
-                        ? `Block #${liveBlocks.robinhoodBlock.toLocaleString()}`
-                        : 'Syncing Indexer...'}
-                    </div>
-                    <div className="text-[8.5px] text-[#00E676]">● ROBINHOOD ON-CHAIN LIVE</div>
-                  </div>
-                </div>
-
-                <div className="p-2.5 bg-[#090F1B] border border-[#1E2B42] space-y-1">
-                  <div className="font-extrabold text-[#FF9F1C] uppercase">
-                    🧠 BAGAIMANA DATA ON-CHAIN INI MENAJAMKAN KEPUTUSAN AGENT ({activeSymbol}):
-                  </div>
-                  <p className="text-[#CBD5E1] text-[9.5px] leading-relaxed">
-                    1. <strong>Deteksi Akumulasi Sebelum Harga Bergerak</strong>: Agent membaca
-                    aliran transaksi pada block terbaru ({filteredWhaleStream.length} TX aktif, Net
-                    Flow{' '}
-                    <strong
-                      className={
-                        streamMetrics.netFlowUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
-                      }
-                    >
-                      {streamMetrics.netFlowUsd >= 0 ? '+' : ''}$
-                      {(streamMetrics.netFlowUsd / 1e6).toFixed(2)}M
-                    </strong>
-                    ). Jika rasio beli Whale &ge; 55%, Agent menaikkan skor{' '}
-                    <code>Whale Conviction</code> untuk menahan floating loss sementara dan tidak
-                    terpancing fakeout.
-                  </p>
-                  <p className="text-[#CBD5E1] text-[9.5px] leading-relaxed">
-                    2. <strong>Deteksi Distribusi / Dump Dini</strong>: Jika terdeteksi transaksi
-                    deposit CEX besar atau pembukaan posisi SHORT masif di Hyperliquid L1 / HLP
-                    Vault, Agent otomatis memicu <code>AUTO_CUT_INVALIDATED</code> atau{' '}
-                    <code>AUTO_TAKE_PROFIT_NOW</code> sebelum harga jatuh di chart.
-                  </p>
-                </div>
-              </div>
-            )}
+                ▼ KECIL
+              </button>
+              <button
+                data-testid="stream-size-normal"
+                onClick={() => setPresetStreamHeight('SPLIT')}
+                className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${streamHeightPx > 55 && streamHeightPx < 360
+                    ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
+                    : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
+                  }`}
+                title="Ukuran menengah (Split 50/50)"
+              >
+                ▬ NORMAL
+              </button>
+              <button
+                data-testid="stream-size-max"
+                onClick={() => setPresetStreamHeight('MAX')}
+                className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${streamHeightPx >= 360
+                    ? 'bg-[#00E676] text-black border-[#00E676]'
+                    : 'bg-[#111927] text-[#00E676] border-[#00E676]/50 hover:bg-[#00E676] hover:text-black'
+                  }`}
+                title="Naikkan / Lebarkan tabel ke atas untuk melihat banyak transaksi"
+              >
+                ▲ NAIKKAN PENUH
+              </button>
+            </div>
           </div>
-        )}
-      </div>
+
+          {/* BODY OF RESIZABLE DRAWER (Hidden when minimized to <= 48px) */}
+          {streamHeightPx > 48 && (
+            <div className="flex-1 flex flex-col overflow-hidden">
+              {/* Chain Filter & Real-Time AI Net Flow Bar */}
+              <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#080C14] border-b border-[#141D2D] text-[9px] gap-1.5 shrink-0">
+                <div className="flex items-center gap-1 flex-wrap">
+                  <span className="text-[#64748B] font-bold">FILTER CHAIN:</span>
+                  {[
+                    { id: 'ALL', label: 'ALL CHAINS' },
+                    { id: 'SOLANA', label: 'SOLANA' },
+                    { id: 'BNB', label: 'BSC BEP20' },
+                    { id: 'HYPERLIQUID', label: 'HL / HYPEREVM' },
+                    { id: 'ROBINHOOD', label: 'ROBINHOOD' },
+                    { id: 'ETHEREUM', label: 'ETH L1' },
+                    { id: 'ARBITRUM', label: 'ARB L2' },
+                  ].map((cf) => (
+                    <button
+                      key={cf.id}
+                      onClick={() => setChainFilter(cf.id)}
+                      className={`fc-btn px-1.5 py-0.2 font-bold border ${chainFilter === cf.id
+                          ? 'bg-[#17253A] text-[#00E5FF] border-[#00E5FF]'
+                          : 'bg-[#06090F] text-[#94A3B8] border-[#1A2436] hover:text-white'
+                        }`}
+                    >
+                      {cf.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-2 font-mono">
+                  <span className="text-[#00E676] font-bold">
+                    BUY: ${(streamMetrics.bullishUsd / 1e6).toFixed(2)}M ({streamMetrics.bullishCount})
+                  </span>
+                  <span className="text-[#FF1744] font-bold">
+                    SELL: ${(streamMetrics.bearishUsd / 1e6).toFixed(2)}M ({streamMetrics.bearishCount})
+                  </span>
+                  <span
+                    className={`px-1.5 py-0.2 font-extrabold border ${streamMetrics.bullishSharePct >= 52
+                        ? 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]/50'
+                        : 'bg-[#FF1744]/15 text-[#FF1744] border-[#FF1744]/50'
+                      }`}
+                  >
+                    AI BIAS: {streamMetrics.bullishSharePct}% BULLISH
+                  </span>
+                </div>
+              </div>
+
+              {/* Selected Transaction Full On-Chain Audit Drawer */}
+              {inspectedTx && (
+                <div
+                  key={inspectedTx.id}
+                  data-testid="stream-audit-panel"
+                  className="fc-fade-slide-up p-2 bg-[#0B1322] border-b-2 border-[#00E5FF] text-[9.5px] space-y-1 shrink-0"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="font-extrabold text-[#00E5FF] uppercase">
+                      🔍 DETAIL AUDIT TRANSAKSI ON-CHAIN — {inspectedTx.symbol} (
+                      {inspectedTx.chainName || inspectedTx.exchange})
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      {copiedText && (
+                        <span className="px-1.5 py-0.2 bg-[#00E676] text-black font-extrabold text-[9px]">
+                          ✓ {copiedText} DISALIN!
+                        </span>
+                      )}
+                      <button
+                        onClick={() => setInspectedTx(null)}
+                        className="fc-btn px-1.5 py-0.2 bg-[#1E293B] text-white font-bold hover:bg-[#FF1744]"
+                      >
+                        TUTUP ✕
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-1.5 bg-[#060911] p-1.5 border border-[#1A263B] font-mono text-[9px]">
+                    <div>
+                      <span className="text-[#64748B]">BLOCK / SLOT:</span>{' '}
+                      <strong className="text-[#FF9F1C]">
+                        #{inspectedTx.blockNumber ? inspectedTx.blockNumber.toLocaleString() : 'LIVE'}
+                      </strong>{' '}
+                      <span className="text-[#00E676]">
+                        [{inspectedTx.isLiveVerified ? 'LIVE RPC VERIFIED' : 'ON-CHAIN'}]
+                      </span>
+                      {inspectedTx.blockTimestamp && (
+                        <div className="text-[8.5px] text-[#94A3B8]">
+                          UTC: {inspectedTx.blockTimestamp}
+                        </div>
+                      )}
+                    </div>
+                    <div>
+                      <span className="text-[#64748B]">SIZE & PRICE:</span>{' '}
+                      <strong className="text-white">
+                        {inspectedTx.sizeCoins ? `${inspectedTx.sizeCoins} ${inspectedTx.tokenSymbol || 'Coins'} ` : ''}
+                        (${inspectedTx.sizeUsd.toLocaleString()}) @ ${inspectedTx.price.toLocaleString()}
+                      </strong>
+                      <div className="text-[8.5px] text-[#00E5FF]">
+                        Method: {inspectedTx.methodName || inspectedTx.action}
+                        {typeof inspectedTx.gasFeeUsd === 'number' &&
+                          ` • Gas: $${inspectedTx.gasFeeUsd.toFixed(4)}`}
+                        {typeof inspectedTx.gasPriceGwei === 'number' && inspectedTx.gasPriceGwei > 0
+                          ? ` (${inspectedTx.gasPriceGwei} Gwei)`
+                          : ''}
+                        {typeof inspectedTx.nonce === 'number' ? ` • Nonce #${inspectedTx.nonce}` : ''}
+                      </div>
+                    </div>
+                    <div className="col-span-2 flex items-center justify-between gap-1">
+                      <div className="truncate">
+                        <span className="text-[#64748B]">FULL TX HASH:</span>{' '}
+                        <strong className="text-[#00E5FF]">
+                          {inspectedTx.fullTxHash || inspectedTx.txHash}
+                        </strong>
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() =>
+                            handleCopyText('TX HASH', inspectedTx.fullTxHash || inspectedTx.txHash)
+                          }
+                          className="fc-btn px-1.5 py-0.2 bg-[#162032] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/40 font-bold"
+                        >
+                          COPY HASH
+                        </button>
+                        {inspectedTx.explorerTxUrl && (
+                          <a
+                            href={inspectedTx.explorerTxUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="fc-btn px-1.5 py-0.2 bg-[#00E676]/20 hover:bg-[#00E676] hover:text-black text-[#00E676] border border-[#00E676] font-bold"
+                          >
+                            EXPLORER ↗
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                    <div className="col-span-2 flex items-center justify-between gap-1">
+                      <div className="truncate">
+                        <span className="text-[#64748B]">INITIATOR WALLET:</span>{' '}
+                        <strong className="text-[#FF9F1C]">{inspectedTx.walletAddress}</strong>
+                        {inspectedTx.counterpartyAddress && (
+                          <>
+                            {' '}
+                            <span className="text-[#64748B]">→ TO/POOL:</span>{' '}
+                            <span className="text-[#CBD5E1]">
+                              {inspectedTx.counterpartyAddress.slice(0, 10)}...
+                            </span>
+                          </>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          onClick={() => handleCopyText('WALLET', inspectedTx.walletAddress)}
+                          className="fc-btn px-1.5 py-0.2 bg-[#162032] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/40 font-bold"
+                        >
+                          COPY WALLET
+                        </button>
+                        {inspectedTx.explorerWalletUrl && (
+                          <a
+                            href={inspectedTx.explorerWalletUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="fc-btn px-1.5 py-0.2 bg-[#FF9F1C]/20 hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C] font-bold"
+                          >
+                            TRACK WALLET ↗
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* SUB-TAB 1: STRUCTURED MULTI-COLUMN ON-CHAIN TRANSACTION TABLE */}
+              {streamSubTab === 'TX_STREAM' && (
+                <div key="TX_STREAM" className="fc-fade-in flex-1 flex flex-col overflow-hidden">
+                  {/* Sticky Table Column Header */}
+                  <div className="grid grid-cols-12 px-2.5 py-1 bg-[#0A0F1A] border-b border-[#1A253A] text-[8.5px] font-extrabold text-[#94A3B8] uppercase shrink-0">
+                    <span className="col-span-2">WAKTU & BLOCK #</span>
+                    <span className="col-span-2">MARKET & AKSI</span>
+                    <span className="col-span-3">WALLET ADDRESS → TARGET</span>
+                    <span className="col-span-2">TX HASH (ON-CHAIN)</span>
+                    <span className="col-span-2 text-right">SIZE & HARGA</span>
+                    <span className="col-span-1 text-right">AI CONF</span>
+                  </div>
+
+                  {/* Scrollable Table Rows (Up to 60 Live Transactions) */}
+                  <div className="flex-1 overflow-y-auto divide-y divide-[#111826]">
+                    {filteredWhaleStream.map((w) => {
+                      const isSelectedRow = inspectedTx?.id === w.id;
+                      return (
+                        <div
+                          key={w.id}
+                          onClick={() => setInspectedTx(w)}
+                          className={`grid grid-cols-12 px-2.5 py-1.5 items-center text-[9.5px] font-mono hover:bg-[#0E1626] cursor-pointer transition-colors ${isSelectedRow ? 'bg-[#111E34] border-l-2 border-[#00E5FF]' : ''
+                            }`}
+                        >
+                          {/* Col 1: Time + Block + Chain */}
+                          <div className="col-span-2 pr-1">
+                            <div className="text-[#CBD5E1] font-bold flex items-center gap-1">
+                              <span>{w.timestamp}</span>
+                              {w.isLiveVerified && (
+                                <span className="text-[7.5px] px-1 bg-[#00E676]/15 text-[#00E676] font-extrabold">
+                                  LIVE
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[8.5px] text-[#00E5FF] truncate">
+                              #{w.blockNumber ? w.blockNumber.toLocaleString() : 'LIVE'} •{' '}
+                              {(w.chainName || w.exchange).replace(' Mainnet', '')}
+                            </div>
+                          </div>
+
+                          {/* Col 2: Symbol + Action */}
+                          <div className="col-span-2 pr-1">
+                            <div
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                if (onSelectSymbol) onSelectSymbol(w.symbol);
+                              }}
+                              className="font-extrabold text-white hover:text-[#FF9F1C]"
+                            >
+                              {w.symbol}
+                            </div>
+                            <span
+                              className={`inline-block px-1 py-0.1 text-[8px] font-extrabold ${w.direction === 'BULLISH'
+                                  ? 'bg-[#00E676]/15 text-[#00E676] border border-[#00E676]/40'
+                                  : 'bg-[#FF1744]/15 text-[#FF1744] border border-[#FF1744]/40'
+                                }`}
+                            >
+                              {w.action}
+                            </span>
+                          </div>
+
+                          {/* Col 3: Initiator Wallet Address -> Target */}
+                          <div className="col-span-3 pr-1 min-w-0">
+                            <div className="text-[#FF9F1C] font-semibold truncate">
+                              {w.walletAddress.slice(0, 8)}...{w.walletAddress.slice(-6)}
+                            </div>
+                            <div className="text-[8.5px] text-[#94A3B8] truncate">
+                              {w.sourceNode} → <span className="text-[#00E5FF]">{w.targetNode}</span>
+                            </div>
+                          </div>
+
+                          {/* Col 4: TX Hash + Method/Gas + Direct Explorer Link */}
+                          <div className="col-span-2 pr-1 min-w-0">
+                            <div className="text-[#CBD5E1] truncate" title={w.methodName || w.txHash}>
+                              {w.txHash}
+                            </div>
+                            <div className="flex items-center gap-1 text-[8px] truncate">
+                              <span className="text-[#94A3B8] truncate">
+                                {w.methodName ? w.methodName.slice(0, 12) : '🔍 Detail'}
+                              </span>
+                              {w.explorerTxUrl && (
+                                <a
+                                  href={w.explorerTxUrl}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="fc-btn text-[#00E676] hover:underline font-bold shrink-0"
+                                >
+                                  ↗ Explorer
+                                </a>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Col 5: USD Notional + Coin Size + Price */}
+                          <div className="col-span-2 text-right pr-1">
+                            <div
+                              className={`font-extrabold ${w.direction === 'BULLISH' ? 'text-[#00E676]' : 'text-[#FF1744]'
+                                }`}
+                            >
+                              $
+                              {w.sizeUsd >= 1_000_000
+                                ? `${(w.sizeUsd / 1_000_000).toFixed(2)}M`
+                                : `${(w.sizeUsd / 1000).toFixed(1)}K`}
+                            </div>
+                            <div className="text-[8.5px] text-[#94A3B8] truncate">
+                              {w.sizeCoins ? `${Number(w.sizeCoins).toFixed(2)} @ ` : '@ '}$
+                              {w.price.toLocaleString()}
+                            </div>
+                          </div>
+
+                          {/* Col 6: AI Confidence & Impact */}
+                          <div className="col-span-1 text-right">
+                            <span
+                              className={`px-1 py-0.2 text-[8.5px] font-extrabold ${w.direction === 'BULLISH'
+                                  ? 'bg-[#00E676]/20 text-[#00E676]'
+                                  : 'bg-[#FF1744]/20 text-[#FF1744]'
+                                }`}
+                            >
+                              {w.direction === 'BULLISH' ? '+' : '-'}
+                              {w.confidence}%
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* SUB-TAB 2: HLP INSTITUTIONAL VAULT & WHALE OPEN POSITIONS */}
+              {streamSubTab === 'VAULT_POSITIONS' && (
+                <div key="VAULT_POSITIONS" className="fc-fade-in flex-1 flex flex-col overflow-hidden">
+                  {hlpVaultSummary && (
+                    <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#080E1A] border-b border-[#1A253A] text-[9px] font-mono gap-2 shrink-0">
+                      <span className="text-[#FF9F1C] font-extrabold">
+                        HLP VAULT ({hlpVaultSummary.vaultAddress.slice(0, 8)}...
+                        {hlpVaultSummary.vaultAddress.slice(-4)})
+                      </span>
+                      <div className="flex items-center gap-3">
+                        <span className="text-[#94A3B8]">
+                          Account:{' '}
+                          <strong className="text-white">
+                            ${(hlpVaultSummary.accountValueUsd / 1e6).toFixed(2)}M
+                          </strong>
+                        </span>
+                        <span className="text-[#94A3B8]">
+                          Total OI:{' '}
+                          <strong className="text-[#00E5FF]">
+                            ${(hlpVaultSummary.totalNotionalPosUsd / 1e6).toFixed(2)}M
+                          </strong>
+                        </span>
+                        <span className="text-[#94A3B8]">
+                          Margin Used:{' '}
+                          <strong className="text-[#00E676]">
+                            ${(hlpVaultSummary.totalMarginUsedUsd / 1e6).toFixed(2)}M
+                          </strong>
+                        </span>
+                      </div>
+                    </div>
+                  )}
+                  <div className="grid grid-cols-12 px-2.5 py-1 bg-[#0A0F1A] border-b border-[#1A253A] text-[8.5px] font-extrabold text-[#94A3B8] uppercase shrink-0">
+                    <span className="col-span-2">COIN & LEV</span>
+                    <span className="col-span-2">SIDE / MARGIN</span>
+                    <span className="col-span-3">ENTRY → MARK / LIQ</span>
+                    <span className="col-span-2 text-right">SIZE (COINS)</span>
+                    <span className="col-span-2 text-right">NOTIONAL $</span>
+                    <span className="col-span-1 text-right">uPnL / ROE</span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto divide-y divide-[#111826] font-mono text-[9.5px]">
+                    {whalePositions.length === 0 ? (
+                      <div className="p-4 text-center text-[10px] text-[#94A3B8]">
+                        Menunggu sinkronisasi posisi on-chain live dari Hyperliquid L1 HLP Vault...
+                      </div>
+                    ) : (
+                      whalePositions.map((wp, idx) => (
+                        <div
+                          key={`${wp.symbol}-${idx}`}
+                          onClick={() => onSelectSymbol && onSelectSymbol(wp.symbol)}
+                          className="grid grid-cols-12 px-2.5 py-1.5 items-center hover:bg-[#0E1626] cursor-pointer transition-colors duration-150"
+                        >
+                          <div className="col-span-2">
+                            <div className="font-extrabold text-white">{wp.symbol}</div>
+                            <div className="text-[8px] text-[#00E5FF]">
+                              {wp.leverage ? `${wp.leverage}x ${wp.leverageType || 'cross'}` : 'HLP Vault'}
+                            </div>
+                          </div>
+                          <div className="col-span-2">
+                            <span
+                              className={`px-1.5 py-0.2 text-[8.5px] font-extrabold ${wp.side === 'LONG'
+                                  ? 'bg-[#00E676] text-black'
+                                  : 'bg-[#FF1744] text-white'
+                                }`}
+                            >
+                              {wp.side}
+                            </span>
+                            {typeof wp.marginUsedUsd === 'number' && wp.marginUsedUsd > 0 && (
+                              <div className="text-[8px] text-[#94A3B8] mt-0.5">
+                                Mgn: ${(wp.marginUsedUsd / 1000).toFixed(1)}K
+                              </div>
+                            )}
+                          </div>
+                          <div className="col-span-3 text-[8.5px]">
+                            <div className="text-[#CBD5E1]">
+                              E: ${wp.entryPrice.toLocaleString()}
+                              {wp.markPrice ? ` → $${wp.markPrice.toLocaleString()}` : ''}
+                            </div>
+                            <div className="text-[#FF9F1C]">
+                              Liq: {wp.liquidationPrice && wp.liquidationPrice > 0 ? `$${wp.liquidationPrice.toLocaleString()}` : 'Cross Safe'}
+                            </div>
+                          </div>
+                          <span className="col-span-2 text-right text-[#CBD5E1]">
+                            {wp.sizeCoins.toLocaleString(undefined, { maximumFractionDigits: 2 })} {wp.coin}
+                          </span>
+                          <span className="col-span-2 text-right font-extrabold text-[#FF9F1C]">
+                            ${wp.positionValueUsd >= 1_000_000
+                              ? `${(wp.positionValueUsd / 1e6).toFixed(2)}M`
+                              : `${(wp.positionValueUsd / 1000).toFixed(1)}K`}
+                          </span>
+                          <div
+                            className={`col-span-1 text-right font-bold ${wp.unrealizedPnlUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+                              }`}
+                          >
+                            <div>
+                              {wp.unrealizedPnlUsd >= 0 ? '+' : ''}$
+                              {(wp.unrealizedPnlUsd / 1000).toFixed(1)}K
+                            </div>
+                            {typeof wp.roePct === 'number' && (
+                              <div className="text-[8px]">
+                                {wp.roePct >= 0 ? '+' : ''}
+                                {wp.roePct}%
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* SUB-TAB 3: LIVE MULTI-CHAIN BLOCK HEIGHTS & AI DECISION MATRIX */}
+              {streamSubTab === 'BLOCK_MATRIX' && (
+                <div key="BLOCK_MATRIX" className="fc-fade-in flex-1 overflow-y-auto p-2.5 space-y-2 text-[10px]">
+                  <div className="grid grid-cols-2 md:grid-cols-3 gap-2 font-mono">
+                    <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
+                      <div className="text-[8.5px] text-[#94A3B8]">ETHEREUM MAINNET (ERC20)</div>
+                      <div className="text-xs font-extrabold text-[#00E5FF] mt-0.5">
+                        {liveBlocks?.ethereumL1
+                          ? `Block #${liveBlocks.ethereumL1.toLocaleString()}`
+                          : 'Syncing RPC...'}
+                      </div>
+                      <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (12s block)</div>
+                    </div>
+                    <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
+                      <div className="text-[8.5px] text-[#94A3B8]">ARBITRUM ONE (L2 BRIDGE)</div>
+                      <div className="text-xs font-extrabold text-[#FF9F1C] mt-0.5">
+                        {liveBlocks?.arbitrumL2
+                          ? `Block #${liveBlocks.arbitrumL2.toLocaleString()}`
+                          : 'Syncing RPC...'}
+                      </div>
+                      <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (250ms block)</div>
+                    </div>
+                    <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
+                      <div className="text-[8.5px] text-[#94A3B8]">SOLANA MAINNET (JUP/RAY)</div>
+                      <div className="text-xs font-extrabold text-[#00E676] mt-0.5">
+                        {liveBlocks?.solanaSlot
+                          ? `Slot #${liveBlocks.solanaSlot.toLocaleString()}`
+                          : 'Syncing RPC...'}
+                      </div>
+                      <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (400ms slot)</div>
+                    </div>
+                    <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
+                      <div className="text-[8.5px] text-[#94A3B8]">BNB SMART CHAIN (BEP20)</div>
+                      <div className="text-xs font-extrabold text-[#F8FAFC] mt-0.5">
+                        {liveBlocks?.bscMainnet
+                          ? `Block #${liveBlocks.bscMainnet.toLocaleString()}`
+                          : 'Syncing RPC...'}
+                      </div>
+                      <div className="text-[8.5px] text-[#00E676]">● RPC LIVE (3s block)</div>
+                    </div>
+                    <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
+                      <div className="text-[8.5px] text-[#94A3B8]">HYPEREVM / HYPERLIQUID (#999)</div>
+                      <div className="text-xs font-extrabold text-[#00E5FF] mt-0.5">
+                        {liveBlocks?.hyperEvmBlock
+                          ? `Block #${liveBlocks.hyperEvmBlock.toLocaleString()}`
+                          : 'Syncing RPC...'}
+                      </div>
+                      <div className="text-[8.5px] text-[#00E676]">● HYPEREVM + HL L1 LIVE</div>
+                    </div>
+                    <div className="p-2 bg-[#0A101D] border border-[#1B2840]">
+                      <div className="text-[8.5px] text-[#94A3B8]">ROBINHOOD CHAIN (#4663)</div>
+                      <div className="text-xs font-extrabold text-[#00E676] mt-0.5">
+                        {liveBlocks?.robinhoodBlock
+                          ? `Block #${liveBlocks.robinhoodBlock.toLocaleString()}`
+                          : 'Syncing Indexer...'}
+                      </div>
+                      <div className="text-[8.5px] text-[#00E676]">● ROBINHOOD ON-CHAIN LIVE</div>
+                    </div>
+                  </div>
+
+                  <div className="p-2.5 bg-[#090F1B] border border-[#1E2B42] space-y-1">
+                    <div className="font-extrabold text-[#FF9F1C] uppercase">
+                      🧠 BAGAIMANA DATA ON-CHAIN INI MENAJAMKAN KEPUTUSAN AGENT ({activeSymbol}):
+                    </div>
+                    <p className="text-[#CBD5E1] text-[9.5px] leading-relaxed">
+                      1. <strong>Deteksi Akumulasi Sebelum Harga Bergerak</strong>: Agent membaca
+                      aliran transaksi pada block terbaru ({filteredWhaleStream.length} TX aktif, Net
+                      Flow{' '}
+                      <strong
+                        className={
+                          streamMetrics.netFlowUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+                        }
+                      >
+                        {streamMetrics.netFlowUsd >= 0 ? '+' : ''}$
+                        {(streamMetrics.netFlowUsd / 1e6).toFixed(2)}M
+                      </strong>
+                      ). Jika rasio beli Whale &ge; 55%, Agent menaikkan skor{' '}
+                      <code>Whale Conviction</code> untuk menahan floating loss sementara dan tidak
+                      terpancing fakeout.
+                    </p>
+                    <p className="text-[#CBD5E1] text-[9.5px] leading-relaxed">
+                      2. <strong>Deteksi Distribusi / Dump Dini</strong>: Jika terdeteksi transaksi
+                      deposit CEX besar atau pembukaan posisi SHORT masif di Hyperliquid L1 / HLP
+                      Vault, Agent otomatis memicu <code>AUTO_CUT_INVALIDATED</code> atau{' '}
+                      <code>AUTO_TAKE_PROFIT_NOW</code> sebelum harga jatuh di chart.
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
     </>
   );

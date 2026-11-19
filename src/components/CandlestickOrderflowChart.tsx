@@ -81,9 +81,9 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     handleVerticalZoom: (factorDelta: number) => void;
     clampedVisibleCount: number;
   }>({
-    processMouseMove: () => {},
-    handleBarZoom: () => {},
-    handleVerticalZoom: () => {},
+    processMouseMove: () => { },
+    handleBarZoom: () => { },
+    handleVerticalZoom: () => { },
     clampedVisibleCount: 55,
   });
   const pendingMoveRef = useRef<{ clientX: number; clientY: number } | null>(null);
@@ -455,7 +455,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
 
   const inspectedChangePct = inspectedCandle
     ? ((inspectedCandle.close - inspectedCandle.open) / Math.max(0.0001, inspectedCandle.open)) *
-      100
+    100
     : 0;
 
   const currentY = Math.max(padTop, Math.min(padTop + plotH, priceToY(pair.price)));
@@ -543,11 +543,10 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
               data-timeframe={tf.id}
               aria-pressed={timeframe === tf.id}
               onClick={() => onTimeframeChange(tf.id)}
-              className={`px-1.5 py-0.5 font-extrabold transition-all duration-150 active:scale-[0.97] ${
-                timeframe === tf.id
+              className={`px-1.5 py-0.5 font-extrabold transition-all duration-150 active:scale-[0.97] ${timeframe === tf.id
                   ? 'bg-[#FF9F1C] text-black shadow-[0_0_8px_rgba(255,159,28,0.25)]'
                   : 'text-[#CBD5E1] hover:bg-[#151D2B] hover:text-white'
-              }`}
+                }`}
             >
               {tf.label}
             </button>
@@ -644,11 +643,10 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
           <button
             data-testid="chart-autofit-btn"
             onClick={handleResetView}
-            className={`px-1.5 py-0.5 font-extrabold border transition-all duration-150 active:scale-[0.97] ${
-              isManualYModified || clampedPanOffset > 0
+            className={`px-1.5 py-0.5 font-extrabold border transition-all duration-150 active:scale-[0.97] ${isManualYModified || clampedPanOffset > 0
                 ? 'bg-[#FF9F1C] text-black border-[#FF9F1C] hover:shadow-[0_0_8px_rgba(255,159,28,0.45)]'
                 : 'bg-[#0E1420] text-[#00E5FF] border-[#243044] hover:bg-[#00E676] hover:text-black hover:shadow-[0_0_8px_rgba(0,230,118,0.35)]'
-            }`}
+              }`}
             title="Reset Zoom & Auto-Fit Skala Harga (Atau Double-Click Chart)"
           >
             AUTO-FIT
@@ -660,11 +658,10 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
           <button
             data-testid="chart-legend-ema20-btn"
             onClick={() => setShowEma(!showEma)}
-            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${
-              showEma
+            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${showEma
                 ? 'border-[#FF9F1C] text-[#FF9F1C] bg-[#FF9F1C]/10 font-bold hover:shadow-[0_0_8px_rgba(255,159,28,0.35)]'
                 : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#FF9F1C]/50'
-            }`}
+              }`}
             title="Tampilkan EMA 20 (Oranye), EMA 50 (Cyan), & EMA 200 (Ungu)"
           >
             EMA 20/50/200
@@ -672,11 +669,10 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
           <button
             data-testid="chart-legend-bb-btn"
             onClick={() => setShowBollinger(!showBollinger)}
-            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${
-              showBollinger
+            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${showBollinger
                 ? 'border-[#D500F9] text-[#D500F9] bg-[#D500F9]/10 font-bold hover:shadow-[0_0_8px_rgba(213,0,249,0.35)]'
                 : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#D500F9]/50'
-            }`}
+              }`}
             title="Tampilkan Bollinger Bands (20, 2σ)"
           >
             BB(20,2)
@@ -684,11 +680,10 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
           <button
             data-testid="chart-legend-pa-sr-btn"
             onClick={() => setShowStructureLevels(!showStructureLevels)}
-            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${
-              showStructureLevels
+            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${showStructureLevels
                 ? 'border-[#00E676] text-[#00E676] bg-[#00E676]/10 font-bold hover:shadow-[0_0_8px_rgba(0,230,118,0.35)]'
                 : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#00E676]/50'
-            }`}
+              }`}
             title="Tampilkan Level Kunci Price Action Support (S1) & Resistance (R1)"
           >
             KEY S/R
@@ -696,22 +691,20 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
           <button
             data-testid="chart-legend-whale-walls-btn"
             onClick={() => setShowWhaleZones(!showWhaleZones)}
-            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${
-              showWhaleZones
+            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${showWhaleZones
                 ? 'border-[#00E5FF] text-[#00E5FF] bg-[#00E5FF]/10 font-bold hover:shadow-[0_0_8px_rgba(0,229,255,0.35)]'
                 : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#00E5FF]/50'
-            }`}
+              }`}
           >
             WHALE WALLS
           </button>
           <button
             data-testid="chart-legend-bot-levels-btn"
             onClick={() => setShowBotLevels(!showBotLevels)}
-            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${
-              showBotLevels
+            className={`px-1.5 py-0.5 border transition-all duration-150 active:scale-[0.97] ${showBotLevels
                 ? 'border-[#00E676] text-[#00E676] bg-[#00E676]/10 font-bold hover:shadow-[0_0_8px_rgba(0,230,118,0.35)]'
                 : 'border-[#1E2736] text-[#64748B] hover:text-[#CBD5E1] hover:border-[#00E676]/50'
-            }`}
+              }`}
           >
             BOT SL/BE
           </button>
@@ -738,9 +731,8 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
               C <strong className="text-white">{formatPx(inspectedCandle.close)}</strong>
             </span>
             <span
-              className={`font-bold ${
-                inspectedChangePct >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
-              }`}
+              className={`font-bold ${inspectedChangePct >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+                }`}
             >
               ({inspectedChangePct >= 0 ? '+' : ''}
               {inspectedChangePct.toFixed(2)}%)
@@ -845,13 +837,12 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
           key={`${pair.symbol}-${timeframe}`}
           viewBox={`0 0 ${width} ${height}`}
           data-testid="chart-svg"
-          className={`w-full h-full fincept-chart-enter ${
-            dragMode === 'PRICE_AXIS_SCALE'
+          className={`w-full h-full fincept-chart-enter ${dragMode === 'PRICE_AXIS_SCALE'
               ? 'cursor-ns-resize'
               : dragMode === 'CHART_2D_PAN'
                 ? 'cursor-grabbing'
                 : 'cursor-grab'
-          }`}
+            }`}
           onMouseDown={handleMouseDown}
           onMouseMove={handleMouseMove}
           onMouseUp={handleMouseUpOrLeave}
@@ -914,7 +905,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                     y1={priceToY(whaleBidWall.price)}
                     x2={width - padRight}
                     y2={priceToY(whaleBidWall.price)}
-                    stroke="#00E676"
+                    stroke="#34D399"
                     strokeOpacity="0.45"
                     strokeWidth="1"
                     strokeDasharray="2 3"
@@ -940,7 +931,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                     y1={priceToY(whaleAskWall.price)}
                     x2={width - padRight}
                     y2={priceToY(whaleAskWall.price)}
-                    stroke="#FF1744"
+                    stroke="#F87171"
                     strokeOpacity="0.45"
                     strokeWidth="1"
                     strokeDasharray="2 3"
@@ -966,7 +957,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                   y1={priceToY(activePosition.entryPrice)}
                   x2={width - padRight}
                   y2={priceToY(activePosition.entryPrice)}
-                  stroke="#00E5FF"
+                  stroke="#56B6F7"
                   strokeWidth="1.2"
                   strokeDasharray="4 2"
                 />
@@ -982,7 +973,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                     y1={priceToY(activePosition.stopLossPrice)}
                     x2={width - padRight}
                     y2={priceToY(activePosition.stopLossPrice)}
-                    stroke="#00E676"
+                    stroke="#34D399"
                     strokeWidth="1.2"
                     strokeDasharray="2 2"
                   />
@@ -1014,7 +1005,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                     y1={priceToY(taSnapshot.support1)}
                     x2={width - padRight}
                     y2={priceToY(taSnapshot.support1)}
-                    stroke="#00E676"
+                    stroke="#34D399"
                     strokeOpacity="0.65"
                     strokeWidth="1.1"
                     strokeDasharray="5 3"
@@ -1038,7 +1029,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                     y1={priceToY(taSnapshot.resistance1)}
                     x2={width - padRight}
                     y2={priceToY(taSnapshot.resistance1)}
-                    stroke="#FF1744"
+                    stroke="#F87171"
                     strokeOpacity="0.65"
                     strokeWidth="1.1"
                     strokeDasharray="5 3"
@@ -1057,7 +1048,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             {showBollinger && bbUpperPoints && (
               <polyline
                 fill="none"
-                stroke="#D500F9"
+                stroke="#A78BFA"
                 strokeWidth="0.95"
                 strokeOpacity="0.55"
                 strokeDasharray="3 2"
@@ -1067,7 +1058,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             {showBollinger && bbLowerPoints && (
               <polyline
                 fill="none"
-                stroke="#D500F9"
+                stroke="#A78BFA"
                 strokeWidth="0.95"
                 strokeOpacity="0.55"
                 strokeDasharray="3 2"
@@ -1079,7 +1070,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             {showEma && ema200Points && (
               <polyline
                 fill="none"
-                stroke="#D500F9"
+                stroke="#A78BFA"
                 strokeWidth="1.1"
                 strokeOpacity="0.65"
                 points={ema200Points}
@@ -1088,7 +1079,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             {showEma && ema50Points && (
               <polyline
                 fill="none"
-                stroke="#00E5FF"
+                stroke="#56B6F7"
                 strokeWidth="1.2"
                 strokeOpacity="0.8"
                 points={ema50Points}
@@ -1097,7 +1088,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             {showEma && emaPoints && (
               <polyline
                 fill="none"
-                stroke="#FF9F1C"
+                stroke="#F5B74F"
                 strokeWidth="1.35"
                 strokeOpacity="0.92"
                 points={emaPoints}
@@ -1108,7 +1099,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             {visibleCandles.map((c, idx) => {
               const x = padLeft + idx * stepX + stepX / 2;
               const isBull = c.close >= c.open;
-              const color = isBull ? '#00E676' : '#FF1744';
+              const color = isBull ? '#34D399' : '#F87171';
 
               const highY = priceToY(c.high);
               const lowY = priceToY(c.low);
@@ -1145,7 +1136,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
               y1={currentY}
               x2={width - padRight}
               y2={currentY}
-              stroke="#FF9F1C"
+              stroke="#F5B74F"
               strokeWidth="1.1"
               strokeDasharray="3 3"
             />
@@ -1155,7 +1146,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
           {visibleCandles.map((c, idx) => {
             const x = padLeft + idx * stepX + stepX / 2;
             const isBull = c.close >= c.open;
-            const color = isBull ? '#00E676' : '#FF1744';
+            const color = isBull ? '#34D399' : '#F87171';
             const volH = (c.volume / maxVol) * 28;
             const volY = height - 18 - volH;
             const labelStride = Math.max(3, Math.round(visibleCandles.length / 6));
@@ -1196,7 +1187,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                   width={padRight - 2}
                   height={14}
                   fill="#052233"
-                  stroke="#00E5FF"
+                  stroke="#56B6F7"
                   strokeWidth="0.8"
                 />
                 <text
@@ -1216,7 +1207,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
               y={currentY - 8}
               width={padRight - 2}
               height={16}
-              fill="#FF9F1C"
+              fill="#F5B74F"
             />
             <text
               x={width - padRight + 5}
@@ -1230,9 +1221,8 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
           {/* Interactive Crosshair (Vertical + Horizontal + Axis Badges) with 130ms Opacity Fade */}
           <g
             data-testid="chart-crosshair-tooltip"
-            className={`pointer-events-none fincept-crosshair${
-              crosshairActive ? ' fincept-crosshair-visible' : ''
-            }`}
+            className={`pointer-events-none fincept-crosshair${crosshairActive ? ' fincept-crosshair-visible' : ''
+              }`}
           >
             {crosshairData && (
               <>
@@ -1262,7 +1252,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                       width={padRight - 2}
                       height={14}
                       fill="#1E293B"
-                      stroke="#00E5FF"
+                      stroke="#56B6F7"
                       strokeWidth="0.8"
                     />
                     <text

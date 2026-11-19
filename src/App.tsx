@@ -1655,7 +1655,7 @@ export function App() {
   return (
     <div
       data-testid="app-root"
-      className="flex flex-col min-h-screen lg:h-screen w-full max-w-full bg-[#050608] text-[#F8FAFC] font-mono overflow-x-hidden lg:overflow-hidden select-none antialiased"
+      className="flex flex-col min-h-screen lg:h-screen w-full max-w-full bg-[#0B0F17] text-[#E2E8F0] font-sans overflow-x-hidden lg:overflow-hidden select-none antialiased"
     >
       {/* 1. TOP FINCEPT COMMAND BAR & REAL-MONEY EXECUTION MODE SWITCHER */}
       <header className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 px-3 py-1.5 bg-[#090C12] border-b border-[#1E2736] w-full min-w-0">

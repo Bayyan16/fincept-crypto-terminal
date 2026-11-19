@@ -4,21 +4,21 @@ export default {
   theme: {
     extend: {
       colors: {
-        obsidian: '#050608',
-        panel: '#090C10',
-        panelAlt: '#0D1118',
-        borderSharp: '#1E2736',
-        amberTerm: '#FF9F1C',
-        cyanTerm: '#00E5FF',
-        greenTerm: '#00E676',
-        redTerm: '#FF1744',
-        magentaTerm: '#D500F9',
+        obsidian: '#0B0F17',
+        panel: '#111722',
+        panelAlt: '#161E2E',
+        borderSharp: '#222D3F',
+        amberTerm: '#F5B74F',
+        cyanTerm: '#56B6F7',
+        greenTerm: '#34D399',
+        redTerm: '#F87171',
+        magentaTerm: '#A78BFA',
       },
       fontFamily: {
-        mono: ['"JetBrains Mono"', '"Fira Code"', 'Consolas', 'monospace'],
+        sans: ['"Inter"', 'system-ui', '-apple-system', 'BlinkMacSystemFont', '"Segoe UI"', 'sans-serif'],
+        mono: ['"JetBrains Mono"', '"Fira Code"', 'ui-monospace', 'SFMono-Regular', 'monospace'],
       },
     },
   },
   plugins: [],
 };
-
