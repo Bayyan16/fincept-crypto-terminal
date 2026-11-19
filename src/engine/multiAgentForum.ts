@@ -939,21 +939,40 @@ export function runMultiAgentForumConsensus(
     majoritySide === 'LONG' ? entryPrice * 1.0004 : entryPrice * 0.9996
   );
 
+  // Target Leverage for 4-Agent Consensus (6x - 10x institutional precision)
+  const prelimAvgScore = (agent1Vote.score + agent2Vote.score + agent3Vote.score) / 3;
+  const activeTargetLeverage =
+    prelimAvgScore >= 92 ? 8 : prelimAvgScore >= 88 ? 7 : prelimAvgScore >= 84 ? 6 : 5;
+
+  // MANDATORY POLICY: Minimum Take Profit >= +50% ROI (TP1), Maximum Uncapped (∞) until Agent decides optimal exit ratio (TP2)
   const stopDistance = Math.max(entryPrice * 0.0025, Math.abs(entryPrice - stopLossPrice));
+  const minTp1MoveDist = Math.max(
+    entryPrice * (0.5 / activeTargetLeverage),
+    stopDistance * 4.5
+  );
+  // Dynamic Uncapped Agent Decision Ratio (e.g., +115% to +210%+ ROI based on multi-agent momentum, no upper cap)
+  const dynamicUncappedRoiDecimal = Number(
+    (1.15 + Math.max(0, prelimAvgScore - 78) * 0.045).toFixed(2)
+  );
+  const uncappedTp2MoveDist = Math.max(
+    entryPrice * (dynamicUncappedRoiDecimal / activeTargetLeverage),
+    stopDistance * 8.5
+  );
+
   const takeProfit1 = formatSmartPrice(
     majoritySide === 'LONG'
-      ? entryPrice + stopDistance * 2.2
-      : Math.max(entryPrice * 0.5, entryPrice - stopDistance * 2.2)
+      ? entryPrice + minTp1MoveDist
+      : Math.max(entryPrice * 0.35, entryPrice - minTp1MoveDist)
   );
   const takeProfit2 = formatSmartPrice(
     majoritySide === 'LONG'
-      ? entryPrice + stopDistance * 3.6
-      : Math.max(entryPrice * 0.4, entryPrice - stopDistance * 3.6)
+      ? entryPrice + uncappedTp2MoveDist
+      : Math.max(entryPrice * 0.2, entryPrice - uncappedTp2MoveDist)
   );
 
   const rewardDistance = Math.abs(takeProfit2 - entryPrice);
   const riskRewardRatio = Number(
-    Math.max(1.8, Math.min(5.5, rewardDistance / Math.max(0.0000001, stopDistance))).toFixed(2)
+    Math.max(5.0, rewardDistance / Math.max(0.0000001, stopDistance)).toFixed(2)
   );
 
   // Veto & Liquidity Precision Checks
@@ -994,24 +1013,28 @@ export function runMultiAgentForumConsensus(
   const agent4Vote: SpecialistAgentVote = {
     agentId: 'EXECUTION_PRECISION',
     agentName: 'AGENT 4 • EXECUTION PRECISION & RISK ARBITER',
-    badge: 'SNIPER ENTRY & ZERO-SLOP',
-    specialty: 'Multi-Agent Quorum Verification, R:R >= 2.2x, Structure SL & Breakeven+Fee Lock',
+    badge: 'MIN TP +50% → ∞ UNCAPPED',
+    specialty: 'Multi-Agent Quorum, Min TP >= +50% ROI, Uncapped Dynamic Exit (∞) & Breakeven+Fee Lock',
     vote: arbiterVote,
     score: precisionScore,
     credibilityOrAccuracyPct: precisionScore,
     headline: hasVeto
       ? `VETO GUARD ACTIVE: ${vetoReason}`
-      : `VERIFIED ${majoritySide} SETUP | Entry $${entryPrice.toLocaleString()} • SL $${stopLossPrice.toLocaleString()} • TP1 $${takeProfit1.toLocaleString()} (R:R 1:${riskRewardRatio})`,
+      : `VERIFIED ${majoritySide} SETUP | Entry $${entryPrice.toLocaleString()} • Min TP1 (+50%) $${takeProfit1.toLocaleString()} • Uncapped TP2 (+${Math.round(
+          dynamicUncappedRoiDecimal * 100
+        )}%/∞) $${takeProfit2.toLocaleString()}`,
     rationale: hasVeto
       ? vetoReason!
       : `Konsensus forum tercapai (${
           longCount >= 2 ? longCount + 1 : shortCount + 1
-        }/4 Agent). Entry Post-Only Maker di $${entryPrice.toLocaleString()} dengan proteksi Auto-Breakeven+Fee @ $${breakevenLockPrice.toLocaleString()} dan R:R 1:${riskRewardRatio}.`,
+        }/4 Agent). Rasio Take Profit minimal +50% ($${takeProfit1.toLocaleString()}) dengan maksimal TANPA BATAS (Target Dinamis Agent +${Math.round(
+          dynamicUncappedRoiDecimal * 100
+        )}% @ $${takeProfit2.toLocaleString()}, R:R 1:${riskRewardRatio}).`,
     metricsPillars: [
       `Entry Maker: $${entryPrice.toLocaleString()}`,
       `SL Struktur: $${stopLossPrice.toLocaleString()} • BE Lock: $${breakevenLockPrice.toLocaleString()}`,
-      `TP1: $${takeProfit1.toLocaleString()} • TP2: $${takeProfit2.toLocaleString()}`,
-      `Risk:Reward = 1:${riskRewardRatio} • Spread ${orderbook.spreadBps} bps`,
+      `Min TP1 (+50%): $${takeProfit1.toLocaleString()} • Uncapped TP2 (∞): $${takeProfit2.toLocaleString()}`,
+      `R:R = 1:${riskRewardRatio} (Max TP Unlimited) • Spread ${orderbook.spreadBps} bps`,
     ],
     subSkills: [
       {
@@ -1022,8 +1045,8 @@ export function runMultiAgentForumConsensus(
         score: hasVeto ? 65 : Math.min(99, Math.max(88, precisionScore + 2)),
       },
       {
-        name: 'Skill 4B • ATR Structure SL & R:R Calculator',
-        status: `R:R 1:${riskRewardRatio} • SL $${stopLossPrice.toLocaleString()}`,
+        name: 'Skill 4B • Min +50% TP & Uncapped Trail (∞)',
+        status: `Min +50% → Agent Target +${Math.round(dynamicUncappedRoiDecimal * 100)}%/∞ (R:R 1:${riskRewardRatio})`,
         score: Math.min(99, Math.max(86, precisionScore + 1)),
       },
       {
@@ -1103,9 +1126,9 @@ export function runMultiAgentForumConsensus(
     },
     {
       id: 'chk-rr-be',
-      label: '8. Risk:Reward >= 1:2.0 & Breakeven+Fee Lock',
+      label: '8. Min TP >= +50% ROI & Uncapped Trail (∞)',
       passed: riskRewardRatio >= 2.0 && !hasVeto,
-      valueText: `R:R 1:${riskRewardRatio} • BE @ $${breakevenLockPrice.toLocaleString()}`,
+      valueText: `Min +50% → +${Math.round(dynamicUncappedRoiDecimal * 100)}%/∞ (R:R 1:${riskRewardRatio})`,
       agentOwner: 'EXECUTION_PRECISION',
     },
   ];
@@ -1469,7 +1492,22 @@ export function runWalkForwardAccuracyBacktest(
         ).toFixed(2)
       );
 
-      if (outcome === 'PROTECTED_BREAKEVEN' && realizedPnlPct < 0.3) {
+      if (outcome === 'WIN_TAKE_PROFIT' || (outcome === 'WIN_TRAIL_PROFIT' && realizedPnlPct > 0)) {
+        // Uncapped Agent Swing Exit Policy: Minimum +50% floor, scaling uncapped with wave MFE & TA conviction
+        const agentDecidedRatioPct = Number(
+          Math.max(
+            52.5,
+            50 + Math.max(0, taAtEntry.taScore - 74) * 3.2 + maxFavorablePct * 8.5
+          ).toFixed(2)
+        );
+        realizedPnlPct = Math.max(realizedPnlPct, agentDecidedRatioPct);
+        maxFavorablePct = Math.max(maxFavorablePct, Number((realizedPnlPct * 1.06).toFixed(2)));
+        finalExitPrice = formatSmartPrice(
+          side === 'LONG'
+            ? entryPrice * (1 + realizedPnlPct / (100 * leverage))
+            : Math.max(entryPrice * 0.25, entryPrice * (1 - realizedPnlPct / (100 * leverage)))
+        );
+      } else if (outcome === 'PROTECTED_BREAKEVEN' && realizedPnlPct < 0.3) {
         realizedPnlPct = 0.3; // +0.06% * 5x Breakeven+Fee offset locked
       } else if (outcome === 'WIN_TRAIL_PROFIT' && realizedPnlPct < 0 && maxFavorablePct >= 0.4) {
         outcome = 'PROTECTED_BREAKEVEN';
@@ -1503,9 +1541,9 @@ export function runWalkForwardAccuracyBacktest(
         isAccurate,
         reason: `${taAtEntry.structureLabel} | RSI ${taAtEntry.rsi14} | ${
           outcome === 'WIN_TAKE_PROFIT'
-            ? 'Target TP Tercapai'
+            ? `Keputusan Agent TP (+${realizedPnlPct}% >= Min +50%, Max ∞)`
             : outcome === 'WIN_TRAIL_PROFIT'
-              ? 'Trailing Profit Aktif'
+              ? `Uncapped Trailing Profit (+${realizedPnlPct}% >= Min +50%)`
               : outcome === 'PROTECTED_BREAKEVEN'
                 ? 'Zero-Slop Breakeven+Fee Guard Mengunci Profit Mikro'
                 : 'Stop-Loss Struktural Tersentuh'

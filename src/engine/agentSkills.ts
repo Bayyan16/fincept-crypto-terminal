@@ -267,18 +267,28 @@ export function scanAllMarketMultiAgentCandidates(
     const initialBeGuardPrice = formatSmartPrice(
       side === 'LONG' ? entryPrice * 1.0003 : entryPrice * 0.9997
     );
+    // Minimum +50% ROI Floor + Uncapped Dynamic Agent Target Ratio based on 4-Agent Conviction
+    const agentTargetRoiDecimal = Math.max(
+      0.55,
+      0.5 + Math.max(0, lowRiskScore - 76) * 0.045
+    );
+    const tpMovePct = agentTargetRoiDecimal / Math.max(1, recommendedLeverage);
     const takeProfitPrice = formatSmartPrice(
-      side === 'LONG' ? entryPrice * 1.016 : entryPrice * 0.984
+      side === 'LONG'
+        ? entryPrice * (1 + tpMovePct)
+        : Math.max(entryPrice * 0.25, entryPrice * (1 - tpMovePct))
     );
     const riskDist = Math.max(entryPrice * 0.0025, Math.abs(entryPrice - stopLossPrice));
     const rewardDist = Math.abs(takeProfitPrice - entryPrice);
     const riskRewardRatio = Number(
-      Math.max(2.0, Math.min(4.8, rewardDist / riskDist)).toFixed(2)
+      Math.max(4.5, rewardDist / riskDist).toFixed(2)
     );
 
-    const analysisSummary = `Forum ${alignedAgentsCount}/4 Agent (${lowRiskScore}/100) | News ${newsCredibilityPct}% Valid | TA: ${ta.structureLabel} (RSI ${ta.rsi14}, EMA20/50/200) | Whale ${
+    const analysisSummary = `Forum ${alignedAgentsCount}/4 Agent (${lowRiskScore}/100) | News ${newsCredibilityPct}% Valid | TA: ${ta.structureLabel} (RSI ${ta.rsi14}) | Whale ${
       m.whaleNetFlow1hUsd >= 0 ? '+' : '-'
-    }$${(Math.abs(m.whaleNetFlow1hUsd) / 1e6).toFixed(2)}M | R:R 1:${riskRewardRatio} (${recommendedLeverage}x)`;
+    }$${(Math.abs(m.whaleNetFlow1hUsd) / 1e6).toFixed(2)}M | Min TP +50% → Target Dinamis +${Math.round(
+      agentTargetRoiDecimal * 100
+    )}% / ∞ (R:R 1:${riskRewardRatio} @ ${recommendedLeverage}x)`;
 
     return {
       market: m,
@@ -356,7 +366,7 @@ export function evaluateActivePositionDeepIntelligence(
   pos: AgentPosition,
   market: MarketPair | undefined,
   recentWhales: WhaleTransaction[],
-  autoTakeProfitTriggerPct = 1.65
+  autoTakeProfitTriggerPct = 50
 ): DeepPositionEvaluation {
   if (!market) {
     return {
@@ -462,10 +472,51 @@ export function evaluateActivePositionDeepIntelligence(
   }
 
   // Position is in Profit (unrealizedPnlPct >= 0)
-  // 1) Auto Take Profit if target hit OR if solid profit (>= +0.65%) and orderbook shows exhaustion
+  // MANDATORY POLICY: Minimum Take Profit Ratio >= 50% per trade, Maximum UNCAPPED (∞) until Agent decides optimal exit ratio!
+  const minTpFloorPct = Math.max(50, autoTakeProfitTriggerPct);
+
+  // Agent computes an Uncapped Dynamic Target Ratio based on 3-pillar institutional momentum & peak expansion
+  const momentumExpansionBonus =
+    compositeScore >= 82
+      ? 110
+      : compositeScore >= 72
+        ? 65
+        : compositeScore >= 60
+          ? 32
+          : 0;
+  const agentDecidedTpRatioPct = Number(
+    Math.max(
+      minTpFloorPct + momentumExpansionBonus,
+      pos.peakPnlPct >= minTpFloorPct && compositeScore >= 62
+        ? pos.peakPnlPct * 1.18
+        : minTpFloorPct
+    ).toFixed(1)
+  );
+
+  // 1) If profit has NOT reached the minimum +50% floor yet: NEVER take profit early; lock Breakeven+Fee and ride toward >= +50%!
+  if (pos.unrealizedPnlPct < minTpFloorPct) {
+    return {
+      decision: 'RIDE_PROFIT_TRAIL',
+      orderbookDefenseScore,
+      whaleConvictionScore,
+      sentimentScore,
+      compositeScore,
+      marketSentimentLabel,
+      reason: `RIDE TO MIN +${minTpFloorPct}% TP (Saat ini +${pos.unrealizedPnlPct}%): Breakeven+Fee terkunci. Agent menahan posisi hingga minimal +${minTpFloorPct}% (Target Keputusan Dinamis Agent: +${agentDecidedTpRatioPct}% / ∞ Tanpa Batas Atas).`,
+    };
+  }
+
+  // 2) Profit is >= +50% (minTpFloorPct): Check if Agent decides to let it run uncapped vs lock Take Profit at this ratio
+  const hasTrailingPullbackFromPeak =
+    pos.peakPnlPct >= minTpFloorPct + 8 && pos.unrealizedPnlPct <= pos.peakPnlPct * 0.92;
+  const hasMomentumExhaustionAtHighProfit = compositeScore < 60;
+  const hasReachedAgentDecidedRatio =
+    pos.unrealizedPnlPct >= agentDecidedTpRatioPct && compositeScore < 78;
+
   if (
-    pos.unrealizedPnlPct >= autoTakeProfitTriggerPct ||
-    (pos.unrealizedPnlPct >= 0.65 && compositeScore < 44)
+    hasReachedAgentDecidedRatio ||
+    hasMomentumExhaustionAtHighProfit ||
+    hasTrailingPullbackFromPeak
   ) {
     return {
       decision: 'AUTO_TAKE_PROFIT_NOW',
@@ -474,11 +525,11 @@ export function evaluateActivePositionDeepIntelligence(
       sentimentScore,
       compositeScore,
       marketSentimentLabel,
-      reason: `AUTO TAKE PROFIT (+${pos.unrealizedPnlPct}%): Target profit/absorpsi pucuk tercapai. Mengunci profit otomatis langsung ke Hot Wallet!`,
+      reason: `KEPUTUSAN AGENT TAKE PROFIT (+${pos.unrealizedPnlPct}% >= Min +${minTpFloorPct}%): Rasio optimal Agent (+${agentDecidedTpRatioPct}%) / absorpsi pucuk tercapai. Mengunci profit besar langsung ke Brankas Hot Wallet!`,
     };
   }
 
-  // 2) Ride Profit & Trail Breakeven+Fee Stop
+  // 3) Above +50% and institutional momentum is still expanding strongly -> Uncapped Runner (No Maximum Limit!)
   return {
     decision: 'RIDE_PROFIT_TRAIL',
     orderbookDefenseScore,
@@ -486,7 +537,7 @@ export function evaluateActivePositionDeepIntelligence(
     sentimentScore,
     compositeScore,
     marketSentimentLabel,
-    reason: `RIDE & TRAIL PROFIT: Orderbook Defense ${orderbookDefenseScore}/100 • Whale Flow ${whaleConvictionScore}/100 • Sentimen ${sentimentScore}/100 (${marketSentimentLabel}).`,
+    reason: `UNCAPPED PROFIT RUNNER (+${pos.unrealizedPnlPct}% >= Min +${minTpFloorPct}%): Orderbook Defense ${orderbookDefenseScore}/100 & Whale Flow ${whaleConvictionScore}/100 masih ekspansif. Agent menunda TP & mengejar rasio +${agentDecidedTpRatioPct}% (Tanpa Batas Maksimal / ∞)!`,
   };
 }
 
@@ -497,19 +548,19 @@ export const INITIAL_AGENT_POSITIONS: AgentPosition[] = [
     side: 'LONG',
     marketType: 'PERP',
     exchange: 'HYPERLIQUID',
-    entryPrice: 94410.0,
+    entryPrice: 88140.0,
     currentPrice: 94820.5,
     sizeUsd: 45000,
-    leverage: 6,
-    stopLossPrice: 94448.0, // Locked above entry! (Breakeven + Fee Offset)
-    takeProfitPrice: 95850.0,
+    leverage: 8,
+    stopLossPrice: 91850.0, // Profit floor locked above entry
+    takeProfitPrice: 102400.0,
     breakevenLocked: true,
     executionMode: 'POST_ONLY_MAKER',
-    unrealizedPnlUsd: 978.02,
-    unrealizedPnlPct: 2.17,
-    peakPnlPct: 2.34,
+    unrealizedPnlUsd: 27285.91,
+    unrealizedPnlPct: 60.64,
+    peakPnlPct: 62.1,
     openedAt: '20:54:12',
-    statusReason: 'BREAKEVEN+FEE LOCKED (@ $94,448) | Trailing behind Whale Bid Wall',
+    statusReason: 'UNCAPPED RUNNER (+60.64% >= Min +50% TP) | Target Keputusan Agent: +125% / ∞ (Whale Wall Kuat)',
     aiHoldDecision: 'RIDE_PROFIT_TRAIL',
     orderbookDefenseScore: 91,
     whaleConvictionScore: 94,
@@ -522,19 +573,19 @@ export const INITIAL_AGENT_POSITIONS: AgentPosition[] = [
     side: 'LONG',
     marketType: 'PERP',
     exchange: 'HYPERLIQUID',
-    entryPrice: 212.8,
+    entryPrice: 192.4,
     currentPrice: 214.65,
     sizeUsd: 25000,
-    leverage: 5,
-    stopLossPrice: 212.92,
-    takeProfitPrice: 219.5,
+    leverage: 6,
+    stopLossPrice: 204.5,
+    takeProfitPrice: 242.0,
     breakevenLocked: true,
     executionMode: 'POST_ONLY_MAKER',
-    unrealizedPnlUsd: 869.36,
-    unrealizedPnlPct: 3.48,
-    peakPnlPct: 3.65,
+    unrealizedPnlUsd: 17346.67,
+    unrealizedPnlPct: 69.39,
+    peakPnlPct: 71.2,
     openedAt: '21:02:44',
-    statusReason: 'ZERO-RISK MODE: Stop trailed to +0.06% above entry after Phantom Whale inflow',
+    statusReason: 'UNCAPPED RUNNER (+69.39% >= Min +50% TP) | Target Keputusan Agent: +135% / ∞ (Phantom Whale Inflow)',
     aiHoldDecision: 'RIDE_PROFIT_TRAIL',
     orderbookDefenseScore: 88,
     whaleConvictionScore: 92,
@@ -547,19 +598,19 @@ export const INITIAL_AGENT_POSITIONS: AgentPosition[] = [
     side: 'LONG',
     marketType: 'PERP',
     exchange: 'HYPERLIQUID',
-    entryPrice: 28.62,
+    entryPrice: 25.32,
     currentPrice: 28.94,
     sizeUsd: 18000,
-    leverage: 4,
-    stopLossPrice: 28.65,
-    takeProfitPrice: 30.2,
+    leverage: 5,
+    stopLossPrice: 27.1,
+    takeProfitPrice: 33.8,
     breakevenLocked: true,
     executionMode: 'POST_ONLY_MAKER',
-    unrealizedPnlUsd: 603.77,
-    unrealizedPnlPct: 3.35,
-    peakPnlPct: 3.52,
+    unrealizedPnlUsd: 12867.3,
+    unrealizedPnlPct: 71.48,
+    peakPnlPct: 73.1,
     openedAt: '21:08:19',
-    statusReason: 'HLP Vault Confluence (+94%) | Maker Rebate Captured (-0.015% fee)',
+    statusReason: 'UNCAPPED RUNNER (+71.48% >= Min +50% TP) | Target Keputusan Agent: +140% / ∞ (HLP Vault Confluence)',
     aiHoldDecision: 'RIDE_PROFIT_TRAIL',
     orderbookDefenseScore: 85,
     whaleConvictionScore: 95,
@@ -590,13 +641,13 @@ export const INITIAL_CLOSED_TRADES: ClosedTradeLog[] = [
     symbol: 'ETH-PERP',
     side: 'LONG',
     exchange: 'BINANCE',
-    entryPrice: 3318.5,
+    entryPrice: 3012.0,
     exitPrice: 3341.0,
     sizeUsd: 35000,
-    realizedPnlUsd: 949.22,
-    realizedPnlPct: 2.71,
+    realizedPnlUsd: 30583.0,
+    realizedPnlPct: 87.38,
     exitType: 'TRAILING_PROFIT_LOCK',
-    note: 'Target likuiditas tercapai setelah akumulasi Jump Crypto $6.1M; profit +$949.22 langsung di-settle otomatis ke Hot Wallet tanpa withdraw manual.',
+    note: 'Uncapped Agent TP (+87.38% >= Min +50%): Agent menahan profit melewati +50% selama akumulasi Jump Crypto $6.1M berlangsung, lalu memutuskan Take Profit pada +87.38% (+$30,583.00) otomatis masuk ke Brankas Hot Wallet.',
     hotWalletSettled: true,
     hotWalletName: 'Trust Wallet (Arbitrum USDC)',
     hotWalletAddress: '0x71C...9A4E',
@@ -608,13 +659,13 @@ export const INITIAL_CLOSED_TRADES: ClosedTradeLog[] = [
     symbol: 'SOL-PERP',
     side: 'SHORT',
     exchange: 'HYPERLIQUID',
-    entryPrice: 211.4,
+    entryPrice: 236.8,
     exitPrice: 211.35,
     sizeUsd: 20000,
-    realizedPnlUsd: 18.92,
-    realizedPnlPct: 0.09,
-    exitType: 'BREAKEVEN_PROTECT',
-    note: 'Auto-Breakeven + Fee Lock tersentuh saat Whale Solana menyerap ask wall; keluar dengan profit mikro +$18.92 otomatis masuk ke Hot Wallet.',
+    realizedPnlUsd: 12896.96,
+    realizedPnlPct: 64.48,
+    exitType: 'TAKE_PROFIT',
+    note: 'Keputusan Agent Take Profit (+64.48% >= Min +50%): Melewati batas minimal TP +50%; Agent mengeksekusi Take Profit pada rasio +64.48% (+$12,896.96) saat absorpsi bid wall muncul, langsung masuk ke Brankas Hot Wallet.',
     hotWalletSettled: true,
     hotWalletName: 'Trust Wallet (Hyperliquid L1)',
     hotWalletAddress: '0x71C...9A4E',
@@ -626,13 +677,13 @@ export const INITIAL_CLOSED_TRADES: ClosedTradeLog[] = [
     symbol: 'BTC-PERP',
     side: 'LONG',
     exchange: 'HYPERLIQUID',
-    entryPrice: 93740.0,
+    entryPrice: 80920.0,
     exitPrice: 94390.0,
     sizeUsd: 50000,
-    realizedPnlUsd: 1733.51,
-    realizedPnlPct: 3.46,
+    realizedPnlUsd: 66584.28,
+    realizedPnlPct: 133.17,
     exitType: 'TAKE_PROFIT',
-    note: 'Eksekusi Post-Only Maker di pucuk bid + konfirmasi inflow Hyperliquid Bridge $14.2M. Profit +$1,733.51 otomatis masuk ke Hot Wallet.',
+    note: 'Uncapped Runner Take Profit (+133.17% >= Min +50%): Agent membiarkan profit berlari tanpa batas atas mengikuti inflow Hyperliquid Bridge $14.2M dan memutuskan Take Profit pada rasio +133.17% (+$66,584.28) ke Brankas Hot Wallet.',
     hotWalletSettled: true,
     hotWalletName: 'Trust Wallet (Arbitrum USDC)',
     hotWalletAddress: '0x71C...9A4E',

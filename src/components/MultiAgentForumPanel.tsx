@@ -153,13 +153,13 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
               BE+FEE LOCK: <strong className="text-[#00E676]">${consensus.breakevenLockPrice.toLocaleString()}</strong>
             </span>
             <span>
-              TP1 / TP2:{' '}
+              MIN TP1 (+50%) / UNCAPPED TP2 (∞):{' '}
               <strong className="text-[#00E676]">
                 ${consensus.takeProfit1.toLocaleString()} / ${consensus.takeProfit2.toLocaleString()}
               </strong>
             </span>
             <span>
-              R:R: <strong className="text-[#FF9F1C]">1:{consensus.riskRewardRatio}</strong>
+              R:R: <strong className="text-[#FF9F1C]">1:{consensus.riskRewardRatio} (MAX TP ∞)</strong>
             </span>
           </div>
         </div>

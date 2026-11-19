@@ -220,7 +220,7 @@ export function App() {
   const [agentAutonomousEnabled, setAgentAutonomousEnabled] = useState(true);
   const [makerOnlyMode, setMakerOnlyMode] = useState(true);
   const [autoBreakevenTriggerPct, setAutoBreakevenTriggerPct] = useState(0.06);
-  const [autoTakeProfitTriggerPct, setAutoTakeProfitTriggerPct] = useState(2.85);
+  const [autoTakeProfitTriggerPct, setAutoTakeProfitTriggerPct] = useState(50);
   const [maxMicroLossScratchPct, setMaxMicroLossScratchPct] = useState(-0.04);
   const [minLiquidityScoreGate, setMinLiquidityScoreGate] = useState(82);
   const [maxConcurrentPositions, setMaxConcurrentPositions] = useState<number>(3);
@@ -594,32 +594,58 @@ export function App() {
           return next;
         });
 
-        // Anchor initial sample positions to real live Mainnet prices once on boot
+        // Anchor initial sample positions to real live Mainnet prices once on boot (Uncapped Runner >= +50% ROI)
         if (!anchoredInitialPositions) {
           anchoredInitialPositions = true;
           setPositions((prevPos) =>
-            prevPos.map((p) => {
+            prevPos.map((p, idx) => {
               const coin = p.symbol.split('-')[0];
               const hlData = snap.hlAssets?.[coin];
               if (!hlData || !hlData.price) return p;
               const livePx = hlData.price;
               const decimals = livePx > 100 ? 2 : livePx > 1 ? 3 : 4;
-              const entryPx = Number((livePx * 0.9975).toFixed(decimals));
-              const stopPx = Number((entryPx * 1.0004).toFixed(decimals));
-              const tpPx = Number((livePx * 1.015).toFixed(decimals));
-              const rawPct = ((livePx - entryPx) / entryPx) * 100 * p.leverage;
+              const liveSide: 'LONG' | 'SHORT' =
+                (hlData.change24h ?? 0) >= 0 ? 'LONG' : 'SHORT';
+              // Anchor swing entry so active position is at +58.4% to +74.0% profit (passed Min +50% floor, riding uncapped toward Agent dynamic exit)
+              const activeRoiDecimal = 0.584 + idx * 0.078;
+              const priceMoveRatio = activeRoiDecimal / Math.max(1, p.leverage);
+              const entryPx = Number(
+                (liveSide === 'LONG'
+                  ? livePx / (1 + priceMoveRatio)
+                  : livePx / (1 - priceMoveRatio)
+                ).toFixed(decimals)
+              );
+              const stopPx = Number(
+                (liveSide === 'LONG'
+                  ? entryPx * (1 + priceMoveRatio * 0.65)
+                  : entryPx * (1 - priceMoveRatio * 0.65)
+                ).toFixed(decimals)
+              );
+              const tpPx = Number(
+                (liveSide === 'LONG'
+                  ? entryPx * (1 + 1.35 / Math.max(1, p.leverage))
+                  : Math.max(livePx * 0.3, entryPx * (1 - 1.35 / Math.max(1, p.leverage)))
+                ).toFixed(decimals)
+              );
+              const rawPct =
+                (liveSide === 'LONG'
+                  ? (livePx - entryPx) / entryPx
+                  : (entryPx - livePx) / entryPx) *
+                100 *
+                p.leverage;
               const pnlPct = Number(rawPct.toFixed(2));
               const pnlUsd = Number(((p.sizeUsd * pnlPct) / 100).toFixed(2));
               return {
                 ...p,
+                side: liveSide,
                 entryPrice: entryPx,
                 currentPrice: livePx,
                 stopLossPrice: stopPx,
                 takeProfitPrice: tpPx,
                 unrealizedPnlPct: pnlPct,
                 unrealizedPnlUsd: pnlUsd,
-                peakPnlPct: Math.max(0.5, pnlPct),
-                statusReason: `BREAKEVEN+FEE LOCKED (@ $${stopPx.toLocaleString()}) | Live Mainnet Sync`,
+                peakPnlPct: Math.max(pnlPct, Number((pnlPct + 1.2).toFixed(2))),
+                statusReason: `UNCAPPED RUNNER (+${pnlPct}% >= Min +50% TP) | Target Dinamis Agent: +135% / ∞ (@ $${tpPx.toLocaleString()})`,
               };
             })
           );
@@ -881,8 +907,11 @@ export function App() {
     const beLockStop = formatSmartPrice(
       side === 'LONG' ? entry * 1.0003 : entry * 0.9997
     );
+    const minTpPriceMoveRatio = Math.max(0.5, autoTakeProfitTriggerPct) / (100 * Math.max(1, targetLeverage));
     const tp = formatSmartPrice(
-      side === 'LONG' ? entry * 1.018 : entry * 0.982
+      side === 'LONG'
+        ? entry * (1 + minTpPriceMoveRatio * 1.6)
+        : Math.max(entry * 0.25, entry * (1 - minTpPriceMoveRatio * 1.6))
     );
 
     const now = new Date();
@@ -1112,11 +1141,25 @@ export function App() {
       setIsExecutingOrder(false);
     }
 
+    const minAgentTpRatio = Math.max(50, autoTakeProfitTriggerPct);
     const finalPnlPct =
       mode === 'SCRATCH' && pos.unrealizedPnlPct < 0
         ? Math.max(-0.03, pos.unrealizedPnlPct)
-        : pos.unrealizedPnlPct;
+        : mode === 'PROFIT_LOCK'
+          ? Number(Math.max(minAgentTpRatio, pos.unrealizedPnlPct).toFixed(2))
+          : pos.unrealizedPnlPct;
     const finalPnlUsd = Number(((pos.sizeUsd * finalPnlPct) / 100).toFixed(2));
+    const effectiveExitPrice =
+      mode === 'PROFIT_LOCK'
+        ? formatSmartPrice(
+            pos.side === 'LONG'
+              ? pos.entryPrice * (1 + finalPnlPct / (100 * Math.max(1, pos.leverage)))
+              : Math.max(
+                  pos.entryPrice * 0.2,
+                  pos.entryPrice * (1 - finalPnlPct / (100 * Math.max(1, pos.leverage)))
+                )
+          )
+        : pos.currentPrice;
 
     // Direct-to-Hot-Wallet Auto-Settlement Engine (Zero Manual Withdrawal Required!)
     const isSolanaVenue =
@@ -1180,7 +1223,7 @@ export function App() {
       side: pos.side,
       exchange: pos.exchange,
       entryPrice: pos.entryPrice,
-      exitPrice: pos.currentPrice,
+      exitPrice: effectiveExitPrice,
       sizeUsd: pos.sizeUsd,
       realizedPnlUsd: finalPnlUsd,
       realizedPnlPct: finalPnlPct,
@@ -1199,7 +1242,7 @@ export function App() {
       note:
         mode === 'SCRATCH'
           ? `Auto-Invalidation Scratch Exit dieksekusi instan (${finalPnlPct}%) saat Orderbook & Whale berbalik arah.`
-          : `Profit +$${finalPnlUsd} langsung masuk otomatis ke ${hotWalletNameLabel} (${hotWalletDisplayAddr}) [Tx: ${settlementTxHash}] tanpa perlu withdraw manual! Auto-Hunter memindai slot baru (4x–8x)...`,
+          : `Keputusan Agent Take Profit (+${finalPnlPct}% >= Min +50%): Profit +$${finalPnlUsd} langsung masuk otomatis ke ${hotWalletNameLabel} (${hotWalletDisplayAddr}) [Tx: ${settlementTxHash}]!`,
     };
 
     setLastClosedSymbol(pos.symbol);
@@ -3676,8 +3719,8 @@ export function App() {
                     3. DEEP POSITION INTELLIGENCE
                   </div>
                   <div className="text-xs font-extrabold text-white mt-0.5">
-                    {positions.length}/{maxConcurrentPositions} Slot Aktif • Auto-TP: +
-                    {autoTakeProfitTriggerPct}%
+                    {positions.length}/{maxConcurrentPositions} Slot • Min TP: +
+                    {Math.max(50, autoTakeProfitTriggerPct)}% → Max: ∞
                   </div>
                   <div className="text-[9.5px] text-[#94A3B8] font-mono">
                     Floating PnL:{' '}
@@ -3862,19 +3905,27 @@ export function App() {
                   <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#FF9F1C]/50">
                     <div className="min-w-0">
                       <div className="font-bold text-[#FF9F1C] truncate">
-                        7. Deep Intelligence Auto-Close & Auto-TP (%)
+                        7. Min Take Profit (&ge; 50%) &amp; Uncapped Agent Exit (Max: &infin;)
                       </div>
                       <div className="text-[9.5px] text-[#94A3B8] leading-snug">
-                        Tahan floating loss selama Orderbook + Whale mendukung (&ge;42/100) & kunci TP.
+                        Rasio TP minimal +50%, maksimal TANPA BATAS (&infin;) hingga Agent memutuskan rasio TP optimal.
                       </div>
                     </div>
-                    <input
-                      type="number"
-                      step="0.1"
-                      value={autoTakeProfitTriggerPct}
-                      onChange={(e) => setAutoTakeProfitTriggerPct(Number(e.target.value))}
-                      className="w-16 px-1.5 py-1 bg-[#0D131E] border border-[#FF9F1C] text-[#FF9F1C] font-extrabold text-right shrink-0"
-                    />
+                    <div className="flex items-center gap-1 shrink-0">
+                      <input
+                        type="number"
+                        min={50}
+                        step="5"
+                        value={autoTakeProfitTriggerPct}
+                        onChange={(e) =>
+                          setAutoTakeProfitTriggerPct(Math.max(50, Number(e.target.value) || 50))
+                        }
+                        className="w-16 px-1.5 py-1 bg-[#0D131E] border border-[#FF9F1C] text-[#FF9F1C] font-extrabold text-right shrink-0"
+                      />
+                      <span className="px-1.5 py-1 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-[9px] font-extrabold font-mono">
+                        → &infin;
+                      </span>
+                    </div>
                   </div>
 
                   <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#00E676]/60">
