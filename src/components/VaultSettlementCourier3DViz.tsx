@@ -3,18 +3,32 @@ import { ClosedTradeLog } from '../types/terminal';
 
 interface VaultSettlementCourier3DVizProps {
   closedTrades: ClosedTradeLog[];
+  hideLedger?: boolean;
+  selectedTradeIdOverride?: string;
+  onSelectTrade?: (id: string) => void;
 }
 
 export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizProps> = ({
   closedTrades,
+  hideLedger = false,
+  selectedTradeIdOverride,
+  onSelectTrade,
 }) => {
-  const [selectedTradeId, setSelectedTradeId] = useState<string>(closedTrades[0]?.id || '');
+  const [internalSelectedTradeId, setInternalSelectedTradeId] = useState<string>(
+    closedTrades[0]?.id || ''
+  );
   const [filterMode, setFilterMode] = useState<'ALL' | 'PROFIT_IN' | 'LOSS_OUT'>('ALL');
+
+  const selectedTradeId = selectedTradeIdOverride ?? internalSelectedTradeId;
+  const handleSelectTrade = (id: string) => {
+    setInternalSelectedTradeId(id);
+    onSelectTrade?.(id);
+  };
 
   // Whenever a new position closes in real time, automatically focus the newest closed trade
   useEffect(() => {
     if (closedTrades.length > 0 && closedTrades[0]?.id) {
-      setSelectedTradeId(closedTrades[0].id);
+      setInternalSelectedTradeId(closedTrades[0].id);
     }
   }, [closedTrades[0]?.id, closedTrades.length]);
 
@@ -45,7 +59,9 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
   return (
     <div
       data-testid="vault-settlement-courier-3d-viz"
-      className="bg-[#050811] border border-[#1B2B45] p-2.5 flex flex-col justify-between gap-2 h-full"
+      className={`bg-[#050811] border border-[#1B2B45] p-2.5 flex flex-col gap-2 ${
+        hideLedger ? '' : 'h-full'
+      }`}
     >
       {/* Header Banner: Real-Time Dual-Vault Profit Inflow & External Loss Outflow Summary */}
       <div className="flex flex-wrap items-center justify-between gap-1.5 pb-1.5 border-b border-[#162338]">
@@ -629,101 +645,103 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
       </div>
 
       {/* Real-Time Per-Position Closed Trade Vault Ledger */}
-      <div
-        data-testid="vault-realtime-trade-ledger"
-        className="bg-[#070C16] border border-[#19263D] p-2 space-y-1.5"
-      >
-        <div className="flex flex-wrap items-center justify-between gap-2 pb-1 border-b border-[#141F33]">
-          <span className="text-[9.5px] font-extrabold text-[#00E5FF]">
-            RINCIAN REAL-TIME SETIAP POSISI DITUTUP (KLIK POSISI UNTUK INSPEKSI KURIR BRANKAS)
-          </span>
-          <div className="flex items-center gap-1">
-            {(
-              [
-                { id: 'ALL', label: `SEMUA (${closedTrades.length})` },
-                { id: 'PROFIT_IN', label: `📥 MASUK BRANKAS (${profitTrades.length})` },
-                { id: 'LOSS_OUT', label: `📤 KELUAR EKSTERNAL (${lossTrades.length})` },
-              ] as const
-            ).map((f) => (
-              <button
-                key={f.id}
-                data-testid={`vault-filter-${f.id}`}
-                onClick={() => setFilterMode(f.id)}
-                className={`px-2 py-0.5 text-[8.5px] font-extrabold border ${
-                  filterMode === f.id
-                    ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
-                    : 'bg-[#0B1220] text-[#94A3B8] border-[#1A273E] hover:text-white'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
+      {!hideLedger && (
+        <div
+          data-testid="vault-realtime-trade-ledger"
+          className="bg-[#070C16] border border-[#19263D] p-2 space-y-1.5"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 pb-1 border-b border-[#141F33]">
+            <span className="text-[9.5px] font-extrabold text-[#00E5FF]">
+              RINCIAN REAL-TIME SETIAP POSISI DITUTUP (KLIK POSISI UNTUK INSPEKSI KURIR BRANKAS)
+            </span>
+            <div className="flex items-center gap-1">
+              {(
+                [
+                  { id: 'ALL', label: `SEMUA (${closedTrades.length})` },
+                  { id: 'PROFIT_IN', label: `📥 MASUK BRANKAS (${profitTrades.length})` },
+                  { id: 'LOSS_OUT', label: `📤 KELUAR EKSTERNAL (${lossTrades.length})` },
+                ] as const
+              ).map((f) => (
+                <button
+                  key={f.id}
+                  data-testid={`vault-filter-${f.id}`}
+                  onClick={() => setFilterMode(f.id)}
+                  className={`px-2 py-0.5 text-[8.5px] font-extrabold border ${
+                    filterMode === f.id
+                      ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
+                      : 'bg-[#0B1220] text-[#94A3B8] border-[#1A273E] hover:text-white'
+                  }`}
+                >
+                  {f.label}
+                </button>
+              ))}
+            </div>
           </div>
-        </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 max-h-44 overflow-y-auto">
-          {filteredTrades.map((trade) => {
-            const isWin = trade.realizedPnlUsd >= 0;
-            const isSelected = activeTrade?.id === trade.id;
-            return (
-              <div
-                key={trade.id}
-                data-testid="vault-closed-trade-item"
-                onClick={() => setSelectedTradeId(trade.id)}
-                className={`p-2 border cursor-pointer flex items-center justify-between gap-2 ${
-                  isSelected
-                    ? isWin
-                      ? 'bg-[#071913] border-[#00E676]'
-                      : 'bg-[#1C080E] border-[#FF1744]'
-                    : 'bg-[#090F1C] border-[#182338] hover:border-[#2C3F61]'
-                }`}
-              >
-                <div className="min-w-0 space-y-0.5">
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    <span className="text-[8.5px] font-mono text-[#64748B]">{trade.timestamp}</span>
-                    <span
-                      className={`px-1 py-0.2 text-[8.5px] font-extrabold ${
-                        trade.side === 'LONG'
-                          ? 'bg-[#00E676]/20 text-[#00E676] border border-[#00E676]/50'
-                          : 'bg-[#FF1744]/20 text-[#FF1744] border border-[#FF1744]/50'
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-1.5 max-h-44 overflow-y-auto">
+            {filteredTrades.map((trade) => {
+              const isWin = trade.realizedPnlUsd >= 0;
+              const isSelected = activeTrade?.id === trade.id;
+              return (
+                <div
+                  key={trade.id}
+                  data-testid="vault-closed-trade-item"
+                  onClick={() => handleSelectTrade(trade.id)}
+                  className={`p-2 border cursor-pointer flex items-center justify-between gap-2 ${
+                    isSelected
+                      ? isWin
+                        ? 'bg-[#071913] border-[#00E676]'
+                        : 'bg-[#1C080E] border-[#FF1744]'
+                      : 'bg-[#090F1C] border-[#182338] hover:border-[#2C3F61]'
+                  }`}
+                >
+                  <div className="min-w-0 space-y-0.5">
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <span className="text-[8.5px] font-mono text-[#64748B]">{trade.timestamp}</span>
+                      <span
+                        className={`px-1 py-0.2 text-[8.5px] font-extrabold ${
+                          trade.side === 'LONG'
+                            ? 'bg-[#00E676]/20 text-[#00E676] border border-[#00E676]/50'
+                            : 'bg-[#FF1744]/20 text-[#FF1744] border border-[#FF1744]/50'
+                        }`}
+                      >
+                        {trade.side}
+                      </span>
+                      <span className="font-extrabold text-white text-[10px]">{trade.symbol}</span>
+                      <span className="text-[8.5px] font-mono text-[#00E5FF]">{trade.exchange}</span>
+                    </div>
+                    <div className="text-[8.5px] text-[#94A3B8] font-mono truncate">
+                      Entry ${trade.entryPrice.toLocaleString()} → Exit ${trade.exitPrice.toLocaleString()} •{' '}
+                      {isWin
+                        ? `Settled ke ${trade.hotWalletName || 'Brankas Profit Utama'}`
+                        : 'Keluar ke Brankas Likuiditas Eksternal (Micro-Scratch)'}
+                    </div>
+                  </div>
+
+                  <div className="text-right shrink-0">
+                    <div
+                      className={`text-[10.5px] font-extrabold font-mono ${
+                        isWin ? 'text-[#00E676]' : 'text-[#FF1744]'
                       }`}
                     >
-                      {trade.side}
-                    </span>
-                    <span className="font-extrabold text-white text-[10px]">{trade.symbol}</span>
-                    <span className="text-[8.5px] font-mono text-[#00E5FF]">{trade.exchange}</span>
-                  </div>
-                  <div className="text-[8.5px] text-[#94A3B8] font-mono truncate">
-                    Entry ${trade.entryPrice.toLocaleString()} → Exit ${trade.exitPrice.toLocaleString()} •{' '}
-                    {isWin
-                      ? `Settled ke ${trade.hotWalletName || 'Brankas Profit Utama'}`
-                      : 'Keluar ke Brankas Likuiditas Eksternal (Micro-Scratch)'}
-                  </div>
-                </div>
-
-                <div className="text-right shrink-0">
-                  <div
-                    className={`text-[10.5px] font-extrabold font-mono ${
-                      isWin ? 'text-[#00E676]' : 'text-[#FF1744]'
-                    }`}
-                  >
-                    {isWin ? '📥 +' : '📤 -'}${Math.abs(trade.realizedPnlUsd).toFixed(2)} (
-                    {trade.realizedPnlPct >= 0 ? '+' : ''}
-                    {trade.realizedPnlPct}%)
-                  </div>
-                  <div
-                    className={`text-[8px] font-extrabold ${
-                      isWin ? 'text-[#A7F3D0]' : 'text-[#FCA5A5]'
-                    }`}
-                  >
-                    {isWin ? 'MASUK BRANKAS PROFIT' : 'KELUAR BRANKAS EKSTERNAL'}
+                      {isWin ? '📥 +' : '📤 -'}${Math.abs(trade.realizedPnlUsd).toFixed(2)} (
+                      {trade.realizedPnlPct >= 0 ? '+' : ''}
+                      {trade.realizedPnlPct}%)
+                    </div>
+                    <div
+                      className={`text-[8px] font-extrabold ${
+                        isWin ? 'text-[#A7F3D0]' : 'text-[#FCA5A5]'
+                      }`}
+                    >
+                      {isWin ? 'MASUK BRANKAS PROFIT' : 'KELUAR BRANKAS EKSTERNAL'}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 };

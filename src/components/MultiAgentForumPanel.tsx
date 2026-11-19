@@ -556,11 +556,85 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
         </div>
       )}
 
-      {/* 3D. VIEW 4: REAL-TIME POSITION ACCURACY & WALK-FORWARD BACKTEST AUDITOR */}
-      {activeForumView === 'POSITION_ACCURACY_AUDIT' && (
+      {/* 3D. VIEW 4: REAL-TIME POSITION ACCURACY & WALK-FORWARD BACKTEST AUDITOR (ZERO OVERLAP WITH TAB 4 EXECUTION LOG) */}
+      {activeForumView === 'POSITION_ACCURACY_AUDIT' && (() => {
+        const accurateOpenCount = positionAudits.filter((a) => a.isAccurateVerdict).length;
+        const avgMfePct =
+          walkForwardOutcomes.length > 0
+            ? (
+                walkForwardOutcomes.reduce((acc, w) => acc + w.mfePct, 0) /
+                walkForwardOutcomes.length
+              ).toFixed(2)
+            : '0.00';
+        const avgMaePct =
+          walkForwardOutcomes.length > 0
+            ? (
+                walkForwardOutcomes.reduce((acc, w) => acc + w.maePct, 0) /
+                walkForwardOutcomes.length
+              ).toFixed(2)
+            : '0.00';
+
+        return (
         <div data-testid="forum-accuracy-audit-panel" className="space-y-2.5">
-          {/* 3D Dual-Vault Profit Inflow & External Loss Outflow Courier Agent Illustration */}
-          <VaultSettlementCourier3DViz closedTrades={closedTrades} />
+          {/* Quantitative Model Accuracy KPI Summary Strip */}
+          <div
+            data-testid="accuracy-audit-kpis"
+            className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2"
+          >
+            <div className="p-2 bg-[#070D18] border-l-4 border-l-[#00E676] border border-[#192842]">
+              <div className="text-[8.5px] font-extrabold text-[#00E676] uppercase">
+                1. AKURASI POSISI AKTIF (4-AGENT)
+              </div>
+              <div className="text-sm font-extrabold text-white font-mono mt-0.5">
+                {accurateOpenCount}/{positionAudits.length} POSISI TEPAT
+              </div>
+              <div className="text-[8.5px] text-[#94A3B8]">
+                Uji arah real-time News + TA + Whale + BE Lock
+              </div>
+            </div>
+
+            <div className="p-2 bg-[#070D18] border-l-4 border-l-[#00E5FF] border border-[#192842]">
+              <div className="text-[8.5px] font-extrabold text-[#00E5FF] uppercase">
+                2. WALK-FORWARD WIN RATE (OHLCV)
+              </div>
+              <div className="text-sm font-extrabold text-[#00E5FF] font-mono mt-0.5">
+                {wfWinRatePct}% ({wfWinCount}/{walkForwardOutcomes.length} WIN)
+              </div>
+              <div className="text-[8.5px] text-[#94A3B8]">
+                Uji candle historis nyata tanpa lookahead bias
+              </div>
+            </div>
+
+            <div className="p-2 bg-[#070D18] border-l-4 border-l-[#FF9F1C] border border-[#192842]">
+              <div className="text-[8.5px] font-extrabold text-[#FF9F1C] uppercase">
+                3. ASIMETRI MFE vs MAE (MIN TP +50%)
+              </div>
+              <div className="text-sm font-extrabold font-mono mt-0.5">
+                <span className="text-[#00E676]">+{avgMfePct}%</span>{' '}
+                <span className="text-[#64748B]">/</span>{' '}
+                <span className="text-[#FF1744]">{avgMaePct}%</span>
+              </div>
+              <div className="text-[8.5px] text-[#94A3B8]">
+                Rata-rata ekspansi profit vs drawdown maksimal
+              </div>
+            </div>
+
+            <div className="p-2 bg-[#070D18] border-l-4 border-l-[#D500F9] border border-[#192842]">
+              <div className="text-[8.5px] font-extrabold text-[#EA80FC] uppercase">
+                4. SIMULASI NET PNL BACKTEST
+              </div>
+              <div
+                className={`text-sm font-extrabold font-mono mt-0.5 ${
+                  wfTotalPnlUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+                }`}
+              >
+                {wfTotalPnlUsd >= 0 ? '+' : ''}${wfTotalPnlUsd.toFixed(2)} USD
+              </div>
+              <div className="text-[8.5px] text-[#94A3B8]">
+                Validasi LONG & SHORT (Target Min +50% → ∞)
+              </div>
+            </div>
+          </div>
 
           {/* A. Active Open Positions Live Accuracy Verification */}
           <div className="p-2 bg-[#06090F] border border-[#1B263B]">
@@ -704,7 +778,8 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 };

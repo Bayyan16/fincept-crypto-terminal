@@ -59,6 +59,12 @@ test.describe('shell', () => {
 
     await page.getByTestId('top-tab-PORTFOLIO_LOG').click();
     await expect(page.getByText(/EXECUTION & DIRECT HOT-WALLET/).first()).toBeVisible();
+    const vaultViz = page.getByTestId('vault-settlement-courier-3d-viz');
+    await expect(vaultViz).toBeVisible();
+    const vaultBox = await vaultViz.boundingBox();
+    expect(vaultBox && vaultBox.height).toBeLessThan(380);
+    await expect(page.getByTestId('execution-audit-log-list')).toBeVisible();
+    await expect(page.getByTestId('vault-realtime-trade-ledger')).toHaveCount(0);
 
     await page.getByTestId('top-tab-PORTFOLIO_PROFILE').click();
     await expect(page.getByText(/TRADER PROFILE/).first()).toBeVisible();

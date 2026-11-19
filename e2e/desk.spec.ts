@@ -141,8 +141,10 @@ test.describe('terminal desk', () => {
     await page.getByTestId('forum-tab-scanner').click();
     await expect(page.getByTestId('forum-all-market-scanner')).toBeVisible();
 
-    // 6. Position Accuracy & Walk-Forward Backtest Audit tab
+    // 6. Position Accuracy & Walk-Forward Backtest Audit tab (Distinct from Tab 4 Execution Audit)
     await page.getByTestId('forum-tab-accuracy-audit').click();
     await expect(page.getByTestId('forum-accuracy-audit-panel')).toBeVisible();
+    await expect(page.getByTestId('accuracy-audit-kpis')).toBeVisible();
+    await expect(page.getByTestId('vault-settlement-courier-3d-viz')).toHaveCount(0);
   });
 });

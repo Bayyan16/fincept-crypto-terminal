@@ -227,6 +227,8 @@ export function App() {
   const [autoDirectHotWalletSettle, setAutoDirectHotWalletSettle] = useState<boolean>(true);
   const [lastClosedSymbol, setLastClosedSymbol] = useState<string | null>(null);
   const [hunterCountdownSec, setHunterCountdownSec] = useState<number | null>(null);
+  const [selectedAuditTradeId, setSelectedAuditTradeId] = useState<string | undefined>(undefined);
+  const [auditLogFilter, setAuditLogFilter] = useState<'ALL' | 'PROFIT_IN' | 'LOSS_OUT'>('ALL');
 
   // Command Bar Input
   const [commandInput, setCommandInput] = useState('');
@@ -4081,34 +4083,212 @@ export function App() {
           </div>
         )}
 
-        {/* TAB 4: EXECUTION & MICRO-LOSS SCRATCH AUDIT LOG */}
-        {activeTopTab === 'PORTFOLIO_LOG' && (
-          <div key="PORTFOLIO_LOG" className="anim-panel p-4 h-full overflow-y-auto bg-[#06080C] space-y-4">
-            <div className="flex items-center justify-between border-b border-[#1E2736] pb-2">
+        {/* TAB 4: EXECUTION & MICRO-LOSS SCRATCH AUDIT LOG (SEAMLESS ZERO-GAP COCKPIT) */}
+        {activeTopTab === 'PORTFOLIO_LOG' && (() => {
+          const filteredAuditTrades = closedTrades.filter((ct) => {
+            if (auditLogFilter === 'PROFIT_IN') return ct.realizedPnlUsd >= 0;
+            if (auditLogFilter === 'LOSS_OUT') return ct.realizedPnlUsd < 0;
+            return true;
+          });
+          const profitTradesAudit = closedTrades.filter((c) => c.realizedPnlUsd >= 0);
+          const lossTradesAudit = closedTrades.filter((c) => c.realizedPnlUsd < 0);
+          const profitAuditCount = profitTradesAudit.length;
+          const lossAuditCount = lossTradesAudit.length;
+          const totalProfitInAudit = profitTradesAudit.reduce((acc, c) => acc + c.realizedPnlUsd, 0);
+          const totalLossOutAudit = lossTradesAudit.reduce(
+            (acc, c) => acc + Math.abs(c.realizedPnlUsd),
+            0
+          );
+          const auditWinRate =
+            closedTrades.length > 0
+              ? Math.round((profitAuditCount / closedTrades.length) * 100)
+              : 100;
+          const activeAuditTrade =
+            closedTrades.find((c) => c.id === selectedAuditTradeId) || closedTrades[0] || null;
+
+          return (
+          <div
+            key="PORTFOLIO_LOG"
+            className="anim-panel p-3 h-full overflow-y-auto bg-[#06080C] flex flex-col gap-3"
+          >
+            {/* 1. Compact Header + 4 Settlement KPI Cards */}
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1E2736] pb-2">
               <div>
-                <h2 className="text-sm font-extrabold text-[#00E676] uppercase">
+                <h2 className="text-xs font-extrabold text-[#00E676] uppercase tracking-wide">
                   MULTI-EXCHANGE EXECUTION & DIRECT HOT-WALLET SETTLEMENT AUDIT LOG
                 </h2>
-                <p className="text-xs text-[#94A3B8]">
-                  Riwayat eksekusi posisi, keputusan Deep Intelligence (Hold vs Auto-Close), dan
-                  bukti pengiriman profit otomatis langsung ke Hot Wallet tanpa withdraw manual.
+                <p className="text-[10.5px] text-[#94A3B8]">
+                  Riwayat eksekusi posisi tertutup, rute kurir profit masuk ke Brankas Hot Wallet, dan
+                  audit scratch kerugian ke Brankas Eksternal (klik baris untuk inspeksi di panggung 3D).
                 </p>
               </div>
-              <div className="text-right">
-                <span className="text-xs text-[#94A3B8]">TOTAL REALIZED PROFIT: </span>
-                <span className="text-sm font-extrabold text-[#00E676]">
-                  +${totalRealizedPnl.toFixed(2)}
+              <div className="flex items-center gap-2 font-mono text-[10.5px]">
+                <span className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] font-extrabold">
+                  📥 MASUK BRANKAS: +${totalProfitInAudit.toFixed(2)}
+                </span>
+                <span className="px-2 py-0.5 bg-[#FF1744]/15 border border-[#FF1744] text-[#FF1744] font-extrabold">
+                  📤 KELUAR EKSTERNAL: -${totalLossOutAudit.toFixed(2)}
+                </span>
+                <span className="px-2 py-0.5 bg-[#00E5FF]/15 border border-[#00E5FF] text-[#00E5FF] font-extrabold">
+                  NET: +${totalRealizedPnl.toFixed(2)} ({auditWinRate}% WIN)
                 </span>
               </div>
             </div>
 
-            <VaultSettlementCourier3DViz closedTrades={closedTrades} />
+            {/* 2. Seamless 12-Column Middle Row: Left (7 Cols) = 3D Vault Courier | Right (5 Cols) = Selected Trade On-Chain Settlement Receipt */}
+            <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-stretch">
+              <div className="xl:col-span-7">
+                <VaultSettlementCourier3DViz
+                  closedTrades={closedTrades}
+                  hideLedger
+                  selectedTradeIdOverride={selectedAuditTradeId}
+                  onSelectTrade={setSelectedAuditTradeId}
+                />
+              </div>
 
-            <div className="space-y-2">
-              {closedTrades.map((ct) => (
+              <div className="xl:col-span-5 bg-[#070B14] border border-[#1B2B45] p-3 flex flex-col justify-between gap-2">
+                <div className="flex items-center justify-between border-b border-[#162338] pb-1.5">
+                  <span className="text-[10px] font-extrabold text-[#00E5FF] uppercase tracking-wider">
+                    BUKTI SETTLEMENT ON-CHAIN (SELECTED TRADE)
+                  </span>
+                  {activeAuditTrade && (
+                    <span
+                      className={`px-2 py-0.5 text-[9.5px] font-extrabold border ${
+                        activeAuditTrade.realizedPnlUsd >= 0
+                          ? 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]'
+                          : 'bg-[#FF1744]/15 text-[#FF1744] border-[#FF1744]'
+                      }`}
+                    >
+                      {activeAuditTrade.realizedPnlUsd >= 0
+                        ? '🏦 MASUK BRANKAS PROFIT'
+                        : '📤 KELUAR BRANKAS EKSTERNAL'}
+                    </span>
+                  )}
+                </div>
+
+                {activeAuditTrade ? (
+                  <div className="space-y-2 text-[11px] flex-1">
+                    <div className="flex items-center justify-between bg-[#0A101E] p-2 border border-[#17243A]">
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`px-1.5 py-0.5 text-[9.5px] font-extrabold ${
+                            activeAuditTrade.side === 'LONG'
+                              ? 'bg-[#00E676] text-black'
+                              : 'bg-[#FF1744] text-white'
+                          }`}
+                        >
+                          {activeAuditTrade.side}
+                        </span>
+                        <span className="font-extrabold text-white text-xs">
+                          {activeAuditTrade.symbol}
+                        </span>
+                        <span className="text-[10px] font-mono text-[#00E5FF]">
+                          {activeAuditTrade.exchange}
+                        </span>
+                      </div>
+                      <span
+                        className={`text-sm font-extrabold font-mono ${
+                          activeAuditTrade.realizedPnlUsd >= 0
+                            ? 'text-[#00E676]'
+                            : 'text-[#FF1744]'
+                        }`}
+                      >
+                        {activeAuditTrade.realizedPnlUsd >= 0 ? '+' : '-'}$
+                        {Math.abs(activeAuditTrade.realizedPnlUsd).toFixed(2)} (
+                        {activeAuditTrade.realizedPnlPct >= 0 ? '+' : ''}
+                        {activeAuditTrade.realizedPnlPct}%)
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2 font-mono text-[10px]">
+                      <div className="p-2 bg-[#060910] border border-[#141F32]">
+                        <div className="text-[8.5px] text-[#64748B]">ENTRY → EXIT PRICE</div>
+                        <div className="text-white font-bold mt-0.5">
+                          ${activeAuditTrade.entryPrice.toLocaleString()} → $
+                          {activeAuditTrade.exitPrice.toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="p-2 bg-[#060910] border border-[#141F32]">
+                        <div className="text-[8.5px] text-[#64748B]">NOTIONAL SIZE &amp; EXIT TYPE</div>
+                        <div className="text-[#FF9F1C] font-bold mt-0.5">
+                          ${activeAuditTrade.sizeUsd.toLocaleString()} • {activeAuditTrade.exitType}
+                        </div>
+                      </div>
+                      <div className="p-2 bg-[#060910] border border-[#141F32]">
+                        <div className="text-[8.5px] text-[#64748B]">DESTINASI BRANKAS / WALLET</div>
+                        <div className="text-[#00E5FF] font-bold mt-0.5 truncate">
+                          {activeAuditTrade.hotWalletSettled
+                            ? `${activeAuditTrade.hotWalletName} (${activeAuditTrade.hotWalletAddress})`
+                            : 'Brankas Likuiditas Eksternal (Scratch)'}
+                        </div>
+                      </div>
+                      <div className="p-2 bg-[#060910] border border-[#141F32]">
+                        <div className="text-[8.5px] text-[#64748B]">SETTLEMENT TX HASH &amp; TIME</div>
+                        <div className="text-[#CBD5E1] font-bold mt-0.5 truncate">
+                          {activeAuditTrade.settlementTxHash || 'INSTANT_SCRATCH'} •{' '}
+                          {activeAuditTrade.timestamp}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="p-2 bg-[#060A13] border-l-2 border-l-[#00E5FF] border border-[#162238] text-[10px] text-[#CBD5E1] leading-snug">
+                      {activeAuditTrade.note}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="text-xs text-[#94A3B8]">Belum ada posisi yang ditutup.</div>
+                )}
+
+                <div className="pt-1.5 border-t border-[#141F32] flex items-center justify-between text-[9px] font-mono text-[#94A3B8]">
+                  <span>AUTO-SETTLE ENGINE: {autoDirectHotWalletSettle ? 'ON' : 'OFF'}</span>
+                  <span className="text-[#00E676] font-bold">MIN TP FLOOR: +50% → ∞ UNCAPPED</span>
+                </div>
+              </div>
+            </div>
+
+            {/* 3. Unified Execution & Direct Hot-Wallet Settlement Audit Ledger (Zero Empty Gap) */}
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-1 border-t border-[#162134]">
+              <span className="text-[11px] font-extrabold text-[#00E5FF]">
+                LOG AUDIT EKSEKUSI & SETTLEMENT ON-CHAIN ({filteredAuditTrades.length} POSISI DITUTUP)
+              </span>
+              <div className="flex items-center gap-1.5">
+                {(
+                  [
+                    { id: 'ALL', label: `SEMUA (${closedTrades.length})` },
+                    { id: 'PROFIT_IN', label: `📥 MASUK BRANKAS PROFIT (${profitAuditCount})` },
+                    { id: 'LOSS_OUT', label: `📤 KELUAR BRANKAS EKSTERNAL (${lossAuditCount})` },
+                  ] as const
+                ).map((f) => (
+                  <button
+                    key={f.id}
+                    onClick={() => setAuditLogFilter(f.id)}
+                    className={`px-2 py-0.5 text-[9.5px] font-extrabold border ${
+                      auditLogFilter === f.id
+                        ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
+                        : 'bg-[#0C1320] text-[#94A3B8] border-[#1E2B42] hover:text-white'
+                    }`}
+                  >
+                    {f.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div data-testid="execution-audit-log-list" className="space-y-2">
+              {filteredAuditTrades.map((ct) => {
+                const isSelected = (selectedAuditTradeId || closedTrades[0]?.id) === ct.id;
+                const isWin = ct.realizedPnlUsd >= 0;
+                return (
                 <div
                   key={ct.id}
-                  className="p-3 bg-[#090D14] border border-[#1E2736] flex items-center justify-between text-xs"
+                  onClick={() => setSelectedAuditTradeId(ct.id)}
+                  className={`p-3 border flex items-center justify-between text-xs cursor-pointer ${
+                    isSelected
+                      ? isWin
+                        ? 'bg-[#071812] border-[#00E676]'
+                        : 'bg-[#1A080E] border-[#FF1744]'
+                      : 'bg-[#090D14] border-[#1E2736] hover:border-[#2C3F61]'
+                  }`}
                 >
                   <div className="space-y-1">
                     <div className="flex items-center gap-2 flex-wrap">
@@ -4150,13 +4330,14 @@ export function App() {
                     <div className="text-[11px] text-[#CBD5E1]">{ct.note}</div>
                   </div>
 
-                  <div className="text-right">
+                  <div className="text-right shrink-0 pl-3">
                     <div
                       className={`text-sm font-extrabold ${
-                        ct.realizedPnlUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF9F1C]'
+                        ct.realizedPnlUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
                       }`}
                     >
-                      {ct.realizedPnlUsd >= 0 ? '+' : ''}${ct.realizedPnlUsd.toFixed(2)} (
+                      {ct.realizedPnlUsd >= 0 ? '📥 +' : '📤 -'}$
+                      {Math.abs(ct.realizedPnlUsd).toFixed(2)} (
                       {ct.realizedPnlPct >= 0 ? '+' : ''}
                       {ct.realizedPnlPct}%)
                     </div>
@@ -4165,10 +4346,12 @@ export function App() {
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* TAB 5: TRADER PROFILE, MULTI-CHAIN PORTFOLIO & FLEXIBLE NETWORK HUB */}
         {activeTopTab === 'PORTFOLIO_PROFILE' && (

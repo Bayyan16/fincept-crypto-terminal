@@ -109,7 +109,7 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
   return (
     <div
       data-testid="agent-war-room-3d-viz"
-      className="bg-[#050811] border border-[#1B2A44] p-2.5 flex flex-col justify-between gap-2 h-full"
+      className="bg-[#050811] border border-[#1B2A44] p-2.5 flex flex-col gap-2 h-full"
     >
       {/* Top Stage: 2D / Semi-3D Isometric Cybernetic Arena SVG */}
       <div className="w-full bg-gradient-to-b from-[#070D1A] via-[#050912] to-[#04070E] border border-[#162338] relative overflow-hidden">
