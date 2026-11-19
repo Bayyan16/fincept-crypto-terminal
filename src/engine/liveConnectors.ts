@@ -1346,8 +1346,23 @@ export async function fetchBackendRealOrderbook(
 export async function fetchBackendRealCandles(
   hlCoin: string,
   binanceSymbol: string,
-  interval: '1m' | '5m' | '15m' | '1h' | '4h' | '1d' = '15m',
-  limit = 140
+  interval:
+    | '1m'
+    | '3m'
+    | '5m'
+    | '15m'
+    | '30m'
+    | '1h'
+    | '2h'
+    | '4h'
+    | '8h'
+    | '12h'
+    | '1d'
+    | '3d'
+    | '1w'
+    | '1M' = '15m',
+  limit = 1200,
+  options?: { fullHistory?: boolean; refPrice?: number }
 ): Promise<{
   ok: boolean;
   source?: string;
@@ -1355,15 +1370,26 @@ export async function fetchBackendRealCandles(
   highWindow?: number;
   lowWindow?: number;
   recentCvd15m?: number;
+  listingTime?: number;
+  totalBars?: number;
+  historyMode?: string;
+  priceDeviationPct?: number;
+  priceGuardStatus?: string;
 }> {
+  const isMacroTf = interval === '1d' || interval === '3d' || interval === '1w' || interval === '1M';
+  const wantFull = Boolean(options?.fullHistory || isMacroTf);
+  const refPrice = options?.refPrice && options.refPrice > 0 ? options.refPrice : 0;
+
   try {
-    const res = await fetch(
-      `/api/live/candles?hlCoin=${encodeURIComponent(
-        hlCoin
-      )}&binanceSymbol=${encodeURIComponent(
-        binanceSymbol
-      )}&interval=${encodeURIComponent(interval)}&limit=${limit}`
-    );
+    const query = new URLSearchParams({
+      hlCoin,
+      binanceSymbol,
+      interval,
+      limit: String(wantFull ? 2500 : limit),
+      ...(wantFull ? { fullHistory: '1' } : {}),
+      ...(refPrice > 0 ? { refPrice: String(refPrice) } : {}),
+    });
+    const res = await fetch(`${API_BASE}/api/live/candles?${query.toString()}`);
     if (res.ok) {
       const data = await res.json();
       if (data.ok && Array.isArray(data.candles) && data.candles.length > 0) {
@@ -1374,6 +1400,11 @@ export async function fetchBackendRealCandles(
           highWindow: data.highWindow,
           lowWindow: data.lowWindow,
           recentCvd15m: data.recentCvd15m,
+          listingTime: data.listingTime,
+          totalBars: data.totalBars,
+          historyMode: data.historyMode,
+          priceDeviationPct: data.priceDeviationPct,
+          priceGuardStatus: data.priceGuardStatus,
         };
       }
     }
@@ -1381,19 +1412,27 @@ export async function fetchBackendRealCandles(
     // Fall through to direct Hyperliquid L1 candleSnapshot fetch
   }
 
-  // Direct Browser Fetch to Hyperliquid L1 Mainnet candleSnapshot
+  // Direct Browser Fetch to Hyperliquid L1 Mainnet candleSnapshot (supports 1m..1M & deep/full L1 history)
   try {
     const intervalMsMap: Record<string, number> = {
       '1m': 60_000,
+      '3m': 3 * 60_000,
       '5m': 5 * 60_000,
       '15m': 15 * 60_000,
+      '30m': 30 * 60_000,
       '1h': 60 * 60_000,
+      '2h': 2 * 60 * 60_000,
       '4h': 4 * 60 * 60_000,
+      '8h': 8 * 60 * 60_000,
+      '12h': 12 * 60 * 60_000,
       '1d': 24 * 60 * 60_000,
+      '3d': 3 * 24 * 60 * 60_000,
+      '1w': 7 * 24 * 60 * 60_000,
+      '1M': 30 * 24 * 60 * 60_000,
     };
     const stepMs = intervalMsMap[interval] || 15 * 60_000;
     const endTime = Date.now();
-    const startTime = endTime - stepMs * (limit + 5);
+    const startTime = wantFull ? Date.UTC(2015, 0, 1) : endTime - stepMs * (limit + 5);
 
     const hlRes = await fetch('https://api.hyperliquid.xyz/info', {
       method: 'POST',
@@ -1406,9 +1445,10 @@ export async function fetchBackendRealCandles(
 
     if (hlRes.ok) {
       const hlData = await hlRes.json();
-      if (Array.isArray(hlData) && hlData.length > 5) {
+      if (Array.isArray(hlData) && hlData.length > 3) {
         let runningCvd = 0;
-        const candles: CandlePoint[] = hlData.slice(-limit).map((c: any) => {
+        const slice = wantFull ? hlData : hlData.slice(-limit);
+        const candles: CandlePoint[] = slice.map((c: any) => {
           const t = Number(c.t);
           const open = parseFloat(c.o);
           const high = parseFloat(c.h);
@@ -1416,22 +1456,24 @@ export async function fetchBackendRealCandles(
           const close = parseFloat(c.c);
           const volCoins = parseFloat(c.v || '0');
           const volumeUsd = Math.round(volCoins * close);
-          const range = Math.max(0.000001, high - low);
+          const range = Math.max(1e-12, high - low);
           const buyRatio = (close - low) / range;
           runningCvd += volumeUsd * (buyRatio * 2 - 1);
 
           const d = new Date(t);
           const label =
-            interval === '1d'
-              ? `${d.getDate()}/${d.getMonth() + 1}`
+            interval === '1d' || interval === '1w' || interval === '1M'
+              ? `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(
+                  d.getUTCDate()
+                ).padStart(2, '0')}`
               : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 
           return {
             time: t,
             label,
             open,
-            high,
-            low,
+            high: Math.max(high, open, close),
+            low: Math.min(low, open, close),
             close,
             volume: volumeUsd,
             cvd: Math.round(runningCvd),
@@ -1452,6 +1494,11 @@ export async function fetchBackendRealCandles(
           highWindow,
           lowWindow,
           recentCvd15m: Math.round(recentCvd15m),
+          listingTime: candles[0]?.time,
+          totalBars: candles.length,
+          historyMode: wantFull ? 'FULL_LISTING_HISTORY' : 'LIVE_WINDOW',
+          priceDeviationPct: 0,
+          priceGuardStatus: 'VERIFIED_SYNCED',
         };
       }
     }

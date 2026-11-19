@@ -986,7 +986,22 @@ function buildOhlcvFromRealSwaps(trades = [], interval = '15m') {
 
   if (valid.length === 0) return null;
 
-  const tfSec = { '1m': 60, '5m': 300, '15m': 900, '1h': 3600, '4h': 14400, '1d': 86400 };
+  const tfSec = {
+    '1m': 60,
+    '3m': 180,
+    '5m': 300,
+    '15m': 900,
+    '30m': 1800,
+    '1h': 3600,
+    '2h': 7200,
+    '4h': 14400,
+    '8h': 28800,
+    '12h': 43200,
+    '1d': 86400,
+    '3d': 259200,
+    '1w': 604800,
+    '1M': 2592000,
+  };
   const makeBuckets = (stepMs) => {
     const map = new Map();
     for (const x of valid) {
@@ -1037,19 +1052,77 @@ function buildOhlcvFromRealSwaps(trades = [], interval = '15m') {
   });
 }
 
+function formatDexCandleLabel(tsMs, interval) {
+  const dt = new Date(tsMs);
+  if (interval === '1M') {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${months[dt.getUTCMonth()]} ${dt.getUTCFullYear()}`;
+  }
+  if (interval === '1w' || interval === '1d') {
+    return `${dt.getUTCFullYear()}-${String(dt.getUTCMonth() + 1).padStart(2, '0')}-${String(dt.getUTCDate()).padStart(2, '0')}`;
+  }
+  return `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
+}
+
+function resampleDailyCandles(dailyCandles, targetInterval) {
+  if (!Array.isArray(dailyCandles) || dailyCandles.length === 0) return [];
+  if (targetInterval !== '1w' && targetInterval !== '1M') return dailyCandles;
+
+  const buckets = new Map();
+  for (const c of dailyCandles) {
+    const dt = new Date(c.time);
+    let keyMs;
+    if (targetInterval === '1w') {
+      const day = dt.getUTCDay(); // 0=Sun..6=Sat
+      const diffToMonday = day === 0 ? -6 : 1 - day;
+      keyMs = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), dt.getUTCDate() + diffToMonday);
+    } else {
+      keyMs = Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth(), 1);
+    }
+    const existing = buckets.get(keyMs);
+    if (!existing) {
+      buckets.set(keyMs, {
+        time: keyMs,
+        label: formatDexCandleLabel(keyMs, targetInterval),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        volume: c.volume,
+        cvd: c.cvd,
+      });
+    } else {
+      existing.high = Math.max(existing.high, c.high);
+      existing.low = Math.min(existing.low, c.low);
+      existing.close = c.close;
+      existing.volume += c.volume;
+      existing.cvd = c.cvd;
+    }
+  }
+  return [...buckets.values()].sort((a, b) => a.time - b.time);
+}
+
 /**
- * Fetch real-time OHLCV candles for ANY market across all 5 chains:
- *   1. Hyperliquid Perp & Spot native candleSnapshot (235 Perp + 351 Spot pairs)
- *   2. GeckoTerminal On-Chain Pool OHLCV (requested TF -> hour fallback for thin pools)
+ * Fetch real-time & full-listing-history OHLCV candles for ANY market across all 5 chains:
+ *   1. Hyperliquid Perp & Spot native candleSnapshot (235 Perp + 351 Spot pairs, full history since listing)
+ *   2. GeckoTerminal On-Chain Pool OHLCV (up to 1000 daily bars from pool listing, resampled for 1w/1M)
  *   3. Genuine On-Chain Swap Execution OHLCV Aggregation (actual tx_hash swaps for that pool)
  */
-export async function fetchDexPoolOhlcv({ chain = 'solana', poolAddress = '', interval = '15m', limit = 120 } = {}) {
+export async function fetchDexPoolOhlcv({
+  chain = 'solana',
+  poolAddress = '',
+  interval = '15m',
+  limit = 160,
+  fullHistory = false,
+} = {}) {
   const cid = canonicalChainId(chain);
   const addr = String(poolAddress || '').trim();
   const meta = TARGET_CHAIN_META[cid] || TARGET_CHAIN_META.solana;
-  const ohlcvKey = `${cid}:${addr.toLowerCase()}:${interval}:${limit}`;
+  const isMacroTf = interval === '1d' || interval === '1w' || interval === '1M';
+  const wantFull = Boolean(fullHistory || isMacroTf);
+  const ohlcvKey = `${cid}:${addr.toLowerCase()}:${interval}:${wantFull ? 'FULL' : limit}`;
   const cached = cachedOhlcvByKey.get(ohlcvKey);
-  if (cached && Date.now() - cached.ts < 90_000 && cached.candles.length > 0) {
+  if (cached && Date.now() - cached.ts < (wantFull ? 180_000 : 45_000) && cached.candles.length > 0) {
     return cached.candles;
   }
 
@@ -1058,15 +1131,25 @@ export async function fetchDexPoolOhlcv({ chain = 'solana', poolAddress = '', in
     const hlCoinParam = addr.replace(/^hl-(perp|spot)-/, '');
     const intervalMsMap = {
       '1m': 60_000,
+      '3m': 3 * 60_000,
       '5m': 5 * 60_000,
       '15m': 15 * 60_000,
+      '30m': 30 * 60_000,
       '1h': 60 * 60_000,
+      '2h': 2 * 60 * 60_000,
       '4h': 4 * 60 * 60_000,
+      '8h': 8 * 60 * 60_000,
+      '12h': 12 * 60 * 60_000,
       '1d': 24 * 60 * 60_000,
+      '3d': 3 * 24 * 60 * 60_000,
+      '1w': 7 * 24 * 60 * 60_000,
+      '1M': 30 * 24 * 60 * 60_000,
     };
     const stepMs = intervalMsMap[interval] || 15 * 60_000;
     const endTime = Date.now();
-    const startTime = endTime - stepMs * (Math.min(200, Math.max(40, limit)) + 5);
+    const startTime = wantFull
+      ? Date.UTC(2015, 0, 1)
+      : endTime - stepMs * (Math.min(2000, Math.max(600, limit)) + 10);
     const hlRes = await fetchJsonSafe('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1077,7 +1160,8 @@ export async function fetchDexPoolOhlcv({ chain = 'solana', poolAddress = '', in
     });
     if (hlRes?.ok && Array.isArray(hlRes.data) && hlRes.data.length > 2) {
       let runningCvd = 0;
-      const candles = hlRes.data.slice(-limit).map((c) => {
+      const sliceSource = wantFull ? hlRes.data : hlRes.data.slice(-Math.max(limit, 140));
+      const candles = sliceSource.map((c) => {
         const t = Number(c.t);
         const open = parseFloat(c.o);
         const high = parseFloat(c.h);
@@ -1086,25 +1170,41 @@ export async function fetchDexPoolOhlcv({ chain = 'solana', poolAddress = '', in
         const volume = Math.round(parseFloat(c.v || '0') * close);
         const range = Math.max(1e-12, high - low);
         runningCvd += volume * (((close - low) / range) * 2 - 1);
-        const dt = new Date(t);
-        const label =
-          interval === '1d'
-            ? `${dt.getDate()}/${dt.getMonth() + 1}`
-            : `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
-        return { time: t, label, open, high, low, close, volume, cvd: Math.round(runningCvd) };
+        return {
+          time: t,
+          label: formatDexCandleLabel(t, interval),
+          open,
+          high,
+          low,
+          close,
+          volume,
+          cvd: Math.round(runningCvd),
+        };
       });
-      cachedOhlcvByKey.set(ohlcvKey, { ts: Date.now(), candles, source: addr.startsWith('hl-spot-') ? 'HYPERLIQUID_L1_SPOT' : 'HYPERLIQUID_L1_PERP' });
+      cachedOhlcvByKey.set(ohlcvKey, {
+        ts: Date.now(),
+        candles,
+        source: addr.startsWith('hl-spot-') ? 'HYPERLIQUID_L1_SPOT' : 'HYPERLIQUID_L1_PERP',
+      });
       return candles;
     }
   }
 
   const tfMap = {
     '1m': { tf: 'minute', agg: 1 },
+    '3m': { tf: 'minute', agg: 5 },
     '5m': { tf: 'minute', agg: 5 },
     '15m': { tf: 'minute', agg: 15 },
+    '30m': { tf: 'minute', agg: 15 },
     '1h': { tf: 'hour', agg: 1 },
+    '2h': { tf: 'hour', agg: 1 },
     '4h': { tf: 'hour', agg: 4 },
+    '8h': { tf: 'hour', agg: 4 },
+    '12h': { tf: 'hour', agg: 12 },
     '1d': { tf: 'day', agg: 1 },
+    '3d': { tf: 'day', agg: 1 },
+    '1w': { tf: 'day', agg: 1 },
+    '1M': { tf: 'day', agg: 1 },
   };
   const cfg = tfMap[interval] || tfMap['15m'];
   const poolMeta = universePoolMap.get(`${cid}:${addr.toLowerCase()}`);
@@ -1117,8 +1217,9 @@ export async function fetchDexPoolOhlcv({ chain = 'solana', poolAddress = '', in
       : '';
   const tokenParam = validTokenAddr ? `&token=${encodeURIComponent(validTokenAddr)}` : '';
 
+  const gtLimit = wantFull ? 1000 : Math.min(300, Math.max(40, limit));
   const buildGtOhlcvUrl = (tf, agg, tokQ) =>
-    `https://api.geckoterminal.com/api/v2/networks/${meta.gtId}/pools/${encodeURIComponent(addr)}/ohlcv/${tf}?aggregate=${agg}&limit=${Math.min(200, Math.max(20, limit))}${tokQ}`;
+    `https://api.geckoterminal.com/api/v2/networks/${meta.gtId}/pools/${encodeURIComponent(addr)}/ohlcv/${tf}?aggregate=${agg}&limit=${gtLimit}${tokQ}`;
 
   const res = await fetchGtJson(buildGtOhlcvUrl(cfg.tf, cfg.agg, tokenParam), 6500);
   let list = res?.data?.data?.attributes?.ohlcv_list;
@@ -1149,21 +1250,35 @@ export async function fetchDexPoolOhlcv({ chain = 'solana', poolAddress = '', in
   if (Array.isArray(list) && list.length >= 2) {
     const sorted = [...list].reverse();
     let runningCvd = 0;
-    const candles = sorted.map((c) => {
-      const tsMs = Number(c[0]) * 1000;
-      const open = Number(c[1]);
-      const high = Number(c[2]);
-      const low = Number(c[3]);
-      const close = Number(c[4]);
-      const volume = Number(c[5]);
-      const delta = (close >= open ? 1 : -1) * volume;
-      runningCvd += delta;
-      const dt = new Date(tsMs);
-      const label = `${String(dt.getHours()).padStart(2, '0')}:${String(dt.getMinutes()).padStart(2, '0')}`;
-      return { time: tsMs, label, open, high, low, close, volume, cvd: Math.round(runningCvd) };
-    });
-    cachedOhlcvByKey.set(ohlcvKey, { ts: Date.now(), candles });
-    return candles;
+    const rawCandles = sorted
+      .map((c) => {
+        const tsMs = Number(c[0]) * 1000;
+        const open = Number(c[1]);
+        const high = Number(c[2]);
+        const low = Number(c[3]);
+        const close = Number(c[4]);
+        const volume = Number(c[5]);
+        if (!Number.isFinite(tsMs) || !(open > 0) || !(close > 0)) return null;
+        const delta = (close >= open ? 1 : -1) * volume;
+        runningCvd += delta;
+        return {
+          time: tsMs,
+          label: formatDexCandleLabel(tsMs, interval === '1w' || interval === '1M' ? '1d' : interval),
+          open,
+          high: Math.max(high, open, close),
+          low: Math.min(low, open, close),
+          close,
+          volume: Math.max(0, Math.round(volume)),
+          cvd: Math.round(runningCvd),
+        };
+      })
+      .filter(Boolean);
+    const candles =
+      interval === '1w' || interval === '1M' ? resampleDailyCandles(rawCandles, interval) : rawCandles;
+    if (candles.length >= 2) {
+      cachedOhlcvByKey.set(ohlcvKey, { ts: Date.now(), candles });
+      return candles;
+    }
   }
 
   // Last-mile real on-chain fallback: aggregate actual pool swap trades into chronological OHLCV bars

@@ -151,6 +151,14 @@ export function App() {
   const [chartTimeframe, setChartTimeframe] = useState<ChartInterval>('15m');
   const [isLoadingCandles, setIsLoadingCandles] = useState<boolean>(false);
   const [candleSource, setCandleSource] = useState<string>('HYPERLIQUID_L1');
+  const [candleMeta, setCandleMeta] = useState<{
+    listingTime?: number;
+    priceGuardStatus?: string;
+    priceDeviationPct?: number;
+  }>({ priceGuardStatus: 'VERIFIED_SYNCED', priceDeviationPct: 0 });
+  const candleReqSeqRef = useRef<number>(0);
+  const activePriceRef = useRef<number>(INITIAL_MARKETS[0].price);
+  const hasLiveSnapshotRef = useRef<boolean>(false);
 
   const [activeTopTab, setActiveTopTab] = useState<
     'TERMINAL_DESK' | 'DEX_SCREENER' | 'AGENT_SKILLS' | 'PORTFOLIO_LOG' | 'PORTFOLIO_PROFILE'
@@ -189,6 +197,11 @@ export function App() {
   const [dexChartCandles, setDexChartCandles] = useState<CandlePoint[]>([]);
   const [dexChartInterval, setDexChartInterval] = useState<ChartInterval>('15m');
   const [dexChartSource, setDexChartSource] = useState<string>('ONCHAIN_DEX');
+  const [dexChartMeta, setDexChartMeta] = useState<{
+    listingTime?: number;
+    priceGuardStatus?: string;
+    priceDeviationPct?: number;
+  }>({ priceGuardStatus: 'VERIFIED_SYNCED', priceDeviationPct: 0 });
   const [isLoadingDexChart, setIsLoadingDexChart] = useState<boolean>(false);
   const [customDeskPool, setCustomDeskPool] = useState<DexScreenerPoolItem | null>(null);
   const dexChartPanelRef = useRef<HTMLDivElement | null>(null);
@@ -339,8 +352,28 @@ export function App() {
     [markets, positions, lastClosedSymbol, minLiquidityScoreGate, orderSizeUsdInput]
   );
 
+  activePriceRef.current = activePair.price;
+
   const candleKey = `${activePair.symbol}_${chartTimeframe}`;
-  const currentCandles = candlesMap[candleKey] || [];
+  const rawCurrentCandles = candlesMap[candleKey] || [];
+  // Real-time tick lock: keep rightmost live candle synchronized with live on-chain mark price (within 12% guard)
+  const currentCandles = useMemo(() => {
+    if (rawCurrentCandles.length === 0) return rawCurrentCandles;
+    const livePx = activePair.price;
+    if (!Number.isFinite(livePx) || livePx <= 0) return rawCurrentCandles;
+    const last = rawCurrentCandles[rawCurrentCandles.length - 1];
+    if (!last || !(last.close > 0)) return rawCurrentCandles;
+    const devRatio = Math.abs(livePx - last.close) / Math.max(1e-12, last.close);
+    if (devRatio === 0 || devRatio > 0.12) return rawCurrentCandles;
+    const next = rawCurrentCandles.slice();
+    next[next.length - 1] = {
+      ...last,
+      close: livePx,
+      high: Math.max(last.high, livePx),
+      low: Math.min(last.low, livePx),
+    };
+    return next;
+  }, [rawCurrentCandles, activePair.price]);
 
   const forumConsensus = useMemo(
     () =>
@@ -428,13 +461,22 @@ export function App() {
     return markets.filter((m) => m.sector === watchlistSectorFilter).slice(0, 28);
   }, [markets, watchlistSectorFilter, watchlistSearchQuery]);
 
-  // 1. Fetch Real Historical & Live OHLCV Candlesticks from Exchange Gateway
+  // 1. Fetch Real Historical (Up to Full Listing Archive) & Live OHLCV Candlesticks with Multi-Layer Price Guard
   useEffect(() => {
     let mounted = true;
     const isCustomDesk =
       customDeskPool && activePair.symbol === `${(customDeskPool.baseSymbol || customDeskPool.symbol.split('/')[0] || 'TOK').trim()}-DEX`;
+    const isMacroTf =
+      chartTimeframe === '1d' ||
+      chartTimeframe === '3d' ||
+      chartTimeframe === '1w' ||
+      chartTimeframe === '1M';
+
     const loadRealCandles = async (showSpinner = false) => {
+      const reqId = ++candleReqSeqRef.current;
       if (showSpinner) setIsLoadingCandles(true);
+      // Only send client refPrice after live on-chain snapshot has synced (never send stale seed prices as refPrice!)
+      const refPrice = hasLiveSnapshotRef.current || isCustomDesk ? activePriceRef.current : 0;
       let res: {
         ok: boolean;
         candles: CandlePoint[];
@@ -442,15 +484,25 @@ export function App() {
         highWindow?: number;
         lowWindow?: number;
         recentCvd15m?: number;
+        listingTime?: number;
+        priceGuardStatus?: string;
+        priceDeviationPct?: number;
       } = { ok: false, candles: [] };
       if (isCustomDesk && customDeskPool) {
         try {
           const addr = customDeskPool.fullPairAddress || customDeskPool.pairAddress;
           const cid = customDeskPool.chainId || customDeskPool.chain || 'solana';
           const hlCoin = customDeskPool.baseSymbol || customDeskPool.symbol.split('/')[0].trim();
-          const r = await fetch(
-            `/api/live/candles?hlCoin=${encodeURIComponent(hlCoin)}&chain=${encodeURIComponent(cid)}&poolAddress=${encodeURIComponent(addr)}&interval=${chartTimeframe}&limit=140`
-          );
+          const q = new URLSearchParams({
+            hlCoin,
+            chain: cid,
+            poolAddress: addr,
+            interval: chartTimeframe,
+            limit: isMacroTf ? '2500' : '1200',
+            ...(isMacroTf ? { fullHistory: '1' } : {}),
+            ...(refPrice > 0 ? { refPrice: String(refPrice) } : {}),
+          });
+          const r = await fetch(`/api/live/candles?${q.toString()}`);
           if (r.ok) res = await r.json();
         } catch {
           // ignore transient error
@@ -460,14 +512,20 @@ export function App() {
           activePair.hlCoin,
           activePair.binanceSymbol,
           chartTimeframe,
-          140
+          isMacroTf ? 2500 : 1200,
+          { fullHistory: isMacroTf, refPrice }
         );
       }
-      if (!mounted) return;
+      if (!mounted || reqId !== candleReqSeqRef.current) return;
       if (showSpinner) setIsLoadingCandles(false);
 
       if (res.ok && res.candles.length > 0) {
         if (res.source) setCandleSource(res.source);
+        setCandleMeta({
+          listingTime: res.listingTime || res.candles[0]?.time,
+          priceGuardStatus: res.priceGuardStatus || 'VERIFIED_SYNCED',
+          priceDeviationPct: typeof res.priceDeviationPct === 'number' ? res.priceDeviationPct : 0,
+        });
         const latestCandle = res.candles[res.candles.length - 1];
 
         setCandlesMap((prev) => ({
@@ -475,15 +533,34 @@ export function App() {
           [candleKey]: res.candles,
         }));
 
-        // Sync active market pair's real price, 24h High/Low, and real CVD from exchange candles
+        // Layer 2 Client Price Integrity Guard:
+        // Authoritative on-chain sources (Hyperliquid L1 / On-Chain DEX) or pre-snapshot cold boot always sync live price;
+        // secondary fallbacks are guarded within +/- 12% of live on-chain snapshot price!
+        const isAuthoritativeOnChain = Boolean(
+          res.source && /^(HYPERLIQUID_L1|ONCHAIN_DEX|ONCHAIN_SWAPS)/.test(res.source)
+        );
         setMarkets((prev) =>
           prev.map((m) => {
             if (m.symbol !== activePair.symbol) return m;
+            const hasLivePx = hasLiveSnapshotRef.current && Number.isFinite(m.price) && m.price > 0;
+            const candlePx = latestCandle.close;
+            const isCloseSafe =
+              Number.isFinite(candlePx) &&
+              candlePx > 0 &&
+              (isAuthoritativeOnChain ||
+                !hasLivePx ||
+                Math.abs(candlePx - m.price) / Math.max(1e-12, m.price) <= 0.12);
             return {
               ...m,
-              price: latestCandle.close,
-              high24h: res.highWindow && res.highWindow > 0 ? res.highWindow : m.high24h,
-              low24h: res.lowWindow && res.lowWindow > 0 ? res.lowWindow : m.low24h,
+              price: isCloseSafe ? candlePx : m.price,
+              high24h:
+                !isMacroTf && res.highWindow && res.highWindow > 0 && isCloseSafe
+                  ? res.highWindow
+                  : m.high24h,
+              low24h:
+                !isMacroTf && res.lowWindow && res.lowWindow > 0 && isCloseSafe
+                  ? res.lowWindow
+                  : m.low24h,
               cvdDelta15mUsd:
                 typeof res.recentCvd15m === 'number' ? res.recentCvd15m : m.cvdDelta15mUsd,
             };
@@ -493,7 +570,7 @@ export function App() {
     };
 
     loadRealCandles(true);
-    const interval = setInterval(() => loadRealCandles(false), 5000);
+    const interval = setInterval(() => loadRealCandles(false), isMacroTf ? 15_000 : 5000);
     return () => {
       mounted = false;
       clearInterval(interval);
@@ -549,6 +626,7 @@ export function App() {
       if (!mounted) return;
 
       if (snap.ok && snap.hlAssets) {
+        hasLiveSnapshotRef.current = true;
         setLiveFeedMode({
           hyperliquid: 'LIVE',
           binance: 'LIVE',
@@ -1584,16 +1662,29 @@ export function App() {
     const addr = pool.fullPairAddress || pool.pairAddress;
     const cid = pool.chainId || pool.chain || 'solana';
     const hlCoin = pool.baseSymbol || pool.symbol.split('/')[0].trim();
+    const isMacroTf = tf === '1d' || tf === '3d' || tf === '1w' || tf === '1M';
     if (showSpinner) setIsLoadingDexChart(true);
     try {
-      const res = await fetch(
-        `/api/live/candles?hlCoin=${encodeURIComponent(hlCoin)}&chain=${encodeURIComponent(cid)}&poolAddress=${encodeURIComponent(addr)}&interval=${tf}&limit=140`
-      );
+      const q = new URLSearchParams({
+        hlCoin,
+        chain: cid,
+        poolAddress: addr,
+        interval: tf,
+        limit: isMacroTf ? '2500' : '1200',
+        ...(isMacroTf ? { fullHistory: '1' } : {}),
+        ...(pool.priceUsd > 0 ? { refPrice: String(pool.priceUsd) } : {}),
+      });
+      const res = await fetch(`/api/live/candles?${q.toString()}`);
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.candles) && data.candles.length > 0) {
           setDexChartCandles(data.candles);
           if (data.source) setDexChartSource(data.source);
+          setDexChartMeta({
+            listingTime: data.listingTime || data.candles[0]?.time,
+            priceGuardStatus: data.priceGuardStatus || 'VERIFIED_SYNCED',
+            priceDeviationPct: typeof data.priceDeviationPct === 'number' ? data.priceDeviationPct : 0,
+          });
           setCommandFeedback(
             `Real Chart Loaded (${data.source}): ${pool.symbol} (${pool.chain}) @ $${pool.priceUsd}`
           );
@@ -2161,120 +2252,8 @@ export function App() {
               </div>
 
               <div className="flex flex-col lg:grid lg:grid-cols-12 flex-1 min-h-0 divide-y lg:divide-y-0 lg:divide-x divide-[#1E2736] border-b border-[#1E2736]">
-                {/* Left Stats Column (Clean, Well-Spaced Real Market Telemetry — Placed Below Chart on Mobile) */}
-                <div className="order-3 lg:order-1 lg:col-span-3 flex flex-col sm:grid sm:grid-cols-3 lg:flex lg:flex-col p-2.5 bg-[#070A0F] lg:overflow-y-auto text-[10.5px] gap-3">
-                  <div>
-                    <div className="text-[#FF9F1C] font-extrabold text-[10px] border-b border-[#1E2736] pb-0.5 mb-1.5 uppercase">
-                      REAL MARKET TELEMETRY
-                    </div>
-                    <div className="space-y-1">
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">MARK PRICE</span>
-                        <span className="text-[#00E5FF] font-bold">
-                          ${activePair.price.toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">24H HIGH</span>
-                        <span className="text-[#00E676] font-bold">
-                          ${activePair.high24h.toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">24H LOW</span>
-                        <span className="text-[#FF1744] font-bold">
-                          ${activePair.low24h.toLocaleString()}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">LIVE SPREAD</span>
-                        <span className="text-[#F8FAFC] font-bold">{orderbook.spreadBps} bps</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">BOOK DEPTH</span>
-                        <span className="text-[#FF9F1C] font-bold">
-                          {formatDepthOrVol(activePair.depthPlusMinusHalfPctUsd)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-[#00E5FF] font-extrabold text-[10px] border-b border-[#1E2736] pb-0.5 mb-1.5 uppercase">
-                      ORDERFLOW & WHALE BIAS
-                    </div>
-                    <div className="space-y-1">
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">W-OBI SCORE</span>
-                        <span
-                          className={`font-extrabold ${
-                            orderbook.obiPercent >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
-                          }`}
-                        >
-                          {orderbook.obiPercent >= 0 ? '+' : ''}
-                          {orderbook.obiPercent}%
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">CVD DELTA</span>
-                        <span
-                          className={`font-bold ${
-                            activePair.cvdDelta15mUsd >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
-                          }`}
-                        >
-                          {activePair.cvdDelta15mUsd >= 0 ? '+' : '-'}
-                          {formatDepthOrVol(Math.abs(activePair.cvdDelta15mUsd))}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">OPEN INTEREST</span>
-                        <span className="text-[#00E5FF] font-bold">
-                          {formatDepthOrVol(activePair.openInterestUsd)}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">FUNDING 1H</span>
-                        <span className="text-[#FF9F1C] font-bold">
-                          {activePair.fundingRate >= 0 ? '+' : ''}
-                          {activePair.fundingRate.toFixed(4)}%
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">ON-CHAIN LP</span>
-                        <span className="text-[#00E676] font-bold">
-                          {formatDepthOrVol(activePair.dexPoolTvlUsd)}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-[#D500F9] font-extrabold text-[10px] border-b border-[#1E2736] pb-0.5 mb-1.5 uppercase">
-                      ZERO-SLOP RISK ENGINE
-                    </div>
-                    <div className="space-y-1">
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">EXEC MODE</span>
-                        <span className="text-[#00E676] font-bold">MAKER POST-ONLY</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">BE LOCK AT</span>
-                        <span className="text-[#FF9F1C] font-bold">+{autoBreakevenTriggerPct}%</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">MAX SCRATCH</span>
-                        <span className="text-[#00E5FF] font-bold">{maxMicroLossScratchPct}%</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#94A3B8]">DAILY STOP</span>
-                        <span className="text-[#FF1744] font-bold">-${maxDailyDrawdownUsd}</span>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Center Real-Market Candlestick Chart / Sub-Tabs (First & Full-Width on Mobile) */}
-                <div className="order-1 lg:order-2 lg:col-span-6 flex flex-col min-h-[390px] sm:min-h-[430px] lg:min-h-0 overflow-hidden">
+                {/* Wide Real-Market TradingView Candlestick Chart / Sub-Tabs (Full-Width on Mobile, 9/12 on Desktop) */}
+                <div className="order-1 lg:order-1 lg:col-span-9 flex flex-col min-h-[410px] sm:min-h-[450px] lg:min-h-0 overflow-hidden">
                   {activeSubTab === 'OVERVIEW' && (
                     <div key="OVERVIEW" className="anim-fade flex flex-col h-full min-h-0">
                       <CandlestickOrderflowChart
@@ -2286,6 +2265,9 @@ export function App() {
                         orderbook={orderbook}
                         isLoadingCandles={isLoadingCandles}
                         candleSource={candleSource}
+                        listingTime={candleMeta.listingTime}
+                        priceGuardStatus={candleMeta.priceGuardStatus}
+                        priceDeviationPct={candleMeta.priceDeviationPct}
                       />
                     </div>
                   )}
@@ -2763,7 +2745,7 @@ export function App() {
                 </div>
 
                 {/* Right Confluence & 10-Level Live Orderbook Column (No Clipped Text) */}
-                <div className="order-2 lg:order-3 lg:col-span-3 flex flex-col p-2.5 bg-[#070A0F] lg:overflow-y-auto text-[10.5px] space-y-3">
+                <div className="order-2 lg:order-2 lg:col-span-3 flex flex-col p-2.5 bg-[#070A0F] lg:overflow-y-auto text-[10.5px] space-y-3">
                   <div>
                     <div className="text-[#D500F9] font-extrabold text-[10px] border-b border-[#1E2736] pb-0.5 mb-1.5 uppercase flex items-center justify-between">
                       <span>4-AGENT FORUM SCORES</span>
@@ -2830,7 +2812,19 @@ export function App() {
                           </div>
                         ))}
                       <div className="py-0.5 my-1 text-center bg-[#101724] border border-[#1E2B40] text-[#FF9F1C] font-extrabold text-[10px]">
-                        MID ${activePair.price.toLocaleString()} ({orderbook.spreadBps} bps)
+                        MID $
+                        {(() => {
+                          const liveMid =
+                            orderbook.bids[0]?.price && orderbook.asks[0]?.price
+                              ? (orderbook.bids[0].price + orderbook.asks[0].price) / 2
+                              : activePair.price;
+                          return liveMid >= 100
+                            ? liveMid.toLocaleString(undefined, { maximumFractionDigits: 2 })
+                            : liveMid >= 1
+                              ? liveMid.toFixed(4)
+                              : liveMid.toPrecision(5);
+                        })()}{' '}
+                        ({orderbook.spreadBps} bps)
                       </div>
                       {orderbook.bids.slice(0, 5).map((b, i) => (
                         <div
@@ -3425,6 +3419,9 @@ export function App() {
                             }}
                             isLoadingCandles={isLoadingDexChart}
                             candleSource={dexChartSource}
+                            listingTime={dexChartMeta.listingTime}
+                            priceGuardStatus={dexChartMeta.priceGuardStatus}
+                            priceDeviationPct={dexChartMeta.priceDeviationPct}
                           />
                         ) : (
                           <div className="flex-1 flex flex-col items-center justify-center p-4 text-center space-y-2">
@@ -3433,8 +3430,8 @@ export function App() {
                                 ? `Memuat OHLCV On-Chain Real untuk ${selectedDexChartPool.symbol} (${selectedDexChartPool.chain})...`
                                 : `Data candlestick OHLCV untuk pool ${selectedDexChartPool.symbol} (${selectedDexChartPool.chain}) sedang disinkronkan dari indexer (${dexChartSource}).`}
                             </div>
-                            <div className="flex items-center gap-2">
-                              {(['1m', '5m', '15m', '1h', '4h', '1d'] as ChartInterval[]).map((tf) => (
+                            <div className="flex flex-wrap items-center justify-center gap-1.5">
+                              {(['1m', '5m', '15m', '1h', '4h', '1d', '1w', '1M'] as ChartInterval[]).map((tf) => (
                                 <button
                                   key={tf}
                                   onClick={() => {

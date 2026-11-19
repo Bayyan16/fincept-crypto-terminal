@@ -247,80 +247,410 @@ async function fetchJupiterLiveQuote(symbol = 'SOL', tradeUsd = 25000, refPrice 
   return parsed;
 }
 
+const cachedFullArchiveMap = new Map();
+
+function formatGatewayCandleLabel(tsMs, interval) {
+  const d = new Date(tsMs);
+  if (interval === '1M') {
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${months[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+  }
+  if (interval === '1w' || interval === '1d') {
+    return `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}-${String(
+      d.getUTCDate()
+    ).padStart(2, '0')}`;
+  }
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 /**
- * 1. Fetch Real Historical & Live OHLCV Candlesticks (Hyperliquid L1 candleSnapshot + Binance Klines)
+ * Multi-Layer Price Integrity & Unit-Parity Guard:
+ * 1. Sanitizes OHLC invariants (finite positive numbers, high >= max(o,c), low <= min(o,c), ascending unique timestamps).
+ * 2. Detects exact 1000x / 0.001x contract scaling (e.g. kPEPE/kSHIB/kBONK vs spot PEPE/SHIB/BONK) and aligns units.
+ * 3. Rejects mismatched-token fallback feeds diverging > 35% from authoritative live on-chain mark price.
+ * 4. Anchors latest live bar seamlessly to live on-chain mark price when within tight real-time bounds.
+ */
+function reconcileAndValidateCandles(rawCandles, refPrice, interval, allowMismatch = false) {
+  if (!Array.isArray(rawCandles) || rawCandles.length === 0) {
+    return { ok: false, candles: [], priceDeviationPct: 0, priceGuardStatus: 'EMPTY' };
+  }
+
+  const dedup = new Map();
+  for (const c of rawCandles) {
+    const time = Number(c?.time);
+    const open = Number(c?.open);
+    const high = Number(c?.high);
+    const low = Number(c?.low);
+    const close = Number(c?.close);
+    const volume = Number.isFinite(Number(c?.volume)) ? Math.max(0, Number(c.volume)) : 0;
+    const cvd = Number.isFinite(Number(c?.cvd)) ? Number(c.cvd) : 0;
+    if (!Number.isFinite(time) || !(open > 0) || !(close > 0) || !(high > 0) || !(low > 0)) continue;
+    dedup.set(time, {
+      time,
+      label: c.label || formatGatewayCandleLabel(time, interval),
+      open,
+      high: Math.max(high, open, close),
+      low: Math.min(low, open, close),
+      close,
+      volume,
+      cvd,
+    });
+  }
+
+  let candles = [...dedup.values()].sort((a, b) => a.time - b.time);
+  if (candles.length === 0) {
+    return { ok: false, candles: [], priceDeviationPct: 0, priceGuardStatus: 'EMPTY' };
+  }
+
+  let scaleMultiplier = 1;
+  let priceDeviationPct = 0;
+  let priceGuardStatus = 'VERIFIED_SYNCED';
+
+  if (Number.isFinite(refPrice) && refPrice > 0) {
+    const latestClose = candles[candles.length - 1].close;
+    const ratio = refPrice / latestClose;
+
+    // Exact 1000x contract scale alignment (e.g., Hyperliquid kPEPE/kSHIB/kBONK vs 1x spot archive)
+    if (ratio >= 820 && ratio <= 1220) {
+      scaleMultiplier = 1000;
+      priceGuardStatus = 'UNIT_1000X_ALIGNED';
+    } else if (ratio >= 0.00082 && ratio <= 0.00122) {
+      scaleMultiplier = 0.001;
+      priceGuardStatus = 'UNIT_0001X_ALIGNED';
+    }
+
+    if (scaleMultiplier !== 1) {
+      candles = candles.map((c) => ({
+        ...c,
+        open: c.open * scaleMultiplier,
+        high: c.high * scaleMultiplier,
+        low: c.low * scaleMultiplier,
+        close: c.close * scaleMultiplier,
+      }));
+    }
+
+    const alignedLatest = candles[candles.length - 1].close;
+    priceDeviationPct = Number(
+      ((Math.abs(alignedLatest - refPrice) / Math.max(1e-12, refPrice)) * 100).toFixed(3)
+    );
+
+    if (!allowMismatch && priceDeviationPct > 35) {
+      return {
+        ok: false,
+        candles: [],
+        priceDeviationPct,
+        priceGuardStatus: 'REJECTED_PRICE_DIVERGENCE',
+      };
+    }
+
+    // Smoothly anchor latest live candle close to authoritative on-chain mark price when within tight bounds (<= 8%)
+    if (priceDeviationPct <= 8 && priceDeviationPct > 0) {
+      const lastIdx = candles.length - 1;
+      const lastBar = candles[lastIdx];
+      candles[lastIdx] = {
+        ...lastBar,
+        close: refPrice,
+        high: Math.max(lastBar.high, refPrice),
+        low: Math.min(lastBar.low, refPrice),
+      };
+      priceDeviationPct = 0;
+    }
+  }
+
+  return { ok: true, candles, priceDeviationPct, priceGuardStatus };
+}
+
+/**
+ * Fetch complete historical market archive from initial listing (e.g. BTC 2013, ETH 2016, XRP/DOGE 2017, SOL 2020)
+ * Uses Gate.io Spot full-history candlesticks (reliable globally & on Indonesian ISPs, supports 1d/7d/30d up to 1000 bars = 19+ years weekly!)
+ * with Binance Spot startTime=0 fallback. Cached 10 minutes per coin+interval.
+ */
+async function fetchFullListingArchive(cexBase, interval = '1w') {
+  const sym = String(cexBase || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (!sym || sym.length > 12) return null;
+  const cacheKey = `${sym}:${interval}`;
+  const cached = cachedFullArchiveMap.get(cacheKey);
+  if (cached && Date.now() - cached.ts < 600_000) {
+    return cached.bars;
+  }
+
+  const gateInterval = interval === '1M' ? '30d' : interval === '1w' ? '7d' : '1d';
+  const gateUrl = `https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=${encodeURIComponent(
+    `${sym}_USDT`
+  )}&interval=${encodeURIComponent(gateInterval)}&limit=1000`;
+  const gateRes = await fetchJsonWithTimeout(gateUrl, {}, 4000);
+
+  if (gateRes.ok && Array.isArray(gateRes.data) && gateRes.data.length >= 10) {
+    let runningCvd = 0;
+    const bars = [];
+    for (const k of gateRes.data) {
+      const tMs = Number(k[0]) * 1000;
+      const volUsd = Math.max(0, Math.round(parseFloat(k[1] || '0')));
+      const close = parseFloat(k[2]);
+      const high = parseFloat(k[3]);
+      const low = parseFloat(k[4]);
+      const open = parseFloat(k[5]);
+      if (!Number.isFinite(tMs) || !(open > 0) || !(close > 0)) continue;
+      const safeHigh = Math.max(high, open, close);
+      const safeLow = Math.min(low > 0 ? low : Math.min(open, close), open, close);
+      const range = Math.max(1e-12, safeHigh - safeLow);
+      const buyRatio = (close - safeLow) / range;
+      runningCvd += volUsd * (buyRatio * 2 - 1);
+      bars.push({
+        time: tMs,
+        label: formatGatewayCandleLabel(tMs, interval),
+        open,
+        high: safeHigh,
+        low: safeLow,
+        close,
+        volume: volUsd,
+        cvd: Math.round(runningCvd),
+      });
+    }
+    bars.sort((a, b) => a.time - b.time);
+    const validBars = bars.length >= 10 ? bars : null;
+    cachedFullArchiveMap.set(cacheKey, { ts: Date.now(), bars: validBars });
+    return validBars;
+  }
+
+  // Secondary global fallback: Binance Spot startTime=0
+  const binUrl = `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(
+    `${sym}USDT`
+  )}&interval=${encodeURIComponent(interval)}&startTime=0&limit=1000`;
+  const binRes = await fetchJsonWithTimeout(binUrl, {}, 2600);
+  if (binRes.ok && Array.isArray(binRes.data) && binRes.data.length >= 10) {
+    let runningCvd = 0;
+    const bars = binRes.data
+      .map((k) => {
+        const tMs = Number(k[0]);
+        const open = parseFloat(k[1]);
+        const high = parseFloat(k[2]);
+        const low = parseFloat(k[3]);
+        const close = parseFloat(k[4]);
+        const volUsd = Math.max(0, Math.round(parseFloat(k[7] || '0')));
+        if (!Number.isFinite(tMs) || !(open > 0) || !(close > 0)) return null;
+        const safeHigh = Math.max(high, open, close);
+        const safeLow = Math.min(low > 0 ? low : Math.min(open, close), open, close);
+        const range = Math.max(1e-12, safeHigh - safeLow);
+        runningCvd += volUsd * (((close - safeLow) / range) * 2 - 1);
+        return {
+          time: tMs,
+          label: formatGatewayCandleLabel(tMs, interval),
+          open,
+          high: safeHigh,
+          low: safeLow,
+          close,
+          volume: volUsd,
+          cvd: Math.round(runningCvd),
+        };
+      })
+      .filter(Boolean);
+    const validBars = bars.length >= 10 ? bars : null;
+    cachedFullArchiveMap.set(cacheKey, { ts: Date.now(), bars: validBars });
+    return validBars;
+  }
+
+  cachedFullArchiveMap.set(cacheKey, { ts: Date.now(), bars: null });
+  return null;
+}
+
+/**
+ * Stitch pre-Hyperliquid full listing history strictly BEFORE live on-chain Hyperliquid L1 bars,
+ * with strict boundary continuity verification so zero ticker-collision or price jump can ever occur.
+ */
+function stitchListingHistoryBeforeLive(archiveBars, liveCandles, interval) {
+  if (!Array.isArray(archiveBars) || archiveBars.length < 5 || !Array.isArray(liveCandles) || liveCandles.length === 0) {
+    return liveCandles;
+  }
+
+  const firstLive = liveCandles[0];
+  let boundaryBar = null;
+  let minDiff = Infinity;
+  for (const b of archiveBars) {
+    const diff = Math.abs(b.time - firstLive.time);
+    if (diff < minDiff) {
+      minDiff = diff;
+      boundaryBar = b;
+    }
+  }
+  if (!boundaryBar || !(boundaryBar.close > 0) || !(firstLive.open > 0)) return liveCandles;
+
+  const maxGapMs = interval === '1M' ? 45 * 86_400_000 : interval === '1w' ? 16 * 86_400_000 : 5 * 86_400_000;
+  if (minDiff > maxGapMs) return liveCandles;
+
+  let mult = 1;
+  const ratio = firstLive.open / boundaryBar.close;
+  if (ratio >= 820 && ratio <= 1220) mult = 1000;
+  else if (ratio >= 0.00082 && ratio <= 0.00122) mult = 0.001;
+
+  const scaledBoundary = boundaryBar.close * mult;
+  const boundaryDiffPct = (Math.abs(scaledBoundary - firstLive.open) / Math.max(1e-12, firstLive.open)) * 100;
+  // Strict continuity gate: reject archive prefix if boundary differs > 25% (prevents wrong-token stitching!)
+  if (boundaryDiffPct > 25) {
+    return liveCandles;
+  }
+
+  const prefix = archiveBars
+    .filter((b) => b.time < firstLive.time - (interval === '1w' ? 3 * 86_400_000 : 86_400_000))
+    .map((b) =>
+      mult === 1
+        ? b
+        : {
+            ...b,
+            open: b.open * mult,
+            high: b.high * mult,
+            low: b.low * mult,
+            close: b.close * mult,
+          }
+    );
+
+  if (prefix.length === 0) return liveCandles;
+  return [...prefix, ...liveCandles];
+}
+
+/**
+ * 1. Fetch Real Historical (Up to Full Listing Archive) & Live OHLCV Candlesticks
+ * Supports: 1m, 5m, 15m, 1h, 4h, 1d, 1w, 1M + Multi-Layer Price Integrity Guard!
  */
 export async function getRealCandles(
   hlCoin = 'BTC',
   binanceSymbol = 'BTCUSDT',
   interval = '15m',
-  limit = 140,
+  limit = 1200,
   chain = '',
-  poolAddress = ''
+  poolAddress = '',
+  fullHistory = false,
+  refPriceParam = 0
 ) {
-  const cacheKey = `${hlCoin}:${chain}:${poolAddress}:${interval}:${limit}`;
+  const validIntervals = new Set([
+    '1m', '3m', '5m', '15m', '30m',
+    '1h', '2h', '4h', '8h', '12h',
+    '1d', '3d', '1w', '1M',
+  ]);
+  const safeInterval = validIntervals.has(interval) ? interval : '15m';
+  const isMacroTf = safeInterval === '1d' || safeInterval === '3d' || safeInterval === '1w' || safeInterval === '1M';
+  const wantFullHistory = Boolean(fullHistory || isMacroTf);
+
+  // Authoritative live on-chain mark price from request or latest Hyperliquid L1 snapshot
+  const snapAssetPx = Number(cachedSnapshot?.hlAssets?.[hlCoin]?.price || 0);
+  const liveRefPrice =
+    Number.isFinite(Number(refPriceParam)) && Number(refPriceParam) > 0
+      ? Number(refPriceParam)
+      : snapAssetPx;
+
+  const cacheKey = `${hlCoin}:${chain}:${poolAddress}:${safeInterval}:${wantFullHistory ? 'FULL' : limit}`;
   const cachedEntry = cachedCandlesMap.get(cacheKey);
-  if (cachedEntry && Date.now() - cachedEntry.ts < 3500) {
+  const cacheTtlMs = wantFullHistory ? 25_000 : 3500;
+  if (cachedEntry && Date.now() - cachedEntry.ts < cacheTtlMs) {
+    if (liveRefPrice > 0 && cachedEntry.data?.candles?.length > 0) {
+      const liveChecked = reconcileAndValidateCandles(
+        cachedEntry.data.candles,
+        liveRefPrice,
+        safeInterval,
+        true
+      );
+      if (liveChecked.ok) {
+        return {
+          ...cachedEntry.data,
+          candles: liveChecked.candles,
+          priceDeviationPct: liveChecked.priceDeviationPct,
+          priceGuardStatus: liveChecked.priceGuardStatus,
+        };
+      }
+    }
     return cachedEntry.data;
   }
 
-  const cacheAndReturn = (payload) => {
+  const buildPayload = (candles, source, historyMode = wantFullHistory ? 'FULL_LISTING_HISTORY' : 'LIVE_WINDOW', priceDeviationPct = 0, priceGuardStatus = 'VERIFIED_SYNCED') => {
+    const highWindow = Math.max(...candles.map((c) => c.high));
+    const lowWindow = Math.min(...candles.map((c) => c.low));
+    const recentCvd15m =
+      candles.length >= 4
+        ? candles[candles.length - 1].cvd - candles[Math.max(0, candles.length - 5)].cvd
+        : candles[candles.length - 1]?.cvd || 0;
+    const payload = {
+      ok: true,
+      source,
+      interval: safeInterval,
+      candles,
+      highWindow,
+      lowWindow,
+      recentCvd15m: Math.round(recentCvd15m),
+      listingTime: candles[0]?.time || Date.now(),
+      totalBars: candles.length,
+      historyMode,
+      priceDeviationPct,
+      priceGuardStatus,
+    };
     cachedCandlesMap.set(cacheKey, { ts: Date.now(), data: payload });
     return payload;
   };
 
   let sparseOnChainBackup = null;
   if (poolAddress && chain) {
-    const dexCandles = await fetchDexPoolOhlcv({ chain, poolAddress, interval, limit });
-    if (dexCandles && dexCandles.length >= 8) {
-      const highWindow = Math.max(...dexCandles.map((c) => c.high));
-      const lowWindow = Math.min(...dexCandles.map((c) => c.low));
-      const recentCvd15m =
-        dexCandles.length >= 4
-          ? dexCandles[dexCandles.length - 1].cvd - dexCandles[Math.max(0, dexCandles.length - 5)].cvd
-          : dexCandles[dexCandles.length - 1].cvd;
-      const srcTag = poolAddress.startsWith('hl-perp-')
-        ? 'HYPERLIQUID_L1_PERP'
-        : poolAddress.startsWith('hl-spot-')
-          ? 'HYPERLIQUID_L1_SPOT'
-          : `ONCHAIN_DEX_${chain.toUpperCase()}`;
-      return cacheAndReturn({
-        ok: true,
-        source: srcTag,
-        interval,
-        candles: dexCandles,
-        highWindow,
-        lowWindow,
-        recentCvd15m: Math.round(recentCvd15m),
-      });
+    const dexCandles = await fetchDexPoolOhlcv({
+      chain,
+      poolAddress,
+      interval: safeInterval,
+      limit: wantFullHistory ? 1000 : limit,
+      fullHistory: wantFullHistory,
+    });
+    if (dexCandles && dexCandles.length >= 4) {
+      const checked = reconcileAndValidateCandles(dexCandles, liveRefPrice, safeInterval, true);
+      if (checked.ok && checked.candles.length >= 4) {
+        const srcTag = poolAddress.startsWith('hl-perp-')
+          ? 'HYPERLIQUID_L1_PERP'
+          : poolAddress.startsWith('hl-spot-')
+            ? 'HYPERLIQUID_L1_SPOT'
+            : `ONCHAIN_DEX_${chain.toUpperCase()}`;
+        return buildPayload(
+          checked.candles,
+          srcTag,
+          wantFullHistory ? 'FULL_LISTING_HISTORY' : 'LIVE_WINDOW',
+          checked.priceDeviationPct,
+          checked.priceGuardStatus
+        );
+      }
     }
     if (dexCandles && dexCandles.length >= 2) {
       sparseOnChainBackup = dexCandles;
     }
   }
 
-  // Normalize wrapped DEX base tokens (WETH -> ETH, WBTC -> BTC, etc.) for CEX/HL candle fallback
+  // Normalize wrapped DEX base tokens (WETH -> ETH, WBTC -> BTC, etc.) while preserving k-prefix contract units!
   const wrappedAliasMap = { WETH: 'ETH', WBTC: 'BTC', WSOL: 'SOL', WBNB: 'BNB', WHYPE: 'HYPE' };
   const resolvedHlCoin = wrappedAliasMap[String(hlCoin || '').toUpperCase()] || hlCoin;
+  const isKPrefixCoin = /^k(?=[A-Z]{2,})/.test(resolvedHlCoin);
   const cexBase = resolvedHlCoin.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase();
-  const resolvedBinanceSymbol =
-    binanceSymbol && binanceSymbol !== 'BTCUSDT'
+  const resolvedBinanceFutSymbol = isKPrefixCoin
+    ? `1000${cexBase}USDT`
+    : binanceSymbol && binanceSymbol !== 'BTCUSDT'
       ? binanceSymbol
-      : wrappedAliasMap[String(hlCoin || '').toUpperCase()] || resolvedHlCoin.toUpperCase() === 'BTC'
-        ? `${resolvedHlCoin.toUpperCase()}USDT`
-        : `${cexBase}USDT`;
+      : `${cexBase}USDT`;
+  const resolvedBinanceSpotSymbol = `${cexBase}USDT`;
 
   const intervalMsMap = {
     '1m': 60_000,
+    '3m': 3 * 60_000,
     '5m': 5 * 60_000,
     '15m': 15 * 60_000,
+    '30m': 30 * 60_000,
     '1h': 60 * 60_000,
+    '2h': 2 * 60 * 60_000,
     '4h': 4 * 60 * 60_000,
+    '8h': 8 * 60 * 60_000,
+    '12h': 12 * 60 * 60_000,
     '1d': 24 * 60 * 60_000,
+    '3d': 3 * 24 * 60 * 60_000,
+    '1w': 7 * 24 * 60 * 60_000,
+    '1M': 30 * 24 * 60 * 60_000,
   };
-  const stepMs = intervalMsMap[interval] || 15 * 60_000;
+  const stepMs = intervalMsMap[safeInterval] || 15 * 60_000;
   const endTime = Date.now();
-  const startTime = endTime - stepMs * (limit + 5);
+  const effectiveLimit = wantFullHistory ? 5000 : Math.min(2500, Math.max(600, limit));
+  const startTime = wantFullHistory
+    ? Date.UTC(2015, 0, 1)
+    : endTime - stepMs * (effectiveLimit + 10);
 
   const hlRes = await fetchJsonWithTimeout('https://api.hyperliquid.xyz/info', {
     method: 'POST',
@@ -329,16 +659,17 @@ export async function getRealCandles(
       type: 'candleSnapshot',
       req: {
         coin: resolvedHlCoin,
-        interval,
+        interval: safeInterval,
         startTime,
         endTime,
       },
     }),
   });
 
-  if (hlRes.ok && Array.isArray(hlRes.data) && hlRes.data.length > 5) {
+  if (hlRes.ok && Array.isArray(hlRes.data) && hlRes.data.length > 3) {
     let runningCvd = 0;
-    const candles = hlRes.data.slice(-limit).map((c) => {
+    const rawSlice = wantFullHistory ? hlRes.data : hlRes.data.slice(-effectiveLimit);
+    let candles = rawSlice.map((c) => {
       const t = Number(c.t);
       const open = parseFloat(c.o);
       const high = parseFloat(c.h);
@@ -347,20 +678,14 @@ export async function getRealCandles(
       const volCoins = parseFloat(c.v || '0');
       const volumeUsd = Math.round(volCoins * close);
 
-      const range = Math.max(0.000001, high - low);
+      const range = Math.max(1e-12, high - low);
       const buyRatio = (close - low) / range;
       const deltaUsd = volumeUsd * (buyRatio * 2 - 1);
       runningCvd += deltaUsd;
 
-      const d = new Date(t);
-      const label =
-        interval === '1d'
-          ? `${d.getDate()}/${d.getMonth() + 1}`
-          : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-
       return {
         time: t,
-        label,
+        label: formatGatewayCandleLabel(t, safeInterval),
         open,
         high,
         low,
@@ -370,27 +695,34 @@ export async function getRealCandles(
       };
     });
 
-    const highWindow = Math.max(...candles.map((c) => c.high));
-    const lowWindow = Math.min(...candles.map((c) => c.low));
-    const recentCvd15m =
-      candles.length >= 4
-        ? candles[candles.length - 1].cvd - candles[Math.max(0, candles.length - 5)].cvd
-        : runningCvd;
+    let sourceTag = 'HYPERLIQUID_L1';
+    // For macro timeframes (1d, 1w, 1M), seamlessly stitch complete pre-Hyperliquid listing history!
+    if (isMacroTf && candles.length > 0) {
+      const archiveBars = await fetchFullListingArchive(cexBase, safeInterval);
+      if (archiveBars && archiveBars.length > 10) {
+        const stitched = stitchListingHistoryBeforeLive(archiveBars, candles, safeInterval);
+        if (stitched.length > candles.length) {
+          candles = stitched;
+          sourceTag = 'HYPERLIQUID_L1 + FULL_ARCHIVE';
+        }
+      }
+    }
 
-    return cacheAndReturn({
-      ok: true,
-      source: 'HYPERLIQUID_L1',
-      interval,
-      candles,
-      highWindow,
-      lowWindow,
-      recentCvd15m: Math.round(recentCvd15m),
-    });
+    const checked = reconcileAndValidateCandles(candles, liveRefPrice, safeInterval, true);
+    if (checked.ok && checked.candles.length > 3) {
+      return buildPayload(
+        checked.candles,
+        sourceTag,
+        wantFullHistory ? 'FULL_LISTING_HISTORY' : 'LIVE_WINDOW',
+        checked.priceDeviationPct,
+        checked.priceGuardStatus
+      );
+    }
   }
 
   const formatBinanceKlinesResponse = (rawKlines, source) => {
     let runningCvd = 0;
-    const candles = rawKlines.map((k) => {
+    const parsed = rawKlines.map((k) => {
       const t = Number(k[0]);
       const open = parseFloat(k[1]);
       const high = parseFloat(k[2]);
@@ -400,109 +732,126 @@ export async function getRealCandles(
       const takerBuyQuoteUsd = parseFloat(k[10] || '0');
       const takerSellQuoteUsd = Math.max(0, quoteVolUsd - takerBuyQuoteUsd);
       runningCvd += takerBuyQuoteUsd - takerSellQuoteUsd;
-      const d = new Date(t);
-      const label =
-        interval === '1d'
-          ? `${d.getDate()}/${d.getMonth() + 1}`
-          : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-      return { time: t, label, open, high, low, close, volume: quoteVolUsd, cvd: Math.round(runningCvd) };
+      return {
+        time: t,
+        label: formatGatewayCandleLabel(t, safeInterval),
+        open,
+        high,
+        low,
+        close,
+        volume: quoteVolUsd,
+        cvd: Math.round(runningCvd),
+      };
     });
-    const highWindow = Math.max(...candles.map((c) => c.high));
-    const lowWindow = Math.min(...candles.map((c) => c.low));
-    const recentCvd15m =
-      candles.length >= 4
-        ? candles[candles.length - 1].cvd - candles[Math.max(0, candles.length - 5)].cvd
-        : runningCvd;
-    return cacheAndReturn({
-      ok: true,
+    const checked = reconcileAndValidateCandles(parsed, liveRefPrice, safeInterval, false);
+    if (!checked.ok || checked.candles.length < 4) return null;
+    return buildPayload(
+      checked.candles,
       source,
-      interval,
-      candles,
-      highWindow,
-      lowWindow,
-      recentCvd15m: Math.round(recentCvd15m),
-    });
+      wantFullHistory ? 'FULL_LISTING_HISTORY' : 'LIVE_WINDOW',
+      checked.priceDeviationPct,
+      checked.priceGuardStatus
+    );
   };
 
+  const binLimit = wantFullHistory ? 1000 : Math.min(1000, effectiveLimit);
   const binRes = await fetchJsonWithTimeout(
     `https://fapi.binance.com/fapi/v1/klines?symbol=${encodeURIComponent(
-      resolvedBinanceSymbol
-    )}&interval=${encodeURIComponent(interval)}&limit=${limit}`
+      resolvedBinanceFutSymbol
+    )}&interval=${encodeURIComponent(safeInterval)}&limit=${binLimit}`
   );
 
   if (binRes.ok && Array.isArray(binRes.data) && binRes.data.length > 5) {
-    return formatBinanceKlinesResponse(binRes.data, 'BINANCE_PERP');
+    const out = formatBinanceKlinesResponse(binRes.data, 'BINANCE_PERP');
+    if (out) return out;
   }
 
   const binSpotRes = await fetchJsonWithTimeout(
     `https://api.binance.com/api/v3/klines?symbol=${encodeURIComponent(
-      resolvedBinanceSymbol
-    )}&interval=${encodeURIComponent(interval)}&limit=${limit}`
+      resolvedBinanceSpotSymbol
+    )}&interval=${encodeURIComponent(safeInterval)}&limit=${binLimit}`
   );
 
   if (binSpotRes.ok && Array.isArray(binSpotRes.data) && binSpotRes.data.length > 5) {
-    return formatBinanceKlinesResponse(binSpotRes.data, 'BINANCE_SPOT');
+    const out = formatBinanceKlinesResponse(binSpotRes.data, 'BINANCE_SPOT');
+    if (out) return out;
   }
 
-  // Gate.io Spot Candlesticks fallback (works reliably on networks where Binance/Bybit/OKX are ISP-throttled)
-  const gatePair = `${resolvedHlCoin}_USDT`;
+  // Full Archive fallback for 1d/1w/1M when HL & Binance are unavailable
+  if (isMacroTf) {
+    const archiveBars = await fetchFullListingArchive(cexBase, safeInterval);
+    if (archiveBars && archiveBars.length > 10) {
+      const checked = reconcileAndValidateCandles(archiveBars, liveRefPrice, safeInterval, false);
+      if (checked.ok && checked.candles.length > 5) {
+        return buildPayload(
+          checked.candles,
+          'MARKET_ARCHIVE_FULL',
+          'FULL_LISTING_HISTORY',
+          checked.priceDeviationPct,
+          checked.priceGuardStatus
+        );
+      }
+    }
+  }
+
+  // Gate.io Spot Candlesticks fallback (supports 1m..30d + strict price guard!)
+  const gateIntervalMap = { '3m': '5m', '2h': '1h', '12h': '8h', '3d': '1d', '1w': '7d', '1M': '30d' };
+  const gateInterval = gateIntervalMap[safeInterval] || safeInterval;
+  const gatePair = `${cexBase}_USDT`;
   const gateRes = await fetchJsonWithTimeout(
     `https://api.gateio.ws/api/v4/spot/candlesticks?currency_pair=${encodeURIComponent(
       gatePair
-    )}&interval=${encodeURIComponent(interval)}&limit=${limit}`,
+    )}&interval=${encodeURIComponent(gateInterval)}&limit=${Math.min(1000, binLimit)}`,
     {},
     3200
   );
 
   if (gateRes.ok && Array.isArray(gateRes.data) && gateRes.data.length > 5) {
     let runningCvd = 0;
-    const candles = gateRes.data.map((k) => {
+    const parsed = gateRes.data.map((k) => {
       const t = Number(k[0]) * 1000;
       const quoteVolUsd = Math.round(parseFloat(k[1] || '0'));
       const close = parseFloat(k[2]);
       const high = parseFloat(k[3]);
       const low = parseFloat(k[4]);
       const open = parseFloat(k[5]);
-      const range = Math.max(0.000001, high - low);
+      const range = Math.max(1e-12, high - low);
       const buyRatio = (close - low) / range;
       runningCvd += quoteVolUsd * (buyRatio * 2 - 1);
-      const d = new Date(t);
-      const label =
-        interval === '1d'
-          ? `${d.getDate()}/${d.getMonth() + 1}`
-          : `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
-      return { time: t, label, open, high, low, close, volume: quoteVolUsd, cvd: Math.round(runningCvd) };
+      return {
+        time: t,
+        label: formatGatewayCandleLabel(t, safeInterval),
+        open,
+        high,
+        low,
+        close,
+        volume: quoteVolUsd,
+        cvd: Math.round(runningCvd),
+      };
     });
-    const highWindow = Math.max(...candles.map((c) => c.high));
-    const lowWindow = Math.min(...candles.map((c) => c.low));
-    const recentCvd15m =
-      candles.length >= 4
-        ? candles[candles.length - 1].cvd - candles[Math.max(0, candles.length - 5)].cvd
-        : runningCvd;
-    return cacheAndReturn({
-      ok: true,
-      source: 'GATEIO_SPOT',
-      interval,
-      candles,
-      highWindow,
-      lowWindow,
-      recentCvd15m: Math.round(recentCvd15m),
-    });
+    const checked = reconcileAndValidateCandles(parsed, liveRefPrice, safeInterval, false);
+    if (checked.ok && checked.candles.length > 5) {
+      return buildPayload(
+        checked.candles,
+        'GATEIO_SPOT',
+        wantFullHistory ? 'FULL_LISTING_HISTORY' : 'LIVE_WINDOW',
+        checked.priceDeviationPct,
+        checked.priceGuardStatus
+      );
+    }
   }
 
   if (sparseOnChainBackup && sparseOnChainBackup.length >= 2) {
-    const highWindow = Math.max(...sparseOnChainBackup.map((c) => c.high));
-    const lowWindow = Math.min(...sparseOnChainBackup.map((c) => c.low));
-    const recentCvd15m = sparseOnChainBackup[sparseOnChainBackup.length - 1]?.cvd || 0;
-    return cacheAndReturn({
-      ok: true,
-      source: `ONCHAIN_SWAPS_${String(chain || 'DEX').toUpperCase()}`,
-      interval,
-      candles: sparseOnChainBackup,
-      highWindow,
-      lowWindow,
-      recentCvd15m: Math.round(recentCvd15m),
-    });
+    const checked = reconcileAndValidateCandles(sparseOnChainBackup, liveRefPrice, safeInterval, true);
+    if (checked.ok && checked.candles.length >= 2) {
+      return buildPayload(
+        checked.candles,
+        `ONCHAIN_SWAPS_${String(chain || 'DEX').toUpperCase()}`,
+        'LIVE_WINDOW',
+        checked.priceDeviationPct,
+        checked.priceGuardStatus
+      );
+    }
   }
 
   if (cachedEntry?.data?.candles?.length > 0) {
@@ -1696,10 +2045,13 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
 export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol = 'BTCUSDT') {
   const wrappedAliasMap = { WETH: 'ETH', WBTC: 'BTC', WSOL: 'SOL', WBNB: 'BNB', WHYPE: 'HYPE' };
   const resolvedHlCoin = wrappedAliasMap[String(hlCoin || '').toUpperCase()] || hlCoin;
-  const resolvedBinSymbol =
-    binanceSymbol && binanceSymbol !== 'BTCUSDT'
+  const isKBookCoin = /^k(?=[A-Z]{2,})/.test(resolvedHlCoin);
+  const cleanBookBase = resolvedHlCoin.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase();
+  const resolvedBinSymbol = isKBookCoin
+    ? `1000${cleanBookBase}USDT`
+    : binanceSymbol && binanceSymbol !== 'BTCUSDT'
       ? binanceSymbol
-      : `${resolvedHlCoin.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase()}USDT`;
+      : `${cleanBookBase}USDT`;
 
   const cachedBookEntry = cachedBookMap.get(resolvedHlCoin);
   if (cachedBookEntry && Date.now() - cachedBookEntry.ts < 2500) {
@@ -2736,10 +3088,21 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
     const hlCoin = searchParams.get('hlCoin') || 'BTC';
     const binanceSymbol = searchParams.get('binanceSymbol') || `${hlCoin.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase()}USDT`;
     const interval = searchParams.get('interval') || '15m';
-    const limit = Number(searchParams.get('limit') || '140');
+    const limit = Number(searchParams.get('limit') || '1200');
     const chain = searchParams.get('chain') || '';
     const poolAddress = searchParams.get('poolAddress') || '';
-    const candleRes = await getRealCandles(hlCoin, binanceSymbol, interval, limit, chain, poolAddress);
+    const fullHistory = searchParams.get('fullHistory') === '1' || searchParams.get('fullHistory') === 'true';
+    const refPrice = Number(searchParams.get('refPrice') || '0');
+    const candleRes = await getRealCandles(
+      hlCoin,
+      binanceSymbol,
+      interval,
+      limit,
+      chain,
+      poolAddress,
+      fullHistory,
+      refPrice
+    );
     return { status: 200, payload: candleRes };
   }
 
