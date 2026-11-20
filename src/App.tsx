@@ -154,7 +154,13 @@ function LivePrice({
   );
 }
 
-export function App({ simple = false }: { simple?: boolean } = {}) {
+export function App({
+  simple = false,
+  onEditionChange,
+}: {
+  simple?: boolean;
+  onEditionChange?: (simple: boolean) => void;
+} = {}) {
   const [markets, setMarkets] = useState<MarketPair[]>(INITIAL_MARKETS);
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTC-PERP');
   const [chartTimeframe, setChartTimeframe] = useState<ChartInterval>('15m');
@@ -272,16 +278,25 @@ export function App({ simple = false }: { simple?: boolean } = {}) {
   const deskGridRef = useRef<HTMLDivElement>(null);
   const deskResizeRef = useRef<{ pointerId: number; startX: number; startSplit: number; width: number } | null>(null);
   const deskSettingsRef = useRef<HTMLDetailsElement>(null);
-  const [showWhalePanel, setShowWhalePanel] = useState(!simple);
-  const tradeControlsKey = simple ? 'fincept:simple-trade-controls' : 'fincept:trade-controls';
-  const [showTradeControls, setShowTradeControls] = useState(() => {
-    const preference = localStorage.getItem(tradeControlsKey);
-    return preference === null ? !simple : preference === 'visible';
-  });
+  const edition = simple ? 'simple' : 'pro';
+  const [whalePanelVisibility, setWhalePanelVisibility] = useState({ simple: false, pro: true });
+  const showWhalePanel = whalePanelVisibility[edition];
+  const [tradeControlsVisibility, setTradeControlsVisibility] = useState(() => ({
+    simple: localStorage.getItem('fincept:simple-trade-controls') === 'visible',
+    pro: localStorage.getItem('fincept:trade-controls') !== 'hidden',
+  }));
+  const showTradeControls = tradeControlsVisibility[edition];
+  const setShowWhalePanel = (visible: boolean) => {
+    setWhalePanelVisibility((current) => ({ ...current, [edition]: visible }));
+  };
+  const setShowTradeControls = (visible: boolean) => {
+    setTradeControlsVisibility((current) => ({ ...current, [edition]: visible }));
+  };
 
   useEffect(() => {
-    localStorage.setItem(tradeControlsKey, showTradeControls ? 'visible' : 'hidden');
-  }, [showTradeControls, tradeControlsKey]);
+    localStorage.setItem('fincept:simple-trade-controls', tradeControlsVisibility.simple ? 'visible' : 'hidden');
+    localStorage.setItem('fincept:trade-controls', tradeControlsVisibility.pro ? 'visible' : 'hidden');
+  }, [tradeControlsVisibility]);
 
   const resizeDesk = (percent: number) => setDeskSplit(Math.min(68, Math.max(35, percent)));
   const swapDeskPanes = () => setDeskSwapped((swapped) => !swapped);
@@ -1825,7 +1840,7 @@ export function App({ simple = false }: { simple?: boolean } = {}) {
       <aside className="workspace-sidebar">
         <div className="workspace-brand">
           <Activity size={19} aria-hidden="true" />
-          <span>{simple ? 'Fincept Simple' : 'Fincept'}</span>
+          <span>{simple ? 'Fincept Simple' : 'Fincept Pro'}</span>
         </div>
         <nav className="workspace-nav" aria-label="Terminal navigation">
           {workspaceTabs.map(({ id, label, icon: Icon }) => (
@@ -1840,7 +1855,19 @@ export function App({ simple = false }: { simple?: boolean } = {}) {
             </button>
           ))}
         </nav>
-        <a className="workspace-edition-link" href={simple ? '/pro/' : '/'}>{simple ? 'Pro' : 'Simple'} <span aria-hidden="true">↗</span></a>
+        <a
+          className="workspace-edition-link"
+          href={simple ? '/pro/' : '/'}
+          aria-label={simple ? 'Beralih ke mode Pro' : 'Beralih ke mode Simple'}
+          onClick={(event) => {
+            if (onEditionChange && event.button === 0 && !event.ctrlKey && !event.metaKey && !event.shiftKey && !event.altKey) {
+              event.preventDefault();
+              onEditionChange(!simple);
+            }
+          }}
+        >
+          {simple ? 'Pro' : 'Simple'} <span aria-hidden="true">↔</span>
+        </a>
         <div className="workspace-market-count"><span aria-hidden="true" />{markets.length} markets</div>
       </aside>
       <div className="workspace-content">
@@ -2216,6 +2243,7 @@ export function App({ simple = false }: { simple?: boolean } = {}) {
             <span className="text-[#94A3B8] mr-1">SIZE $:</span>
             <input
               type="number"
+              aria-label="Ukuran order USD"
               value={orderSizeUsdInput}
               onChange={(e) => setOrderSizeUsdInput(Math.max(10, Number(e.target.value)))}
               className="w-14 sm:w-16 bg-transparent text-[#FF9F1C] font-extrabold text-right focus:outline-none"

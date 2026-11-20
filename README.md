@@ -70,7 +70,7 @@ npm install
 ```bash
 npm run dev
 ```
-Open `http://localhost:5173/` for Fincept Simple. The full Pro workspace is available at `/pro/`, and `/simple/` also opens Simple. Both editions share the same analysis engine and backend gateway.
+Open `http://localhost:5173/` for Fincept Simple. The full Pro workspace is available at `/pro/`, and `/simple/` also opens Simple. Both editions share the same analysis engine and backend gateway. Switch editions using the Pro/Simple link in the navigation. The switch preserves the selected market, open positions, and trading inputs during the session, while each edition retains its own panel visibility settings.
 
 Simple starts with the chart in focus. Use **Whale Pipeline** and **Kontrol trading** to reveal optional panels and order controls. These display preferences do not change execution mode. The default execution mode is Paper.
 
