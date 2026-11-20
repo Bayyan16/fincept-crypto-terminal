@@ -220,7 +220,7 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
             className={
               compactDeskMode
                 ? 'grid grid-cols-1 gap-2'
-                : 'grid grid-cols-1 xl:grid-cols-2 gap-2.5 items-stretch'
+                : 'ai-risk-visuals grid grid-cols-1 gap-3 items-start'
             }
           >
             <AgentWarRoom3DViz
@@ -235,7 +235,7 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
             className={
               compactDeskMode
                 ? 'grid grid-cols-1 md:grid-cols-2 gap-2'
-                : 'grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-2'
+                : 'grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-4 gap-3'
             }
           >
             {consensus.votes.map((agent) => {

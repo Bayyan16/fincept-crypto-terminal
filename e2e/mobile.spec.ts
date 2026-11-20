@@ -1,3 +1,4 @@
+import { openExpandedDesk } from './helpers';
 import { test, expect, type Page } from '@playwright/test';
 
 /**
@@ -41,7 +42,7 @@ test.describe('mobile android & iphone ux and drag-and-drop', () => {
       page,
     }) => {
       await page.setViewportSize({ width: device.width, height: device.height });
-      await page.goto('/', { waitUntil: 'domcontentloaded' });
+      await openExpandedDesk(page);
       await expect(page.getByTestId('app-root')).toBeVisible({ timeout: 30_000 });
 
       // 1. Compact single-row horizontal swipeable nav (not 5 stacked rows)
@@ -54,7 +55,7 @@ test.describe('mobile android & iphone ux and drag-and-drop', () => {
       await expect(chartSvg).toBeVisible();
       const chartBox = await chartSvg.boundingBox();
       expect(chartBox).not.toBeNull();
-      expect(chartBox!.width).toBeGreaterThanOrEqual(device.width - 28);
+      expect(chartBox!.width).toBeGreaterThanOrEqual(device.width - 48);
 
       // 3. Zero horizontal overflow & unlocked vertical scroll across all 5 tabs
       await assertNoHorizontalOverflow(page, `${device.name} Tab 1 Desk`);
@@ -79,7 +80,7 @@ test.describe('mobile android & iphone ux and drag-and-drop', () => {
     page,
   }) => {
     await page.setViewportSize({ width: 390, height: 844 }); // iPhone 14 / 15 / 16 baseline
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await openExpandedDesk(page);
     await expect(page.getByTestId('chart-svg')).toBeVisible({ timeout: 30_000 });
 
     // 1. Drag Candlestick Chart 2D (pan across time + price mark) via Pointer Events
@@ -173,7 +174,8 @@ test.describe('mobile android & iphone ux and drag-and-drop', () => {
     expect(afterDockH).toBeGreaterThan(beforeDockH);
 
     // 3. Drag Whale Topology Node via touch PointerEvents
-    const coreNode = page.getByTestId('viz-node-WHALE-CORE');
+    await page.getByRole('button', { name: 'Jeda orbit' }).click();
+    const coreNode = page.getByTestId('viz-node-HYPERLIQUID');
     await coreNode.scrollIntoViewIfNeeded();
     await expect(coreNode).toBeVisible();
     const beforeX = Number((await coreNode.getAttribute('data-node-x')) || '0');

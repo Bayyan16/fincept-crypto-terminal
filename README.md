@@ -70,7 +70,9 @@ npm install
 ```bash
 npm run dev
 ```
-Open `http://localhost:5173/` in your browser.
+Open `http://localhost:5173/` for Fincept Simple. The full Pro workspace is available at `/pro/`, and `/simple/` also opens Simple. Both editions share the same analysis engine and backend gateway.
+
+Simple starts with the chart in focus. Use **Whale Pipeline** and **Kontrol trading** to reveal optional panels and order controls. These display preferences do not change execution mode. The default execution mode is Paper.
 
 ### 3. Build and Run in Production Mode
 ```bash
@@ -80,7 +82,7 @@ npm start
 The standalone production server (`server.mjs`) serves the compiled frontend bundle alongside all `/api/live/*` and `/api/gateway/*` endpoints on port `8080` (or the configured `PORT` environment variable).
 
 ### 4. Run End-to-End Tests (Playwright)
-The Playwright E2E suite validates all 50 tests across desktop (`1600px`) and narrow tablet (`900px`) viewports, covering terminal navigation, multi-sector market explorer, token icons, 4-Agent Consensus Forum, 3D visualizers, accuracy auditor, execution audit cockpit, DEX Screener, orderbook depth, wallet modal, and UI motion/accessibility (`prefers-reduced-motion`).
+The Playwright E2E suite covers the Simple and Pro editions across desktop (`1600px`) and narrow tablet (`900px`) viewports, covering terminal navigation, multi-sector market explorer, token icons, 4-Agent Consensus Forum, 3D visualizers, accuracy auditor, execution audit cockpit, DEX Screener, orderbook depth, wallet modal, and UI motion/accessibility (`prefers-reduced-motion`).
 
 ```bash
 npm run e2e                                # Run full suite (desktop + tablet)
@@ -89,7 +91,7 @@ npm run e2e -- e2e/desk.spec.ts            # Run a single spec file
 npm run e2e:report                         # Open the latest HTML test report
 ```
 
-Note: Playwright uses the locally installed Chrome binary (`channel: 'chrome'`) and reuses an existing dev server if one is already running on port `5173`.
+Note: Playwright uses the locally installed Chrome binary (`channel: 'chrome'`) and reuses an existing dev server on port `5174`. Set `E2E_BASE_URL` to test another local port.
 
 ---
 

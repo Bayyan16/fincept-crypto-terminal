@@ -1,3 +1,4 @@
+import { openExpandedDesk, openMarketPicker } from './helpers';
 import { test, expect, type Page } from '@playwright/test';
 
 /**
@@ -6,15 +7,15 @@ import { test, expect, type Page } from '@playwright/test';
  */
 
 async function gotoApp(page: Page) {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await openExpandedDesk(page);
   await expect(page.getByTestId('app-root')).toBeVisible({ timeout: 30_000 });
 }
 
 test.describe('shell', () => {
   test('app boots with terminal header and navigation', async ({ page }) => {
     await gotoApp(page);
-    await expect(page).toHaveTitle(/FINCEPT QUANT TERMINAL/);
-    await expect(page.getByText('WHALE QUANT TERMINAL').first()).toBeVisible();
+    await expect(page).toHaveTitle(/Fincept Simple/);
+    await expect(page.getByText('Fincept Simple', { exact: true }).first()).toBeVisible();
     await expect(page.getByTestId('command-input')).toBeVisible();
     await expect(page.getByTestId('wallet-modal-trigger')).toBeVisible();
     for (const id of ['TERMINAL_DESK', 'DEX_SCREENER', 'AGENT_SKILLS', 'PORTFOLIO_LOG', 'PORTFOLIO_PROFILE']) {
@@ -34,12 +35,15 @@ test.describe('shell', () => {
 
   test('watchlist renders all 14 markets and switching updates the instrument', async ({ page }) => {
     await gotoApp(page);
+    await openMarketPicker(page);
     await expect(page.getByTestId('market-BTC-PERP')).toBeVisible();
     for (const sym of ['ETH-PERP', 'SOL-PERP', 'HYPE-USDC']) {
+      await openMarketPicker(page);
       await expect(page.getByTestId(`market-${sym}`)).toBeVisible();
     }
     // Active instrument header shows BTC initially
     await expect(page.getByText('BTC-PERP').first()).toBeVisible();
+    await openMarketPicker(page);
     await page.getByTestId('market-ETH-PERP').click();
     await expect(page.getByText('ETH-PERP').first()).toBeVisible();
   });

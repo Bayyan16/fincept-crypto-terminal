@@ -1,3 +1,4 @@
+import { openExpandedDesk } from './helpers';
 import { test, expect, type Page } from '@playwright/test';
 
 /**
@@ -5,7 +6,7 @@ import { test, expect, type Page } from '@playwright/test';
  */
 
 async function gotoViz(page: Page) {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await openExpandedDesk(page);
   await expect(page.getByTestId('subtab-WHALE_TAPE')).toBeVisible({ timeout:30_000 });
   await page.getByTestId('subtab-WHALE_TAPE').click();
   await expect(page.getByTestId('whale-chord-viz')).toBeVisible();

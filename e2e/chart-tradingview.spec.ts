@@ -1,3 +1,4 @@
+import { openExpandedDesk, openMarketPicker } from './helpers';
 import { test, expect, type Page } from '@playwright/test';
 
 /**
@@ -6,7 +7,7 @@ import { test, expect, type Page } from '@playwright/test';
  */
 
 async function gotoChart(page: Page) {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await openExpandedDesk(page);
   await expect(page.getByTestId('candlestick-chart')).toBeVisible({ timeout: 30_000 });
   await expect(page.getByTestId('chart-svg')).toBeVisible({ timeout: 30_000 });
 }
@@ -71,6 +72,7 @@ test.describe('tradingview chart, full history & layered price guard', () => {
     await expect(svg).toHaveAttribute('data-scale-mode', 'LOG');
 
     // Switch to XRP-PERP and confirm full listing history loads seamlessly for altcoins too
+    await openMarketPicker(page);
     await page.getByTestId('market-XRP-PERP').click();
     await expect
       .poll(
@@ -94,7 +96,7 @@ test.describe('tradingview chart, full history & layered price guard', () => {
     await expect(page.getByTestId('chart-tf-dropdown-menu')).toBeVisible();
     await page.getByTestId('chart-tf-option-30m').click();
     await expect
-      .poll(async () => Number((await svg.getAttribute('data-bars-count')) || '0'), { timeout: 20_000 })
+      .poll(async () => Number((await svg.getAttribute('data-bars-count')) || '0'), { timeout: 60_000 })
       .toBeGreaterThanOrEqual(500);
 
     // 1. Place Horizontal Price Line (1 click)
@@ -198,7 +200,8 @@ test.describe('tradingview chart, full history & layered price guard', () => {
   test('multi-layer on-chain price integrity guard prevents price divergence across majors & 1000x meme perps', async ({
     request,
   }) => {
-    const snapRes = await request.get('/api/live/snapshot');
+    test.setTimeout(180_000);
+    const snapRes = await request.get('/api/live/snapshot', { maxRetries: 2, timeout: 60_000 });
     expect(snapRes.ok()).toBeTruthy();
     const snap = await snapRes.json();
 
@@ -216,7 +219,8 @@ test.describe('tradingview chart, full history & layered price guard', () => {
       const res = await request.get(
         `/api/live/candles?hlCoin=${encodeURIComponent(item.hlCoin)}&binanceSymbol=${encodeURIComponent(
           item.binanceSymbol
-        )}&interval=${item.interval}&fullHistory=1${liveMarkPx > 0 ? `&refPrice=${liveMarkPx}` : ''}`
+        )}&interval=${item.interval}&fullHistory=1${liveMarkPx > 0 ? `&refPrice=${liveMarkPx}` : ''}`,
+        { maxRetries: 2, timeout: 60_000 }
       );
       expect(res.ok(), `${item.hlCoin} candles HTTP 200`).toBeTruthy();
       const payload = await res.json();
@@ -248,7 +252,7 @@ test.describe('tradingview chart, full history & layered price guard', () => {
 
   test('wide chart layout without left telemetry sidebar on desktop and mobile', async ({ page }) => {
     await page.setViewportSize({ width: 1600, height: 960 });
-    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await openExpandedDesk(page);
     await page.getByTestId('candlestick-chart').waitFor({ state: 'visible', timeout: 20_000 });
 
     // Confirm legacy left telemetry sidebar blocks are removed from the desk

@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test';
 
+const baseURL = process.env.E2E_BASE_URL || 'http://127.0.0.1:5174';
+
 export default defineConfig({
   testDir: './e2e',
   timeout: 60_000,
@@ -9,7 +11,7 @@ export default defineConfig({
   retries: 0,
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
   use: {
-    baseURL: process.env.E2E_BASE_URL || 'http://localhost:5173',
+    baseURL: baseURL,
     channel: 'chrome',
     headless: true,
     viewport: { width: 1600, height: 960 },
@@ -29,8 +31,8 @@ export default defineConfig({
     },
   ],
   webServer: {
-    command: 'npm run dev -- --port 5173 --strictPort',
-    url: 'http://localhost:5173',
+    command: 'npm run dev -- --host 127.0.0.1 --port ' + new URL(baseURL).port + ' --strictPort',
+    url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 90_000,
   },

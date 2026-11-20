@@ -1,3 +1,4 @@
+import { openExpandedDesk, openMarketPicker } from './helpers';
 import { test, expect, type Page } from '@playwright/test';
 
 /**
@@ -5,7 +6,7 @@ import { test, expect, type Page } from '@playwright/test';
  */
 
 async function gotoDesk(page: Page) {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await openExpandedDesk(page);
   await expect(page.getByTestId('subtab-OVERVIEW')).toBeVisible({ timeout: 30_000 });
 }
 
@@ -93,6 +94,7 @@ test.describe('terminal desk', () => {
     await expect(page.getByTestId('chart-legend-pa-sr-btn')).toBeVisible();
 
     // 2. All-Crypto Market Sector Explorer (beyond Top 10 CMC) + Real Token Icon verification
+    await openMarketPicker(page);
     await page.getByTestId('watchlist-sector-AI_DEPIN').click();
     const taoBtn = page.getByTestId('market-TAO-PERP');
     await expect(taoBtn).toBeVisible();
@@ -152,6 +154,7 @@ test.describe('terminal desk', () => {
     page,
   }) => {
     await gotoDesk(page);
+    await openMarketPicker(page);
     await page.getByTestId('watchlist-sector-TOP_GAINERS').click();
 
     // Pick the first displayed Top Gainer market button

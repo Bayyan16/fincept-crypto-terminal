@@ -23,638 +23,191 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
     return '#F5B74F';
   };
 
-  const agent1 = consensus.votes.find((v) => v.agentId === 'BLOOMBERG_NEWS') || consensus.votes[0];
-  const agent2 = consensus.votes.find((v) => v.agentId === 'TECHNICAL_ANALYST') || consensus.votes[1];
-  const agent3 = consensus.votes.find((v) => v.agentId === 'WHALE_WALLET') || consensus.votes[2];
-  const agent4 =
-    consensus.votes.find((v) => v.agentId === 'EXECUTION_PRECISION') || consensus.votes[3];
-
   const activeAgent =
-    consensus.votes.find((v) => v.agentId === selectedAgentId) || consensus.votes[0];
+    consensus.votes.find((vote) => vote.agentId === selectedAgentId) || consensus.votes[0];
+  const id = React.useId();
+  const [flightPaused, setFlightPaused] = React.useState(false);
+  const sceneRef = React.useRef<SVGSVGElement>(null);
+  const [camera, setCamera] = React.useState({ yaw: 0, pitch: -0.47, zoom: 1 });
+  const drag = React.useRef<{ id: number; x: number; y: number } | null>(null);
 
-  const coreColor = consensus.hasVeto
-    ? '#F87171'
-    : consensus.recommendedSide === 'LONG'
-      ? '#34D399'
-      : '#F87171';
-
-  const renderIsoPedestal = (
-    cx: number,
-    cy: number,
-    accent: string,
-    isSelected: boolean
-  ) => {
-    const w = 66;
-    const h = 23;
-    const depth = 14;
-    const topPoints = `${cx},${cy - h} ${cx + w},${cy} ${cx},${cy + h} ${cx - w},${cy}`;
-    const leftPoints = `${cx - w},${cy} ${cx},${cy + h} ${cx},${cy + h + depth} ${cx - w},${cy + depth}`;
-    const rightPoints = `${cx},${cy + h} ${cx + w},${cy} ${cx + w},${cy + depth} ${cx},${cy + h + depth}`;
-
-    return (
-      <g pointerEvents="none">
-        {isSelected && (
-          <ellipse
-            cx={cx}
-            cy={cy + 4}
-            rx={w + 13}
-            ry={h + 9}
-            fill="none"
-            stroke={accent}
-            strokeWidth="1.8"
-            strokeDasharray="6 4"
-            className="iso-sonar-pulse"
-          />
-        )}
-        <ellipse
-          cx={cx}
-          cy={cy + depth + 5}
-          rx={w + 4}
-          ry={h + 2}
-          fill="#03060C"
-          opacity="0.85"
-        />
-        <polygon
-          points={leftPoints}
-          fill="#0B1526"
-          stroke={accent}
-          strokeWidth={isSelected ? '1.5' : '0.9'}
-          strokeOpacity="0.75"
-        />
-        <polygon
-          points={rightPoints}
-          fill="#060C17"
-          stroke={accent}
-          strokeWidth={isSelected ? '1.5' : '0.9'}
-          strokeOpacity="0.55"
-        />
-        <polygon
-          points={topPoints}
-          fill="#0F1C30"
-          stroke={accent}
-          strokeWidth={isSelected ? '2' : '1.2'}
-        />
-        <polygon
-          points={`${cx},${cy - h * 0.62} ${cx + w * 0.62},${cy} ${cx},${cy + h * 0.62} ${cx - w * 0.62},${cy}`}
-          fill={accent}
-          fillOpacity="0.14"
-          stroke={accent}
-          strokeWidth="0.9"
-          strokeOpacity="0.8"
-        />
-      </g>
-    );
+  const adjustZoom = (factor: number) => {
+    setCamera((current) => ({ ...current, zoom: Math.max(0.65, Math.min(1.65, current.zoom * factor)) }));
   };
+
+  const rotateCamera = (dx: number, dy: number) => {
+    setCamera((current) => ({
+      ...current,
+      yaw: current.yaw + dx,
+      pitch: Math.max(-1.45, Math.min(1.45, current.pitch + dy)),
+    }));
+  };
+
+  const project = (x: number, y: number, z: number) => {
+    const horizontal = x * Math.cos(camera.yaw) - z * Math.sin(camera.yaw);
+    const depth = x * Math.sin(camera.yaw) + z * Math.cos(camera.yaw);
+    const vertical = y * Math.cos(camera.pitch) - depth * Math.sin(camera.pitch);
+    const distance = y * Math.sin(camera.pitch) + depth * Math.cos(camera.pitch);
+    const scale = camera.zoom * 760 / (760 + distance);
+    return { x: 310 + horizontal * scale, y: 167 + vertical * scale, depth: distance, scale };
+  };
+
+  React.useEffect(() => {
+    if (flightPaused) sceneRef.current?.pauseAnimations();
+    else sceneRef.current?.unpauseAnimations();
+  }, [flightPaused]);
+  const planets = [
+    { id: 'BLOOMBERG_NEWS', label: 'Macro News', angle: 3.66, radius: 29, color: '#F8C675' },
+    { id: 'TECHNICAL_ANALYST', label: 'Price Action', angle: 5.44, radius: 34, color: '#70DBFA' },
+    { id: 'WHALE_WALLET', label: 'Whale Intel', angle: .61, radius: 37, color: '#E28DD1' },
+    { id: 'EXECUTION_PRECISION', label: 'Risk & Execution', angle: 2.29, radius: 35, color: '#7DE2BA' },
+  ] as const;
+  const orbit = (radius: number, angle: number, tilt = 0) => {
+    const z = Math.sin(angle) * radius;
+    return project(Math.cos(angle) * radius, z * tilt, z);
+  };
+  const orbitPath = (radius: number, tilt = 0) =>
+    Array.from({ length: 73 }, (_, index) => {
+      const point = orbit(radius, index * Math.PI / 36, tilt);
+      return `${index === 0 ? 'M' : 'L'}${point.x.toFixed(2)} ${point.y.toFixed(2)}`;
+    }).join(' ') + ' Z';
+  const flightPath = orbitPath(202);
+  const projectedPlanets = planets.map((planet) => ({ ...planet, ...orbit(202, planet.angle) }))
+    .sort((left, right) => right.depth - left.depth);
+  const cloudPaths = [0, 1].map((band) =>
+    Array.from({ length: 180 }, (_, index) => {
+      const angle = index * 2.399963;
+      const height = 1 - 2 * (index + .5) / 180;
+      const radius = Math.sqrt(1 - height * height);
+      const point = project((band ? 23 : -23) + Math.cos(angle) * radius * 47, height * 48, Math.sin(angle) * radius * 47);
+      return `M${point.x.toFixed(2)} ${point.y.toFixed(2)}h.1`;
+    }).join(' ')
+  );
 
   return (
     <div
       data-testid="agent-war-room-3d-viz"
-      className="bg-[#050811] border border-[#1B2A44] p-2.5 flex flex-col gap-2 h-full"
+      className="agent-orbit-card min-w-0 bg-[#050811] border border-[#1B2A44] flex flex-col gap-3"
     >
-      {/* Top Stage: 2D / Semi-3D Isometric Cybernetic Arena SVG */}
-      <div className="w-full bg-gradient-to-b from-[#111927] via-[#0E1522] to-[#0C121D] border border-[#223047] relative overflow-hidden rounded-lg">
-        <div className="flex flex-wrap items-center justify-between gap-1 px-2.5 py-1.5 border-b border-[#142034] bg-[#080E1C]/90 text-[9.5px]">
-          <div className="flex items-center gap-2">
-            <span className="px-1.5 py-0.5 bg-[#00E5FF] text-black font-extrabold text-[9px]">
-              3D WAR-ROOM
-            </span>
-            <span className="font-extrabold text-white tracking-wide">
-              4-AGENT NEURAL CONSENSUS ARENA
-            </span>
-          </div>
-          <div className="flex items-center gap-2 font-mono text-[9px]">
-            <span className="px-1.5 py-0.5 bg-[#FF9F1C]/15 border border-[#FF9F1C]/60 text-[#FF9F1C] font-bold">
-              QUORUM: {consensus.alignedAgentsCount}/4 AGENT
-            </span>
-            <span className="px-1.5 py-0.5 bg-[#00E676]/15 border border-[#00E676]/60 text-[#00E676] font-bold">
-              CHECKLIST: {consensus.checklistPassedCount}/8
-            </span>
+      <div className="agent-orbit-stage">
+        <div className="agent-orbit-header">
+          <h3>Orbit Konsensus</h3>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="agent-orbit-stat">Kuorum {consensus.alignedAgentsCount}/4</span>
+            <span className="agent-orbit-stat">Checklist {consensus.checklistPassedCount}/8</span>
+            <button type="button" className="agent-flight-toggle" aria-label="Perkecil tata surya" onClick={() => adjustZoom(1 / 1.15)}>−</button>
+            <button type="button" className="agent-flight-toggle" aria-label="Perbesar tata surya" onClick={() => adjustZoom(1.15)}>+</button>
+            <button type="button" className="agent-flight-toggle" onClick={() => setCamera({ yaw: 0, pitch: -0.47, zoom: 1 })}>Reset kamera</button>
+            <button
+              type="button"
+              className="agent-flight-toggle agent-flight-motion-toggle"
+              onClick={() => setFlightPaused((paused) => !paused)}
+            >
+              {flightPaused ? 'Jalankan roket' : 'Jeda roket'}
+            </button>
           </div>
         </div>
 
         <svg
-          viewBox="0 0 920 265"
-          className="w-full h-[210px] sm:h-[235px] block select-none"
-          role="img"
-          aria-label="Isometric 3D 4-Agent Consensus War-Room Illustration"
+          ref={sceneRef}
+          viewBox="0 0 620 345"
+          className="agent-orbit-scene agent-orbit-interactive"
+          role="group"
+          aria-label="Peta orbital empat agen konsensus. Seret latar atau gunakan tombol panah untuk memutar kamera."
+          tabIndex={0}
+          onPointerDown={(event) => {
+            if (event.button !== 0 || (event.target instanceof Element && event.target.closest('[data-agent-planet]'))) return;
+            drag.current = { id: event.pointerId, x: event.clientX, y: event.clientY };
+            event.currentTarget.setPointerCapture(event.pointerId);
+          }}
+          onPointerMove={(event) => {
+            const previous = drag.current;
+            if (!previous || previous.id !== event.pointerId) return;
+            rotateCamera((event.clientX - previous.x) * .012, (event.clientY - previous.y) * .01);
+            drag.current = { id: previous.id, x: event.clientX, y: event.clientY };
+          }}
+          onLostPointerCapture={() => { drag.current = null; }}
+          onKeyDown={(event) => {
+            const x = event.key === 'ArrowLeft' ? -.16 : event.key === 'ArrowRight' ? .16 : 0;
+            const y = event.key === 'ArrowUp' ? -.12 : event.key === 'ArrowDown' ? .12 : 0;
+            if (x || y) {
+              event.preventDefault();
+              rotateCamera(x, y);
+            }
+          }}
         >
           <defs>
-            <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
-              <stop offset="0%" stopColor={coreColor} stopOpacity="0.38" />
-              <stop offset="65%" stopColor={coreColor} stopOpacity="0.08" />
-              <stop offset="100%" stopColor="#050811" stopOpacity="0" />
-            </radialGradient>
-            <linearGradient id="isoGridLine" x1="0%" y1="0%" x2="100%" y2="0%">
-              <stop offset="0%" stopColor="#1E293B" stopOpacity="0.1" />
-              <stop offset="50%" stopColor="#56B6F7" stopOpacity="0.24" />
-              <stop offset="100%" stopColor="#1E293B" stopOpacity="0.1" />
+            {planets.map((planet) => (
+              <radialGradient key={planet.id} id={`${id}-${planet.id}`} fx="30%" fy="24%">
+                <stop offset="0%" stopColor={planet.color} stopOpacity=".76" />
+                <stop offset="56%" stopColor={planet.color} stopOpacity=".23" />
+                <stop offset="100%" stopColor="#09151e" />
+              </radialGradient>
+            ))}
+            <linearGradient id={`${id}-trail`}>
+              <stop offset="0%" stopColor="#37CFF3" stopOpacity="0" />
+              <stop offset="100%" stopColor="#A1FBFF" />
             </linearGradient>
           </defs>
-
-          {/* Isometric 3D Cyber Floor Perspective Grid */}
-          <g opacity="0.65" pointerEvents="none">
-            <polygon
-              points="460,16 875,132 460,248 45,132"
-              fill="none"
-              stroke="url(#isoGridLine)"
-              strokeWidth="1"
-            />
-            <polygon
-              points="460,44 775,132 460,220 145,132"
-              fill="none"
-              stroke="#16243A"
-              strokeWidth="1"
-              strokeDasharray="4 4"
-            />
-            <polygon
-              points="460,74 670,132 460,190 250,132"
-              fill="none"
-              stroke="#1B2E4B"
-              strokeWidth="1"
-            />
-            <line x1="160" y1="68" x2="760" y2="198" stroke="#132035" strokeWidth="1" />
-            <line x1="760" y1="68" x2="160" y2="198" stroke="#132035" strokeWidth="1" />
-            <line x1="460" y1="16" x2="460" y2="248" stroke="#132035" strokeWidth="1" />
-            <line x1="45" y1="132" x2="875" y2="132" stroke="#132035" strokeWidth="1" />
+          <g aria-hidden="true" pointerEvents="none">
+            {[84, 126, 164, 202, 235].map((radius) => (
+              <path key={radius} d={orbitPath(radius)} fill="none" stroke="#64B7CF" strokeOpacity=".3" />
+            ))}
+            <path d={orbitPath(238, .30)} stroke="#D487CA" strokeOpacity=".35" fill="none" />
+            <path d={orbitPath(238, -.30)} stroke="#6ADDC3" strokeOpacity=".36" fill="none" />
+            <path d={flightPath} stroke="#67DFF5" strokeOpacity=".65" strokeDasharray="3 7" fill="none" />
+            {cloudPaths.map((path, band) => (
+              <path key={band} d={path} stroke={band ? '#F28ACE' : '#67DFF5'} strokeWidth="1.55" strokeLinecap="round" opacity=".8" />
+            ))}
+            <text x="310" y="237" textAnchor="middle" className="agent-orbit-label">CORE KONSENSUS</text>
+            <text x="310" y="251" textAnchor="middle" className="agent-orbit-score"
+              fill={consensus.hasVeto ? '#F87171' : getVoteColor(consensus.recommendedSide)}>
+              {consensus.hasVeto ? 'VETO' : consensus.recommendedSide}
+            </text>
           </g>
 
-          {/* Animated Neural Consensus Laser Beams from 4 Pods -> Central Core (460, 132) */}
-          {[
-            { x: 160, y: 68, vote: agent1.vote },
-            { x: 160, y: 198, vote: agent2.vote },
-            { x: 760, y: 68, vote: agent3.vote },
-            { x: 760, y: 198, vote: agent4.vote },
-          ].map((beam, idx) => {
-            const bColor = getVoteColor(beam.vote);
+          {projectedPlanets.map(({ id: agentId, label, x, y, scale, radius, color }) => {
+            const vote = consensus.votes.find((item) => item.agentId === agentId);
+            if (!vote) return null;
+            const selected = selectedAgentId === agentId;
             return (
-              <g key={idx} pointerEvents="none">
-                <line
-                  x1={beam.x}
-                  y1={beam.y}
-                  x2={460}
-                  y2={132}
-                  stroke={bColor}
-                  strokeWidth="3.5"
-                  strokeOpacity="0.18"
-                />
-                <line
-                  x1={beam.x}
-                  y1={beam.y}
-                  x2={460}
-                  y2={132}
-                  stroke={bColor}
-                  strokeWidth="2.2"
-                  className="iso-beam-anim"
-                />
+              <g
+                key={agentId}
+                transform={`translate(${x} ${y}) scale(${scale})`}
+                data-agent-planet=""
+                className="agent-orbit-planet"
+                data-testid={`viz-pod-${agentId}`}
+                role="button"
+                aria-label={vote.agentName}
+                aria-pressed={selected}
+                tabIndex={0}
+                onClick={() => onSelectAgent(agentId)}
+                onKeyDown={(event) => {
+                  if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    onSelectAgent(agentId);
+                  }
+                }}
+              >
+                <circle className="agent-orbit-selection" r={radius + 9} stroke={color} fill="none" strokeDasharray="3 4" />
+                <circle r={radius} fill={`url(#${id}-${agentId})`} stroke={color} strokeOpacity=".9" />
+                <ellipse rx={radius * .43} ry={radius} fill="none" stroke={color} strokeOpacity=".54" transform="rotate(-22)" />
+                <ellipse rx={radius} ry={radius * .30} fill="none" stroke={color} strokeOpacity=".56" transform="rotate(-22)" />
+                <ellipse rx={radius * 1.36} ry={radius * .34} fill="none" stroke={color} strokeOpacity=".8" transform="rotate(-22)" />
+                <text y={radius + 20} textAnchor="middle" className="agent-orbit-label">{label}</text>
+                <text y={radius + 34} textAnchor="middle" className="agent-orbit-score" fill={getVoteColor(vote.vote)}>
+                  {vote.vote} · {vote.credibilityOrAccuracyPct}%
+                </text>
               </g>
             );
           })}
 
-          {/* ==================== POD 1: AGENT 1 BLOOMBERG & MACRO NEWS (TOP-LEFT: 160, 68) ==================== */}
-          <g className="cursor-pointer" onClick={() => onSelectAgent('BLOOMBERG_NEWS')}>
-            {renderIsoPedestal(160, 68, '#F5B74F', selectedAgentId === 'BLOOMBERG_NEWS')}
-            <g className="iso-float-1" pointerEvents="none">
-              <polygon
-                points="160,22 181,32 160,42 139,32"
-                fill="#F5B74F"
-                fillOpacity="0.28"
-                stroke="#F5B74F"
-                strokeWidth="1.3"
-              />
-              <polygon
-                points="139,32 160,42 160,62 139,52"
-                fill="#B45309"
-                fillOpacity="0.45"
-                stroke="#F5B74F"
-                strokeWidth="1.1"
-              />
-              <polygon
-                points="160,42 181,32 181,52 160,62"
-                fill="#78350F"
-                fillOpacity="0.55"
-                stroke="#F5B74F"
-                strokeWidth="1.1"
-              />
-              <ellipse
-                cx="160"
-                cy="42"
-                rx="26"
-                ry="10"
-                fill="none"
-                stroke="#F5B74F"
-                strokeWidth="1.1"
-                strokeDasharray="4 3"
-              />
-              <circle cx="160" cy="40" r="4.5" fill="#F5B74F" />
-              <text
-                x="160"
-                y="14"
-                textAnchor="middle"
-                fill="#F5B74F"
-                fontSize="9.5"
-                fontWeight="900"
-              >
-                AGENT 1 • BLOOMBERG NEWS
-              </text>
+            <g className="agent-orbit-rocket" aria-hidden="true" pointerEvents="none">
+              <animateMotion dur="15s" repeatCount="indefinite" rotate="auto" path={flightPath} />
+              <path d="M-42 0 H-9" stroke={`url(#${id}-trail)`} strokeWidth="2.8" strokeLinecap="round" />
+              <path d="M-9 -3 -13 -8 -4 -6 Q4 -8 13 0 Q4 8 -4 6 L-13 8 -9 3Z" fill="#D7FBFF" stroke="#62DAF1" />
+              <circle cx="3" cy="0" r="2.1" fill="#1D6683" />
             </g>
-            <g pointerEvents="none">
-              <rect
-                x="98"
-                y="88"
-                width="124"
-                height="17"
-                rx="2"
-                fill="#070D19"
-                stroke={getVoteColor(agent1.vote)}
-                strokeWidth="1.2"
-              />
-              <text
-                x="160"
-                y="100"
-                textAnchor="middle"
-                fill={getVoteColor(agent1.vote)}
-                fontSize="9"
-                fontWeight="800"
-              >
-                {agent1.vote} • {agent1.credibilityOrAccuracyPct}% VALID
-              </text>
-            </g>
-            <rect
-              data-testid="viz-pod-BLOOMBERG_NEWS"
-              x="80"
-              y="2"
-              width="160"
-              height="108"
-              fill="transparent"
-            />
-          </g>
-
-          {/* ==================== POD 2: AGENT 2 TECHNICAL & PRICE ACTION (BOTTOM-LEFT: 160, 198) ==================== */}
-          <g className="cursor-pointer" onClick={() => onSelectAgent('TECHNICAL_ANALYST')}>
-            {renderIsoPedestal(160, 198, '#56B6F7', selectedAgentId === 'TECHNICAL_ANALYST')}
-            <g className="iso-float-2" pointerEvents="none">
-              <line x1="142" y1="150" x2="142" y2="188" stroke="#F87171" strokeWidth="1.5" />
-              <rect
-                x="137"
-                y="160"
-                width="10"
-                height="18"
-                fill="#F87171"
-                fillOpacity="0.75"
-                stroke="#FF8A80"
-                strokeWidth="0.9"
-              />
-              <line x1="160" y1="142" x2="160" y2="185" stroke="#56B6F7" strokeWidth="1.5" />
-              <rect
-                x="155"
-                y="150"
-                width="10"
-                height="24"
-                fill="#56B6F7"
-                fillOpacity="0.8"
-                stroke="#E0F7FA"
-                strokeWidth="1"
-              />
-              <line x1="178" y1="146" x2="178" y2="186" stroke="#34D399" strokeWidth="1.5" />
-              <rect
-                x="173"
-                y="153"
-                width="10"
-                height="22"
-                fill="#34D399"
-                fillOpacity="0.8"
-                stroke="#B9F6CA"
-                strokeWidth="0.9"
-              />
-              <path
-                d="M 130 176 Q 147 148, 161 162 T 192 147"
-                fill="none"
-                stroke="#F5B74F"
-                strokeWidth="2"
-              />
-              <text
-                x="160"
-                y="135"
-                textAnchor="middle"
-                fill="#56B6F7"
-                fontSize="9.5"
-                fontWeight="900"
-              >
-                AGENT 2 • QUANT TA &amp; PA
-              </text>
-            </g>
-            <g pointerEvents="none">
-              <rect
-                x="96"
-                y="218"
-                width="128"
-                height="17"
-                rx="2"
-                fill="#070D19"
-                stroke={getVoteColor(agent2.vote)}
-                strokeWidth="1.2"
-              />
-              <text
-                x="160"
-                y="230"
-                textAnchor="middle"
-                fill={getVoteColor(agent2.vote)}
-                fontSize="9"
-                fontWeight="800"
-              >
-                {agent2.vote} • RSI {consensus.ta.rsi14} ({agent2.score}%)
-              </text>
-            </g>
-            <rect
-              data-testid="viz-pod-TECHNICAL_ANALYST"
-              x="80"
-              y="124"
-              width="160"
-              height="116"
-              fill="transparent"
-            />
-          </g>
-
-          {/* ==================== POD 3: AGENT 3 WHALE WALLET TRACKER (TOP-RIGHT: 760, 68) ==================== */}
-          <g className="cursor-pointer" onClick={() => onSelectAgent('WHALE_WALLET')}>
-            {renderIsoPedestal(760, 68, '#A78BFA', selectedAgentId === 'WHALE_WALLET')}
-            <g className="iso-float-2" pointerEvents="none">
-              <ellipse
-                cx="760"
-                cy="47"
-                rx="30"
-                ry="11"
-                fill="none"
-                stroke="#A78BFA"
-                strokeWidth="1.2"
-                className="iso-sonar-pulse"
-              />
-              <polygon
-                points="760,21 781,31 760,41 739,31"
-                fill="#A78BFA"
-                fillOpacity="0.35"
-                stroke="#EA80FC"
-                strokeWidth="1.3"
-              />
-              <polygon
-                points="739,31 760,41 760,62 739,52"
-                fill="#6A1B9A"
-                fillOpacity="0.55"
-                stroke="#A78BFA"
-                strokeWidth="1.1"
-              />
-              <polygon
-                points="760,41 781,31 781,52 760,62"
-                fill="#4A148C"
-                fillOpacity="0.65"
-                stroke="#A78BFA"
-                strokeWidth="1.1"
-              />
-              <circle cx="760" cy="41" r="4.5" fill="#56B6F7" />
-              <text
-                x="760"
-                y="14"
-                textAnchor="middle"
-                fill="#EA80FC"
-                fontSize="9.5"
-                fontWeight="900"
-              >
-                AGENT 3 • WHALE TRACKER
-              </text>
-            </g>
-            <g pointerEvents="none">
-              <rect
-                x="694"
-                y="88"
-                width="132"
-                height="17"
-                rx="2"
-                fill="#070D19"
-                stroke={getVoteColor(agent3.vote)}
-                strokeWidth="1.2"
-              />
-              <text
-                x="760"
-                y="100"
-                textAnchor="middle"
-                fill={getVoteColor(agent3.vote)}
-                fontSize="9"
-                fontWeight="800"
-              >
-                {agent3.vote} • {consensus.whale.netFlow1hUsd >= 0 ? '+' : '-'}$
-                {(Math.abs(consensus.whale.netFlow1hUsd) / 1e6).toFixed(1)}M 1H
-              </text>
-            </g>
-            <rect
-              data-testid="viz-pod-WHALE_WALLET"
-              x="680"
-              y="2"
-              width="160"
-              height="108"
-              fill="transparent"
-            />
-          </g>
-
-          {/* ==================== POD 4: AGENT 4 EXECUTION PRECISION ARBITER (BOTTOM-RIGHT: 760, 198) ==================== */}
-          <g className="cursor-pointer" onClick={() => onSelectAgent('EXECUTION_PRECISION')}>
-            {renderIsoPedestal(760, 198, '#34D399', selectedAgentId === 'EXECUTION_PRECISION')}
-            <g className="iso-float-1" pointerEvents="none">
-              <polygon
-                points="760,141 781,152 781,174 760,185 739,174 739,152"
-                fill="#34D399"
-                fillOpacity="0.18"
-                stroke="#34D399"
-                strokeWidth="1.5"
-              />
-              <circle
-                cx="760"
-                cy="163"
-                r="13"
-                fill="none"
-                stroke="#56B6F7"
-                strokeWidth="1.2"
-                strokeDasharray="5 3"
-                className="iso-orbit-spin"
-              />
-              <line x1="743" y1="163" x2="777" y2="163" stroke="#34D399" strokeWidth="1.2" />
-              <line x1="760" y1="146" x2="760" y2="180" stroke="#34D399" strokeWidth="1.2" />
-              <circle cx="760" cy="163" r="3.5" fill="#34D399" />
-              <text
-                x="760"
-                y="135"
-                textAnchor="middle"
-                fill="#34D399"
-                fontSize="9.5"
-                fontWeight="900"
-              >
-                AGENT 4 • PRECISION ARBITER
-              </text>
-            </g>
-            <g pointerEvents="none">
-              <rect
-                x="694"
-                y="218"
-                width="132"
-                height="17"
-                rx="2"
-                fill="#070D19"
-                stroke={getVoteColor(agent4.vote)}
-                strokeWidth="1.2"
-              />
-              <text
-                x="760"
-                y="230"
-                textAnchor="middle"
-                fill={getVoteColor(agent4.vote)}
-                fontSize="9"
-                fontWeight="800"
-              >
-                {agent4.vote} • R:R 1:{consensus.riskRewardRatio}
-              </text>
-            </g>
-            <rect
-              data-testid="viz-pod-EXECUTION_PRECISION"
-              x="680"
-              y="124"
-              width="160"
-              height="116"
-              fill="transparent"
-            />
-          </g>
-
-          {/* ==================== CENTRAL 3D HOLOGRAPHIC CONSENSUS CORE (460, 132) ==================== */}
-          <g pointerEvents="none">
-            <circle cx="460" cy="132" r="88" fill="url(#coreGlow)" />
-
-            <polygon
-              points="460,126 548,160 460,194 372,160"
-              fill="#091324"
-              stroke={coreColor}
-              strokeWidth="1.8"
-            />
-            <polygon
-              points="372,160 460,194 460,210 372,176"
-              fill="#060D1A"
-              stroke={coreColor}
-              strokeWidth="1.2"
-              strokeOpacity="0.75"
-            />
-            <polygon
-              points="460,194 548,160 548,176 460,210"
-              fill="#040912"
-              stroke={coreColor}
-              strokeWidth="1.2"
-              strokeOpacity="0.55"
-            />
-
-            <ellipse
-              cx="460"
-              cy="154"
-              rx="66"
-              ry="24"
-              fill="none"
-              stroke={coreColor}
-              strokeWidth="1.4"
-              strokeDasharray="8 5"
-              className="iso-sonar-pulse"
-            />
-            <ellipse
-              cx="460"
-              cy="121"
-              rx="52"
-              ry="18"
-              fill="none"
-              stroke="#56B6F7"
-              strokeWidth="1.2"
-              strokeDasharray="6 4"
-            />
-
-            <g className="iso-float-1">
-              <polygon
-                points="460,52 502,98 460,114"
-                fill={coreColor}
-                fillOpacity="0.32"
-                stroke={coreColor}
-                strokeWidth="1.5"
-              />
-              <polygon
-                points="460,52 418,98 460,114"
-                fill={coreColor}
-                fillOpacity="0.48"
-                stroke={coreColor}
-                strokeWidth="1.5"
-              />
-              <polygon
-                points="418,98 460,114 460,154"
-                fill="#0D1F38"
-                fillOpacity="0.85"
-                stroke={coreColor}
-                strokeWidth="1.4"
-              />
-              <polygon
-                points="502,98 460,114 460,154"
-                fill="#081324"
-                fillOpacity="0.9"
-                stroke={coreColor}
-                strokeWidth="1.4"
-              />
-
-              <rect
-                x="392"
-                y="80"
-                width="136"
-                height="46"
-                rx="3"
-                fill="#050A14"
-                fillOpacity="0.92"
-                stroke={coreColor}
-                strokeWidth="1.8"
-              />
-              <text
-                x="460"
-                y="95"
-                textAnchor="middle"
-                fill="#CBD5E1"
-                fontSize="9.5"
-                fontWeight="800"
-              >
-                {consensus.symbol} • VERDICT
-              </text>
-              <text
-                x="460"
-                y="112"
-                textAnchor="middle"
-                fill={coreColor}
-                fontSize="13"
-                fontWeight="900"
-              >
-                {consensus.hasVeto
-                  ? 'VETO GUARD'
-                  : `${consensus.recommendedSide} (${consensus.positionAccuracyPct}%)`}
-              </text>
-            </g>
-
-            <rect
-              x="382"
-              y="168"
-              width="156"
-              height="18"
-              rx="2"
-              fill="#060B14"
-              stroke="#1E2F4D"
-              strokeWidth="1.1"
-            />
-            <text
-              x="460"
-              y="180"
-              textAnchor="middle"
-              fill="#56B6F7"
-              fontSize="9"
-              fontWeight="800"
-            >
-              ENTRY ${consensus.entryPrice.toLocaleString()} • SL ${consensus.stopLossPrice.toLocaleString()}
-            </text>
-          </g>
         </svg>
       </div>
 
@@ -684,7 +237,7 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
             </span>
           </div>
 
-          <div className="flex items-center gap-1">
+          <div className="flex flex-wrap items-center gap-1">
             {consensus.votes.map((v, idx) => {
               const active = v.agentId === activeAgent.agentId;
               return (
@@ -705,17 +258,17 @@ export const AgentWarRoom3DViz: React.FC<AgentWarRoom3DVizProps> = ({
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-1.5">
+        <div className="agent-orbit-skills grid grid-cols-1 gap-2">
           {(activeAgent.subSkills || []).map((skill, idx) => (
             <div
               key={idx}
-              className="p-1.5 bg-[#0A1120] border border-[#17243A]"
+              className="min-w-0 p-2 bg-[#0A1120] border border-[#17243A]"
             >
-              <div className="flex items-center justify-between text-[9px] font-extrabold">
-                <span className="text-white truncate">{skill.name}</span>
+              <div className="flex items-center justify-between text-[11px] font-extrabold gap-2">
+                <span className="text-white">{skill.name}</span>
                 <span className="text-[#00E676] font-mono shrink-0">{skill.score}%</span>
               </div>
-              <div className="text-[8.5px] text-[#00E5FF] font-mono truncate mt-0.5">
+              <div className="text-[10px] text-[#00E5FF] font-mono break-words mt-0.5">
                 {skill.status}
               </div>
               <div className="w-full h-1 bg-[#131D31] mt-1 overflow-hidden">

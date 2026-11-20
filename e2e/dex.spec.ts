@@ -1,3 +1,4 @@
+import { openExpandedDesk } from './helpers';
 import { test, expect, type Page } from '@playwright/test';
 
 /**
@@ -5,7 +6,7 @@ import { test, expect, type Page } from '@playwright/test';
  */
 
 async function gotoDex(page: Page) {
-  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await openExpandedDesk(page);
   await expect(page.getByTestId('top-tab-DEX_SCREENER')).toBeVisible({ timeout: 30_000 });
   await page.getByTestId('top-tab-DEX_SCREENER').click();
   await expect(page.getByTestId('dex-search')).toBeVisible();

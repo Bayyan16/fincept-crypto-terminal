@@ -1,3 +1,4 @@
+import { CandlestickChart, Compass, BrainCircuit, ClipboardList, Wallet, Activity, Terminal, ChevronDown, Columns2, Rows2, Settings, ArrowLeftRight } from 'lucide-react';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AgentBrainDecision,
@@ -64,6 +65,14 @@ import {
   ChartInterval,
 } from './components/CandlestickOrderflowChart';
 import { WalletConnectModal } from './components/WalletConnectModal';
+
+const workspaceTabs = [
+  { id: 'TERMINAL_DESK', label: 'Trading Desk', icon: CandlestickChart },
+  { id: 'DEX_SCREENER', label: 'DEX Screener', icon: Compass },
+  { id: 'AGENT_SKILLS', label: 'AI & Risk', icon: BrainCircuit },
+  { id: 'PORTFOLIO_LOG', label: 'Execution Log', icon: ClipboardList },
+  { id: 'PORTFOLIO_PROFILE', label: 'Portfolio', icon: Wallet },
+] as const;
 
 function buildMarketPairFromDexPool(
   pool: DexScreenerPoolItem,
@@ -145,7 +154,7 @@ function LivePrice({
   );
 }
 
-export function App() {
+export function App({ simple = false }: { simple?: boolean } = {}) {
   const [markets, setMarkets] = useState<MarketPair[]>(INITIAL_MARKETS);
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTC-PERP');
   const [chartTimeframe, setChartTimeframe] = useState<ChartInterval>('15m');
@@ -257,6 +266,39 @@ export function App() {
     startY: 0,
     startHeight: 215,
   });
+  const [deskSplit, setDeskSplit] = useState(58);
+  const [deskSwapped, setDeskSwapped] = useState(false);
+  const [deskStacked, setDeskStacked] = useState(false);
+  const deskGridRef = useRef<HTMLDivElement>(null);
+  const deskResizeRef = useRef<{ pointerId: number; startX: number; startSplit: number; width: number } | null>(null);
+  const deskSettingsRef = useRef<HTMLDetailsElement>(null);
+  const [showWhalePanel, setShowWhalePanel] = useState(!simple);
+  const tradeControlsKey = simple ? 'fincept:simple-trade-controls' : 'fincept:trade-controls';
+  const [showTradeControls, setShowTradeControls] = useState(() => {
+    const preference = localStorage.getItem(tradeControlsKey);
+    return preference === null ? !simple : preference === 'visible';
+  });
+
+  useEffect(() => {
+    localStorage.setItem(tradeControlsKey, showTradeControls ? 'visible' : 'hidden');
+  }, [showTradeControls, tradeControlsKey]);
+
+  const resizeDesk = (percent: number) => setDeskSplit(Math.min(68, Math.max(35, percent)));
+  const swapDeskPanes = () => setDeskSwapped((swapped) => !swapped);
+
+  const marketPickerRef = useRef<HTMLDetailsElement>(null);
+
+  useEffect(() => {
+    const closeOutside = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return;
+      for (const menu of [marketPickerRef.current, deskSettingsRef.current]) {
+        if (menu && !menu.contains(event.target)) menu.open = false;
+      }
+    };
+    document.addEventListener('pointerdown', closeOutside);
+    return () => document.removeEventListener('pointerdown', closeOutside);
+  }, []);
+
   const leftPaneRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -270,9 +312,9 @@ export function App() {
     const handleGlobalMove = (e: PointerEvent) => {
       const deltaY = positionsResizeStartRef.current.startY - e.clientY;
       const paneH = leftPaneRef.current?.clientHeight || 680;
-      const maxH = Math.min(540, Math.max(260, paneH - 120));
+      const maxH = Math.max(110, paneH - 170);
       const nextH = Math.max(
-        40,
+        105,
         Math.min(maxH, positionsResizeStartRef.current.startHeight + deltaY)
       );
       setPositionsDockHeightPx(Math.round(nextH));
@@ -306,9 +348,9 @@ export function App() {
 
   const setPresetPositionsHeight = (mode: 'MIN' | 'SPLIT' | 'MAX') => {
     const paneH = leftPaneRef.current?.clientHeight || 680;
-    if (mode === 'MIN') setPositionsDockHeightPx(40);
+    if (mode === 'MIN') setPositionsDockHeightPx(105);
     else if (mode === 'SPLIT') setPositionsDockHeightPx(215);
-    else setPositionsDockHeightPx(Math.max(360, paneH - 135));
+    else setPositionsDockHeightPx(Math.max(110, paneH - 170));
   };
   const [, setLiveFeedMode] = useState<{
     hyperliquid: 'LIVE' | 'SIM_STREAM';
@@ -1778,32 +1820,46 @@ export function App() {
   return (
     <div
       data-testid="app-root"
-      className="flex flex-col min-h-screen lg:h-screen w-full max-w-full bg-[#0B0F17] text-[#E2E8F0] font-sans overflow-x-hidden lg:overflow-hidden select-none antialiased"
+      className={`workspace-shell flex flex-col min-h-screen lg:h-screen w-full max-w-full bg-[#0B0F17] text-[#E2E8F0] font-sans overflow-x-hidden lg:overflow-hidden select-none antialiased ${simple ? 'simple-workspace' : ''}`}
     >
+      <aside className="workspace-sidebar">
+        <div className="workspace-brand">
+          <Activity size={19} aria-hidden="true" />
+          <span>{simple ? 'Fincept Simple' : 'Fincept'}</span>
+        </div>
+        <nav className="workspace-nav" aria-label="Terminal navigation">
+          {workspaceTabs.map(({ id, label, icon: Icon }) => (
+            <button
+              key={id}
+              data-testid={`top-tab-${id}`}
+              aria-current={activeTopTab === id ? 'page' : undefined}
+              onClick={() => setActiveTopTab(id)}
+            >
+              <Icon size={17} aria-hidden="true" />
+              <span>{label}</span>
+            </button>
+          ))}
+        </nav>
+        <a className="workspace-edition-link" href={simple ? '/pro/' : '/'}>{simple ? 'Pro' : 'Simple'} <span aria-hidden="true">↗</span></a>
+        <div className="workspace-market-count"><span aria-hidden="true" />{markets.length} markets</div>
+      </aside>
+      <div className="workspace-content">
       {/* 1. TOP FINCEPT COMMAND BAR & REAL-MONEY EXECUTION MODE SWITCHER */}
-      <header className="flex flex-wrap items-center justify-between gap-x-2.5 gap-y-1.5 px-2.5 sm:px-3 py-1.5 bg-[#090C12] border-b border-[#1E2736] w-full min-w-0">
+      <header className="workspace-header flex flex-wrap items-center justify-between gap-x-2.5 gap-y-1.5 px-2.5 sm:px-3 py-1.5 bg-[#090C12] border-b border-[#1E2736] w-full min-w-0">
         <div className="flex items-center gap-2 min-w-0 flex-1">
-          <div className="flex items-center gap-1.5 shrink-0">
-            <span className="px-1.5 py-0.5 bg-[#FF9F1C] text-black font-extrabold text-xs tracking-wider">
-              FINCEPT
-            </span>
-            <span className="text-xs font-extrabold tracking-widest text-[#F8FAFC] hidden md:inline">
-              WHALE QUANT TERMINAL
-            </span>
-          </div>
-
-          <span className="text-[#2D3A4F] shrink-0 hidden sm:inline">|</span>
+          <h1 className="workspace-title">{simple && activeTopTab === 'TERMINAL_DESK' ? 'Market' : workspaceTabs.find((tab) => tab.id === activeTopTab)?.label}</h1>
 
           {/* Command Bar Input */}
           <form onSubmit={handleCommandSubmit} className="flex items-center min-w-0 flex-1 sm:flex-initial sm:shrink-0">
             <div className="flex items-center bg-[#040609] border border-[#263246] focus-within:border-[#FF9F1C] px-2 py-0.5 w-full sm:w-auto">
-              <span className="text-[#FF9F1C] text-xs font-bold mr-1.5 shrink-0">&gt;</span>
+              <Terminal size={14} className="mr-2 shrink-0 text-[#FF9F1C]" aria-hidden="true" />
               <input
                 type="text"
                 data-testid="command-input"
+                aria-label="Terminal command"
                 value={commandInput}
                 onChange={(e) => setCommandInput(e.target.value)}
-                placeholder="Type /profile, /portfolio, /btc, /sol..."
+                placeholder="Command, e.g. /btc"
                 className="bg-transparent text-[11px] text-[#F8FAFC] placeholder-[#64748B] focus:outline-none w-full min-w-0 sm:w-44 xl:w-56"
               />
             </div>
@@ -1907,185 +1963,200 @@ export function App() {
             </button>
           )}
         </div>
+        {activeTopTab === 'TERMINAL_DESK' && (
+          <details
+            ref={deskSettingsRef}
+            className="desk-settings"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape') {
+                event.currentTarget.open = false;
+                event.currentTarget.querySelector('summary')?.focus();
+              }
+            }}
+          >
+            <summary aria-label="Pengaturan Trading Desk" title="Pengaturan Trading Desk">
+              <Settings size={17} aria-hidden="true" />
+            </summary>
+            <div className="desk-settings-menu">
+              <h2>Pengaturan Trading Desk</h2>
+              <label>
+                <input type="checkbox" checked={showTradeControls} onChange={(event) => setShowTradeControls(event.target.checked)} />
+                Tampilkan kontrol trading cepat
+              </label>
+              <button className="desk-settings-stack" type="button" onClick={() => setDeskStacked(!deskStacked)}>
+                {deskStacked ? <Columns2 size={14} /> : <Rows2 size={14} />}
+                {deskStacked ? 'Berdampingan' : 'Bertumpuk'}
+              </button>
+              <button type="button" onClick={swapDeskPanes}><ArrowLeftRight size={14} /> Tukar posisi panel</button>
+              <button type="button" onClick={() => {
+                setDeskSplit(58);
+                setDeskSwapped(false);
+                setDeskStacked(false);
+              }}>Reset susunan panel</button>
+            </div>
+          </details>
+        )}
       </header>
-
-      {/* 2. PRIMARY NAVIGATION TABS (Single Swipeable Bar on Mobile Android/iPhone, Full Strip on Desktop) */}
-      <nav className="flex items-center justify-between gap-x-2 px-2 sm:px-3 py-0.5 bg-[#0B0F17] border-b border-[#1E2736] text-[11px] w-full">
-        <div className="flex flex-nowrap lg:flex-wrap items-center gap-1 min-w-0 w-full lg:w-auto overflow-x-auto no-scrollbar touch-scroll-x">
-          {(
-            [
-              { id: 'TERMINAL_DESK', label: '1) MULTI-EXCHANGE DESK' },
-              { id: 'DEX_SCREENER', label: '2) DEXSCREENER & HYPERLIQUID POOLS' },
-              { id: 'AGENT_SKILLS', label: '3) AGENT BRAIN & REAL-MONEY RISK' },
-              { id: 'PORTFOLIO_LOG', label: '4) EXECUTION & SCRATCH AUDIT' },
-              { id: 'PORTFOLIO_PROFILE', label: '5) 👤 PORTFOLIO & PROFILE' },
-            ] as const
-          ).map((tab) => (
-            <button
-              key={tab.id}
-              data-testid={`top-tab-${tab.id}`}
-              onClick={() => setActiveTopTab(tab.id)}
-              className={`px-2.5 sm:px-3 py-1.5 font-extrabold tracking-wide whitespace-nowrap shrink-0 border-b-2 transition-all duration-150 active:scale-[0.98] ${
-                activeTopTab === tab.id
-                  ? 'bg-[#151D2B] text-[#FF9F1C] border-[#FF9F1C]'
-                  : tab.id === 'PORTFOLIO_PROFILE'
-                    ? 'text-[#00E5FF] border-transparent hover:bg-[#101C2E] hover:border-[#00E5FF]/50'
-                    : 'text-[#CBD5E1] border-transparent hover:bg-[#121926] hover:text-white'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
-        </div>
-
-        <div className="hidden lg:flex items-center gap-2 shrink-0 text-[10px]">
-          <span className="px-2 py-0.5 bg-[#071510] border border-[#00E676]/40 text-[#00E676] font-extrabold whitespace-nowrap">
-            ● LIVE ON-CHAIN ({markets.length} MARKETS)
-          </span>
-        </div>
-      </nav>
-
-      {/* 3. SEAMLESS MULTI-MARKET WATCHLIST RAIL (Swipeable on Mobile, Multi-Column Grid on Desktop) */}
-      <div className="px-2.5 sm:px-3 py-1 bg-[#070A0F] border-b border-[#1E2736] text-[10px] w-full space-y-1">
-        <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-1.5">
-          <div className="flex flex-nowrap lg:flex-wrap items-center gap-1 overflow-x-auto no-scrollbar touch-scroll-x w-full lg:w-auto pb-0.5 lg:pb-0">
-            <span className="text-[9px] text-[#FF9F1C] font-extrabold mr-1 whitespace-nowrap shrink-0">
-              MARKET UNIVERSE ({markets.length}):
-            </span>
-            {(
-              [
-                { id: 'CORE_14', label: 'CORE 14' },
-                { id: 'ALL', label: `🌐 ALL CRYPTO (${markets.length})` },
-                { id: 'AI_DEPIN', label: '🤖 AI & DEPIN' },
-                { id: 'MEME_ALPHA', label: '🔥 MEME & ALPHA' },
-                { id: 'DEFI_RWA', label: '🏦 DEFI & RWA' },
-                { id: 'L1_L2', label: '⛓️ L1 & L2' },
-                { id: 'TOP_GAINERS', label: '🚀 TOP GAINERS' },
-              ] as const
-            ).map((cat) => (
-              <button
-                key={cat.id}
-                data-testid={`watchlist-sector-${cat.id}`}
-                onClick={() => {
-                  setWatchlistSectorFilter(cat.id);
-                  setWatchlistSearchQuery('');
-                }}
-                className={`px-2 py-0.5 text-[9px] font-extrabold border whitespace-nowrap shrink-0 ${
-                  watchlistSectorFilter === cat.id && !watchlistSearchQuery
-                    ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
-                    : 'bg-[#0C121D] text-[#94A3B8] border-[#1A2538] hover:text-white'
-                }`}
-              >
-                {cat.label}
-              </button>
-            ))}
-          </div>
-
-          <div className="flex items-center gap-1 w-full sm:w-auto">
-            <input
-              type="text"
-              data-testid="watchlist-market-search"
-              value={watchlistSearchQuery}
-              onChange={(e) => setWatchlistSearchQuery(e.target.value)}
-              placeholder={`Cari dari ${markets.length} market (PEPE, TAO, ONDO, ARB, WIF...)`}
-              className="px-2 py-1 sm:py-0.5 bg-[#05080D] border border-[#1E2B42] text-white text-[10px] sm:text-[9.5px] w-full sm:w-56 focus:outline-none"
-            />
-            {watchlistSearchQuery && (
-              <button
-                onClick={() => setWatchlistSearchQuery('')}
-                className="px-2 py-1 sm:px-1.5 sm:py-0.5 bg-[#162032] text-[#FF9F1C] text-[9px] font-bold border border-[#FF9F1C]/40 shrink-0"
-              >
-                ✕
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="flex flex-nowrap overflow-x-auto no-scrollbar touch-scroll-x gap-1.5 pb-0.5 lg:pb-0 lg:grid lg:grid-cols-4 xl:grid-cols-7 min-[2100px]:grid-cols-[repeat(14,minmax(0,1fr))] lg:gap-1 w-full lg:max-h-24 lg:overflow-y-auto">
-          {displayedWatchlistMarkets.map((m) => {
-            const isSel = m.symbol === selectedSymbol;
-            const pct1d = Number.isFinite(m.change24h) ? m.change24h : 0;
-            const isUp = pct1d >= 0;
-            return (
-              <button
-                key={m.symbol}
-                data-testid={`market-${m.symbol}`}
-                onClick={() => {
-                  setCustomDeskPool(null);
-                  setSelectedSymbol(m.symbol);
-                }}
-                className={`px-2 py-1 lg:px-1.5 lg:py-0.5 border flex items-center justify-between gap-1.5 lg:gap-1 shrink-0 min-w-[154px] lg:min-w-0 lg:shrink transition-all duration-150 hover:-translate-y-px active:scale-[0.97] ${
-                  isSel
-                    ? 'bg-[#131E30] border-[#00E5FF] text-[#F8FAFC] font-extrabold shadow-[inset_0_0_0_1px_rgba(0,229,255,0.2)]'
-                    : 'bg-[#0A0E15] border-[#192231] text-[#CBD5E1] hover:border-[#2E3D57] hover:text-white'
-                }`}
-                title={`CMC Rank #${m.cmcRank || '-'} • ${m.symbol} • $${m.price.toLocaleString()} • 1D Change: ${isUp ? '+' : ''}${pct1d.toFixed(2)}%`}
-              >
-                <span className="flex items-center gap-1 min-w-0 truncate">
-                  <CoinIcon coin={m.baseAsset} size={13} />
-                  {m.cmcRank && m.cmcRank <= 10 && (
-                    <span className="text-[8px] px-0.5 bg-[#FF9F1C]/15 text-[#FF9F1C] font-extrabold shrink-0">
-                      #{m.cmcRank}
-                    </span>
-                  )}
-                  <span className="font-bold text-white truncate">{m.baseAsset}</span>
-                </span>
-                <span className="flex items-center gap-1 shrink-0">
-                  <span className="text-[#CBD5E1] font-semibold">
-                    $
-                    <LivePrice
-                      value={m.price}
-                      format={(v) =>
-                        v >= 1000
-                          ? Math.round(v).toLocaleString()
-                          : v >= 100
-                            ? v.toFixed(1)
-                            : v >= 1
-                              ? v.toFixed(3)
-                              : v.toPrecision(4)
-                      }
-                    />
-                  </span>
-                  <span
-                    className={`px-1 text-[8.5px] font-extrabold ${
-                      isUp ? 'bg-[#00E676]/15 text-[#00E676]' : 'bg-[#FF1744]/15 text-[#FF1744]'
-                    }`}
-                  >
-                    {isUp ? '▲+' : '▼-'}
-                    {Math.abs(pct1d).toFixed(2)}%
-                  </span>
-                </span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
 
       {/* 4. ACTIVE INSTRUMENT TICKER, POSITION SIZER & AUTONOMOUS AGENT CONTROLS */}
       <div className="flex flex-wrap items-center justify-between px-2.5 sm:px-3 py-1.5 bg-[#06090F] border-b border-[#1E2736] text-[11px] gap-1.5 sm:gap-2 w-full">
         <div className="flex flex-wrap items-center justify-between sm:justify-start gap-x-3 gap-y-1 min-w-0 w-full lg:w-auto">
-          <div className="flex items-center gap-2 shrink-0">
-            {customDeskPool && activePair.symbol.endsWith('-DEX') ? (
-              <MarketTokenIcon
-                symbol={activePair.baseAsset}
-                chainId={customDeskPool.chainId}
-                address={customDeskPool.baseTokenAddress || customDeskPool.fullPairAddress}
-                imageUrl={customDeskPool.tokenImageUrl}
-                size={18}
-              />
-            ) : (
-              <CoinIcon coin={activePair.baseAsset} size={18} />
-            )}
-            {activePair.cmcRank && (
-              <span className="px-1.5 py-0.5 text-[9.5px] font-extrabold bg-[#FF9F1C] text-black">
-                CMC #{activePair.cmcRank}
+          <details
+            ref={marketPickerRef}
+            className="market-picker"
+            onKeyDown={(event) => {
+              if (event.key === 'Escape' && event.currentTarget.open) {
+                event.currentTarget.open = false;
+                event.currentTarget.querySelector('summary')?.focus();
+              }
+            }}
+          >
+            <summary className="market-picker-trigger">
+              {customDeskPool && activePair.symbol.endsWith('-DEX') ? (
+                <MarketTokenIcon
+                  symbol={activePair.baseAsset}
+                  chainId={customDeskPool.chainId}
+                  address={customDeskPool.baseTokenAddress || customDeskPool.fullPairAddress}
+                  imageUrl={customDeskPool.tokenImageUrl}
+                  size={18}
+                />
+              ) : (
+                <CoinIcon coin={activePair.baseAsset} size={18} />
+              )}
+              {activePair.cmcRank && (
+                <span className="px-1.5 py-0.5 text-[9.5px] font-extrabold bg-[#FF9F1C] text-black">
+                  CMC #{activePair.cmcRank}
+                </span>
+              )}
+              <span className="text-sm font-extrabold text-[#FF9F1C]">{activePair.symbol}</span>
+              <span className="px-1.5 py-0.5 text-[9.5px] font-bold bg-[#121B2A] text-[#00E5FF] border border-[#1E2F48]">
+                {customDeskPool && activePair.symbol.endsWith('-DEX') ? customDeskPool.chain : activePair.primaryExchange}
               </span>
-            )}
-            <span className="text-sm font-extrabold text-[#FF9F1C]">{activePair.symbol}</span>
-            <span className="px-1.5 py-0.5 text-[9.5px] font-bold bg-[#121B2A] text-[#00E5FF] border border-[#1E2F48]">
-              {customDeskPool && activePair.symbol.endsWith('-DEX') ? customDeskPool.chain : activePair.primaryExchange}
-            </span>
-          </div>
+              <ChevronDown size={14} aria-hidden="true" />
+            </summary>
+            <div className="market-picker-panel">
+              <div className="market-picker-controls">
+                <div className="market-picker-filters">
+                  <span className="text-[9px] text-[#FF9F1C] font-extrabold mr-1 whitespace-nowrap shrink-0">
+                    Market ({markets.length})
+                  </span>
+                  {(
+                    [
+                      { id: 'CORE_14', label: 'CORE 14' },
+                      { id: 'ALL', label: `🌐 ALL CRYPTO (${markets.length})` },
+                      { id: 'AI_DEPIN', label: '🤖 AI & DEPIN' },
+                      { id: 'MEME_ALPHA', label: '🔥 MEME & ALPHA' },
+                      { id: 'DEFI_RWA', label: '🏦 DEFI & RWA' },
+                      { id: 'L1_L2', label: '⛓️ L1 & L2' },
+                      { id: 'TOP_GAINERS', label: '🚀 TOP GAINERS' },
+                    ] as const
+                  ).map((cat) => (
+                    <button
+                      key={cat.id}
+                      data-testid={`watchlist-sector-${cat.id}`}
+                      onClick={() => {
+                        setWatchlistSectorFilter(cat.id);
+                        setWatchlistSearchQuery('');
+                      }}
+                      className={`px-2 py-0.5 text-[9px] font-extrabold border whitespace-nowrap shrink-0 ${
+                        watchlistSectorFilter === cat.id && !watchlistSearchQuery
+                          ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
+                          : 'bg-[#0C121D] text-[#94A3B8] border-[#1A2538] hover:text-white'
+                      }`}
+                    >
+                      {cat.label}
+                    </button>
+                  ))}
+                </div>
+
+                <div className="flex items-center gap-1 w-full sm:w-auto">
+                  <input
+                    type="search"
+                    aria-label="Cari market"
+                    data-testid="watchlist-market-search"
+                    value={watchlistSearchQuery}
+                    onChange={(e) => setWatchlistSearchQuery(e.target.value)}
+                    placeholder={`Cari dari ${markets.length} market (PEPE, TAO, ONDO, ARB, WIF...)`}
+                    className="px-2 py-1 sm:py-0.5 bg-[#05080D] border border-[#1E2B42] text-white text-[10px] sm:text-[9.5px] w-full focus:outline-none"
+                  />
+                  {watchlistSearchQuery && (
+                    <button
+                      aria-label="Hapus pencarian"
+                      onClick={() => setWatchlistSearchQuery('')}
+                      className="px-2 py-1 sm:px-1.5 sm:py-0.5 bg-[#162032] text-[#FF9F1C] text-[9px] font-bold border border-[#FF9F1C]/40 shrink-0"
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              <div className="market-picker-list">
+                <div className="market-picker-columns" aria-hidden="true">
+                  <span>Simbol</span><span>Harga</span><span>24 jam</span>
+                </div>
+                {displayedWatchlistMarkets.length === 0 && (
+                  <p className="p-3 text-[#94A3B8]">Market tidak ditemukan.</p>
+                )}
+                {displayedWatchlistMarkets.map((m) => {
+                  const isSel = m.symbol === selectedSymbol;
+                  const pct1d = Number.isFinite(m.change24h) ? m.change24h : 0;
+                  const isUp = pct1d >= 0;
+                  return (
+                    <button
+                      key={m.symbol}
+                      data-testid={`market-${m.symbol}`}
+                      onClick={() => {
+                        setCustomDeskPool(null);
+                        setSelectedSymbol(m.symbol);
+                        const picker = marketPickerRef.current;
+                        if (picker) {
+                          picker.open = false;
+                          picker.querySelector('summary')?.focus();
+                        }
+                      }}
+                      className="market-picker-row"
+                      aria-pressed={isSel}
+                      title={`CMC Rank #${m.cmcRank || '-'} • ${m.symbol} • $${m.price.toLocaleString()} • 1D Change: ${isUp ? '+' : ''}${pct1d.toFixed(2)}%`}
+                    >
+                      <span className="flex items-center gap-1 min-w-0 truncate">
+                        <CoinIcon coin={m.baseAsset} size={13} />
+                        {m.cmcRank && m.cmcRank <= 10 && (
+                          <span className="text-[8px] px-0.5 bg-[#FF9F1C]/15 text-[#FF9F1C] font-extrabold shrink-0">
+                            #{m.cmcRank}
+                          </span>
+                        )}
+                        <span className="font-bold text-white truncate">{m.symbol}</span>
+                      </span>
+                      <span className="text-[#CBD5E1] font-semibold">
+                        $
+                        <LivePrice
+                          value={m.price}
+                          format={(v) =>
+                            v >= 1000
+                              ? Math.round(v).toLocaleString()
+                              : v >= 100
+                                ? v.toFixed(1)
+                                : v >= 1
+                                  ? v.toFixed(3)
+                                  : v.toPrecision(4)
+                          }
+                        />
+                      </span>
+                      <span
+                        className={`px-1 text-[8.5px] font-extrabold ${
+                          isUp ? 'bg-[#00E676]/15 text-[#00E676]' : 'bg-[#FF1744]/15 text-[#FF1744]'
+                        }`}
+                      >
+                        {isUp ? '▲+' : '▼-'}
+                        {Math.abs(pct1d).toFixed(2)}%
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </details>
 
           <div className="flex items-center gap-1.5 shrink-0">
             <span className="text-sm font-extrabold text-white">
@@ -2140,7 +2211,7 @@ export function App() {
         </div>
 
         {/* Real-Money Order Sizing & Execution Controls */}
-        <div className="flex flex-nowrap lg:flex-wrap items-center gap-1.5 max-w-full w-full lg:w-auto overflow-x-auto no-scrollbar touch-scroll-x pb-0.5 lg:pb-0">
+        <div className={`${activeTopTab === 'TERMINAL_DESK' && !showTradeControls ? 'hidden' : 'flex'} flex-nowrap lg:flex-wrap items-center gap-1.5 max-w-full w-full lg:w-auto overflow-x-auto no-scrollbar touch-scroll-x pb-0.5 lg:pb-0`}>
           <div className="flex items-center bg-[#040609] border border-[#1E2736] px-1.5 py-0.5 text-[10px] shrink-0">
             <span className="text-[#94A3B8] mr-1">SIZE $:</span>
             <input
@@ -2210,16 +2281,28 @@ export function App() {
       </div>
 
       {/* 4. MAIN WORKSPACE CONTENT */}
-      <main className="flex-1 min-h-0 overflow-y-auto lg:overflow-hidden">
+      {simple && activeTopTab === 'TERMINAL_DESK' && (
+        <div className="simple-desk-actions">
+          <button type="button" aria-pressed={showWhalePanel} onClick={() => setShowWhalePanel(!showWhalePanel)}>
+            <Activity size={15} aria-hidden="true" /> Whale Pipeline
+          </button>
+          <button type="button" aria-pressed={showTradeControls} onClick={() => setShowTradeControls(!showTradeControls)}>
+            <CandlestickChart size={15} aria-hidden="true" /> Kontrol trading
+          </button>
+        </div>
+      )}
+      <main className="workspace-main flex-1 min-h-0 overflow-y-auto">
         {activeTopTab === 'TERMINAL_DESK' && (
           <div
             key="TERMINAL_DESK"
-            className="anim-panel flex flex-col lg:grid lg:grid-cols-12 lg:h-full divide-y lg:divide-y-0 lg:divide-x divide-[#1E2736]"
+            ref={deskGridRef}
+            className={`workspace-desk anim-panel ${deskSwapped ? 'desk-swapped' : ''} ${deskStacked ? 'desk-stacked' : ''} ${showWhalePanel ? '' : 'simple-chart-only'}`}
+            style={{ '--desk-split': deskSplit / (100 - deskSplit) + 'fr' } as React.CSSProperties}
           >
             {/* LEFT & CENTER PANE (7 Columns on Desktop, Full-Width Stacked on Mobile Android/iPhone) */}
             <div
               ref={leftPaneRef}
-              className="w-full lg:col-span-7 flex flex-col lg:h-full lg:overflow-hidden bg-[#06080C]"
+              className="desk-chart-pane flex flex-col bg-[#06080C]"
             >
               <div className="flex flex-wrap items-center justify-between gap-2 px-2.5 sm:px-3 py-1 bg-[#0A0E15] border-b border-[#1E2736] text-[10.5px]">
                 <div className="flex flex-nowrap sm:flex-wrap items-center gap-x-3.5 sm:gap-x-4 gap-y-1 min-w-0 max-w-full overflow-x-auto no-scrollbar touch-scroll-x">
@@ -2251,7 +2334,7 @@ export function App() {
                 </div>
               </div>
 
-              <div className="flex flex-col lg:grid lg:grid-cols-12 flex-1 min-h-0 divide-y lg:divide-y-0 lg:divide-x divide-[#1E2736] border-b border-[#1E2736]">
+              <div className="desk-chart-content flex flex-col lg:grid lg:grid-cols-12 flex-1 min-h-0 divide-y lg:divide-y-0 lg:divide-x divide-[#1E2736] border-b border-[#1E2736]">
                 {/* Wide Real-Market TradingView Candlestick Chart / Sub-Tabs (Full-Width on Mobile, 9/12 on Desktop) */}
                 <div className="order-1 lg:order-1 lg:col-span-9 flex flex-col min-h-[410px] sm:min-h-[450px] lg:min-h-0 overflow-hidden">
                   {activeSubTab === 'OVERVIEW' && (
@@ -2860,7 +2943,7 @@ export function App() {
                   onPointerDown={handlePositionsResizePointerDown}
                   data-testid="positions-dock-handle"
                   style={{ touchAction: 'none' }}
-                  className="h-5 sm:h-2.5 bg-[#0D1524] hover:bg-[#00E5FF]/30 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group shrink-0 select-none touch-drag-surface"
+                  className="h-5 bg-[#0D1524] hover:bg-[#00E5FF]/30 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group shrink-0 select-none touch-drag-surface"
                   title="Tarik ke atas untuk memperbesar tabel Active Positions, atau tarik ke bawah untuk memperluas area Chart"
                 >
                   <div className="w-16 h-1.5 sm:h-1 rounded-full bg-[#334155] group-hover:bg-[#00E5FF] transition-colors" />
@@ -2901,7 +2984,7 @@ export function App() {
                       onClick={() => setPresetPositionsHeight('MIN')}
                       data-testid="dock-preset-MIN"
                       className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
-                        positionsDockHeightPx <= 55
+                        positionsDockHeightPx <= 105
                           ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
                           : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
                       }`}
@@ -2913,7 +2996,7 @@ export function App() {
                       onClick={() => setPresetPositionsHeight('SPLIT')}
                       data-testid="dock-preset-SPLIT"
                       className={`px-1.5 py-0.5 text-[9px] font-extrabold border ${
-                        positionsDockHeightPx > 55 && positionsDockHeightPx < 320
+                        positionsDockHeightPx > 105 && positionsDockHeightPx < 320
                           ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
                           : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
                       }`}
@@ -2936,7 +3019,7 @@ export function App() {
                   </div>
                 </div>
 
-                {positionsDockHeightPx > 48 && (
+                {positionsDockHeightPx > 105 && (
                 <div className="flex-1 overflow-y-auto divide-y divide-[#131B29] text-[10.5px]">
                   {positions.map((pos) => (
                     <div
@@ -3042,24 +3125,55 @@ export function App() {
               </div>
             </div>
 
-            {/* RIGHT PANE (5 Columns on Desktop, Full-Width Touch-Draggable Canvas on Mobile) */}
-            <div className="w-full lg:col-span-5 min-h-[540px] lg:min-h-0 lg:h-full overflow-hidden">
-              <WhaleChordViz
-                links={chordLinks}
-                recentWhales={
-                  nodeFilter
-                    ? whaleTxs.filter(
-                        (w) => w.sourceNode === nodeFilter || w.targetNode === nodeFilter
-                      )
-                    : whaleTxs
+            {/* Right pane */}
+            <div className="desk-whale-pane flex flex-col">
+            <div
+              role="separator"
+              aria-label="Lebar panel Trading Desk"
+              aria-orientation="vertical"
+              aria-valuemin={35}
+              aria-valuemax={68}
+              aria-valuenow={Math.round(deskSplit)}
+              tabIndex={0}
+              className="desk-width-handle"
+              onPointerDown={(event) => {
+                const rect = deskGridRef.current?.getBoundingClientRect();
+                if (!rect || event.button !== 0) return;
+                event.preventDefault();
+                deskResizeRef.current = { pointerId: event.pointerId, startX: event.clientX, startSplit: deskSplit, width: rect.width - event.currentTarget.offsetWidth };
+                event.currentTarget.setPointerCapture(event.pointerId);
+              }}
+              onPointerMove={(event) => {
+                const drag = deskResizeRef.current;
+                if (drag?.pointerId === event.pointerId && event.currentTarget.hasPointerCapture(event.pointerId)) {
+                  resizeDesk(drag.startSplit + (event.clientX - drag.startX) / drag.width * 100);
                 }
-                whalePositions={whalePositions}
-                hlpVaultSummary={hlpVaultSummary}
-                liveBlocks={liveBlocks}
-                activeSymbol={activePair.symbol}
-                onSelectNodeFilter={setNodeFilter}
-                onSelectSymbol={setSelectedSymbol}
-              />
+              }}
+              onLostPointerCapture={() => { deskResizeRef.current = null; }}
+              onKeyDown={(event) => {
+                if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+                event.preventDefault();
+                resizeDesk(deskSplit + (event.key === 'ArrowRight' ? 2 : -2));
+              }}
+            />
+              <div className="flex-1 min-h-0">
+                <WhaleChordViz
+                  links={chordLinks}
+                  recentWhales={
+                    nodeFilter
+                      ? whaleTxs.filter(
+                          (w) => w.sourceNode === nodeFilter || w.targetNode === nodeFilter
+                        )
+                      : whaleTxs
+                  }
+                  whalePositions={whalePositions}
+                  hlpVaultSummary={hlpVaultSummary}
+                  liveBlocks={liveBlocks}
+                  activeSymbol={activePair.symbol}
+                  onSelectNodeFilter={setNodeFilter}
+                  onSelectSymbol={setSelectedSymbol}
+                />
+              </div>
             </div>
           </div>
         )}
@@ -3704,7 +3818,7 @@ export function App() {
           <div
             key="AGENT_SKILLS"
             data-testid="agent-skills-cockpit"
-            className="anim-panel p-3 h-full overflow-y-auto bg-[#06080C] flex flex-col gap-3"
+            className="anim-panel ai-risk-cockpit p-3 sm:p-4 h-full overflow-y-auto bg-[#06080C] flex flex-col gap-4"
           >
             {/* 1. Top Unified Cockpit Telemetry Ribbon (At-a-Glance Summary without Hiding Any Detail) */}
             <div
@@ -4743,6 +4857,8 @@ export function App() {
           <span className="text-[#00E676] font-extrabold">● GATEWAY READY</span>
         </div>
       </footer>
+
+      </div>
 
       {/* Multi-Wallet & Exchange API Modal */}
       <WalletConnectModal

@@ -83,6 +83,39 @@ function computeDefaultPositions(mode: LayoutMode): Record<string, { x: number; 
   return pos;
 }
 
+function rotatePlanet(x: number, y: number, angle: number) {
+  const dx = x - 280;
+  const dy = y - 205;
+  return {
+    x: 280 + dx * Math.cos(angle) - dy * Math.sin(angle),
+    y: 205 + dx * Math.sin(angle) + dy * Math.cos(angle),
+  };
+}
+
+const globeRadius = 87;
+const orbitalWireframe = Array.from({ length: 14 }, (_, index) => {
+  const latitude = index < 7;
+  const t = (index % 7 - 3) / 4;
+  const offset = globeRadius * t;
+  const extent = Math.sqrt(globeRadius ** 2 - offset ** 2);
+  return latitude
+    ? `M ${-extent} ${offset} Q 0 ${offset + extent * .52} ${extent} ${offset}`
+    : `M 0 ${-globeRadius} C ${offset * 1.35} ${-globeRadius * .65} ${offset * 1.35} ${globeRadius * .65} 0 ${globeRadius}`;
+});
+
+function buildOrbitalPoints(count: number, spread: number) {
+  return Array.from({ length: count }, (_, index) => {
+    const angle = index * 2.399963;
+    const distance = Math.sqrt((index + .5) / count) * spread;
+    const x = (Math.cos(angle) * distance).toFixed(2);
+    const y = (Math.sin(angle) * distance).toFixed(2);
+    return `M${x} ${y}h.08`;
+  }).join(' ');
+}
+
+const orbitalAmberPoints = buildOrbitalPoints(220, 122);
+const orbitalCyanPoints = buildOrbitalPoints(330, globeRadius);
+
 export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
   links,
   recentWhales,
@@ -134,7 +167,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
   // rAF batching refs: collapse high-frequency pointer/wheel events into one
   // state update per animation frame for buttery drag, pan & zoom.
-  const dragModeRef = useRef<'node' | 'pan' | null>(null);
+  const dragModeRef = useRef<'node' | 'pan' | 'camera' | null>(null);
   const draggingNodeIdRef = useRef<string | null>(null);
   const moveRafRef = useRef<number | null>(null);
   const pendingMoveRef = useRef<{ clientX: number; clientY: number } | null>(null);
@@ -197,8 +230,8 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     const handleGlobalMove = (e: PointerEvent) => {
       const deltaY = streamResizeStartRef.current.startY - e.clientY;
       const rootH = rootContainerRef.current?.clientHeight || 680;
-      const maxH = Math.max(320, rootH - 95);
-      const nextH = Math.max(38, Math.min(maxH, streamResizeStartRef.current.startHeight + deltaY));
+      const maxH = Math.max(115, rootH - (window.innerWidth < 1024 ? 330 : 170));
+      const nextH = Math.max(110, Math.min(maxH, streamResizeStartRef.current.startHeight + deltaY));
       setStreamHeightPx(Math.round(nextH));
     };
 
@@ -228,19 +261,56 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
   const setPresetStreamHeight = (mode: 'MIN' | 'SPLIT' | 'MAX') => {
     const rootH = rootContainerRef.current?.clientHeight || 680;
-    if (mode === 'MIN') setStreamHeightPx(42);
+    if (mode === 'MIN') setStreamHeightPx(110);
     else if (mode === 'SPLIT') setStreamHeightPx(255);
-    else setStreamHeightPx(Math.max(440, rootH - 115));
+    else setStreamHeightPx(Math.max(115, rootH - (window.innerWidth < 1024 ? 330 : 170)));
   };
+
+  const [camera, setCamera] = useState({ yaw: 0, pitch: 0 });
+  const [panCanvas, setPanCanvas] = useState(false);
+  const cameraStart = useRef(camera);
+  const cameraX = Math.cos(camera.yaw);
+  const cameraY = Math.cos(camera.pitch);
+  const cameraSkew = Math.sin(camera.yaw) * Math.sin(camera.pitch);
+  const [orbitAngle, setOrbitAngle] = useState(0);
+  const [orbitDirection, setOrbitDirection] = useState(1);
+  const [orbitPaused, setOrbitPaused] = useState(() => window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  const rotation = layoutMode === 'RADIAL' ? orbitAngle : 0;
+
+  useEffect(() => {
+    if (layoutMode !== 'RADIAL' || orbitPaused) return;
+    const timer = window.setInterval(() => {
+      if (!dragModeRef.current && !pinchStartRef.current) {
+        setOrbitAngle((angle) => (angle + orbitDirection * 0.0033) % (2 * Math.PI));
+      }
+    }, 40);
+    return () => window.clearInterval(timer);
+  }, [layoutMode, orbitDirection, orbitPaused]);
+
+  const visiblePositions = useMemo(() => {
+    if (layoutMode !== 'RADIAL') return nodePositions;
+    return Object.fromEntries(Object.entries(nodePositions).map(([id, position]) => {
+      if (id === 'WHALE CORE') return [id, position];
+      const rotated = rotatePlanet(position.x, position.y, rotation);
+      const x = rotated.x - 280;
+      const y = rotated.y - 205;
+      return [id, { x: 280 + x * cameraX, y: 205 + y * cameraY + x * cameraSkew }];
+    }));
+  }, [nodePositions, rotation, layoutMode, cameraX, cameraY, cameraSkew]);
 
   const switchLayoutMode = (mode: LayoutMode) => {
     setLayoutMode(mode);
+    setOrbitAngle(0);
     setNodePositions(computeDefaultPositions(mode));
     setPan({ x: 0, y: 0 });
     setZoom(1.14);
   };
 
   const handleResetView = () => {
+    setCamera({ yaw: 0, pitch: 0 });
+    setPanCanvas(false);
+    setOrbitAngle(0);
+    setOrbitDirection(1);
     setNodePositions(computeDefaultPositions(layoutMode));
     setPan({ x: 0, y: 0 });
     setZoom(1.14);
@@ -250,6 +320,11 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
   const handleNodePointerDown = (e: React.PointerEvent, nodeId: string) => {
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (layoutMode === 'RADIAL' && nodeId === 'WHALE CORE') {
+      e.stopPropagation();
+      handleNodeClick(nodeId);
+      return;
+    }
     e.stopPropagation();
     try {
       svgContainerRef.current?.setPointerCapture(e.pointerId);
@@ -271,7 +346,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     }
 
     pinchStartRef.current = null;
-    const pos = nodePositions[nodeId] || { x: 280, y: 205 };
+    const pos = visiblePositions[nodeId] || { x: 280, y: 205 };
     setDraggingNodeId(nodeId);
     draggingNodeIdRef.current = nodeId;
     dragModeRef.current = 'node';
@@ -310,7 +385,8 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     if (draggingNodeIdRef.current) return;
     pinchStartRef.current = null;
     setIsPanningCanvas(true);
-    dragModeRef.current = 'pan';
+    cameraStart.current = camera;
+    dragModeRef.current = layoutMode === 'RADIAL' && !panCanvas && !e.shiftKey ? 'camera' : 'pan';
     dragStartRef.current = {
       clientX: e.clientX,
       clientY: e.clientY,
@@ -333,25 +409,30 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
 
     const svgEl = svgRef.current;
     const rect = svgEl ? svgEl.getBoundingClientRect() : { width: 560, height: 410 };
-    const scaleX = 560 / Math.max(1, rect.width);
-    const scaleY = 410 / Math.max(1, rect.height);
+    const svgUnitsPerPixel = 1 / Math.max(0.01, Math.min(rect.width / 560, rect.height / 410));
 
     if (mode === 'node') {
       const nodeId = draggingNodeIdRef.current;
       if (!nodeId) return;
-      const dxSvg = (dxScreen * scaleX) / zoom;
-      const dySvg = (dyScreen * scaleY) / zoom;
+      const dxSvg = (dxScreen * svgUnitsPerPixel) / zoom;
+      const dySvg = (dyScreen * svgUnitsPerPixel) / zoom;
+      const x = Math.round(Math.max(35, Math.min(525, dragStartRef.current.startNodeX + dxSvg)));
+      const y = Math.round(Math.max(25, Math.min(385, dragStartRef.current.startNodeY + dySvg)));
+      const flatX = (x - 280) / cameraX;
+      const flatY = (y - 205 - flatX * cameraSkew) / cameraY;
       setNodePositions((prev) => ({
         ...prev,
-        [nodeId]: {
-          x: Math.round(Math.max(35, Math.min(525, dragStartRef.current.startNodeX + dxSvg))),
-          y: Math.round(Math.max(25, Math.min(385, dragStartRef.current.startNodeY + dySvg))),
-        },
+        [nodeId]: layoutMode === 'RADIAL' ? rotatePlanet(280 + flatX, 205 + flatY, -rotation) : { x, y },
       }));
+    } else if (mode === 'camera') {
+      setCamera({
+        yaw: Math.max(-1.15, Math.min(1.15, cameraStart.current.yaw + dxScreen * .009)),
+        pitch: Math.max(-1.15, Math.min(1.15, cameraStart.current.pitch + dyScreen * .009)),
+      });
     } else {
       setPan({
-        x: Math.round(dragStartRef.current.startPanX + dxScreen * scaleX),
-        y: Math.round(dragStartRef.current.startPanY + dyScreen * scaleY),
+        x: Math.round(dragStartRef.current.startPanX + dxScreen * svgUnitsPerPixel),
+        y: Math.round(dragStartRef.current.startPanY + dyScreen * svgUnitsPerPixel),
       });
     }
   };
@@ -430,7 +511,9 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
     } catch {
       // Ignore synthetic events
     }
-    endDrag(e.pointerType === 'mouse');
+    const clickedNode = e.type === 'pointerup' && !dragStartRef.current.moved ? draggingNodeIdRef.current : null;
+    endDrag(false);
+    if (clickedNode) handleNodeClick(clickedNode);
   };
 
   const handleCanvasPointerLeave = (e: React.PointerEvent) => {
@@ -439,7 +522,6 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
   };
 
   const handleNodeClick = (id: string) => {
-    if (dragStartRef.current.moved) return;
     const next = selectedNode === id ? null : id;
     setSelectedNode(next);
     if (onSelectNodeFilter) onSelectNodeFilter(next);
@@ -574,7 +656,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
               WHALE PIPELINE VIZ — {activeSymbol}
             </span>
             <span className="text-[9px] px-1.5 py-0.2 bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/40 font-bold">
-              DRAG NODE • PAN • ZOOM
+              DRAG NODE • ORBIT • ZOOM
             </span>
           </div>
 
@@ -625,7 +707,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                   : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736] hover:text-white hover:border-[#00E5FF]/50'
                 }`}
             >
-              RADIAL CHORD
+              TATA SURYA
             </button>
             <button
               onClick={() => switchLayoutMode('PIPELINE')}
@@ -638,6 +720,20 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
               3-TIER PIPELINE
             </button>
           </div>
+
+          {layoutMode === 'RADIAL' && (
+            <div className="flex flex-wrap gap-1">
+              <button type="button" className="fc-btn orbital-control" onClick={() => setOrbitPaused(!orbitPaused)}>
+                {orbitPaused ? 'Jalankan orbit' : 'Jeda orbit'}
+              </button>
+              <button type="button" className="fc-btn orbital-control" onClick={() => setOrbitDirection(-orbitDirection)}>
+                Balik orbit
+              </button>
+              <button type="button" className="fc-btn orbital-control" aria-pressed={panCanvas} onClick={() => setPanCanvas(!panCanvas)}>
+                {panCanvas ? 'Mode: Geser' : 'Mode: Putar'}
+              </button>
+            </div>
+          )}
 
           {/* Zoom Controls */}
           <div className="flex items-center gap-1">
@@ -680,21 +776,45 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
         {/* 3. Interactive Draggable & Zoomable SVG Topology Canvas */}
         <div
           ref={svgContainerRef}
+          tabIndex={0}
+          aria-label="Visualisasi Whale Pipeline. Gunakan panah untuk memiringkan kamera."
+          onKeyDown={(event) => {
+            if (layoutMode !== 'RADIAL') return;
+            const x = event.key === 'ArrowLeft' ? -.14 : event.key === 'ArrowRight' ? .14 : 0;
+            const y = event.key === 'ArrowUp' ? -.14 : event.key === 'ArrowDown' ? .14 : 0;
+            if (x || y) {
+              event.preventDefault();
+              setCamera((current) => ({
+                yaw: Math.max(-1.15, Math.min(1.15, current.yaw + x)),
+                pitch: Math.max(-1.15, Math.min(1.15, current.pitch + y)),
+              }));
+            }
+          }}
           onPointerDown={handleCanvasPointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUpOrCancel}
           onPointerCancel={handlePointerUpOrCancel}
           onPointerLeave={handleCanvasPointerLeave}
           style={{ touchAction: 'none' }}
-          className={`relative flex-1 flex items-center justify-center bg-[#040609] overflow-hidden min-h-[260px] lg:min-h-[110px] touch-drag-surface ${draggingNodeId || isPanningCanvas ? 'cursor-grabbing' : 'cursor-grab'
+          className={`whale-orbital relative flex-1 flex items-center justify-center overflow-hidden min-h-[260px] lg:min-h-[110px] touch-drag-surface ${draggingNodeId || isPanningCanvas ? 'cursor-grabbing' : 'cursor-grab'
             }`}
         >
           <svg ref={svgRef} viewBox="0 0 560 410" style={{ touchAction: 'none' }} className="w-full h-full touch-drag-surface">
             <defs>
               <radialGradient id="radarGlow" cx="50%" cy="50%" r="50%">
-                <stop offset="0%" stopColor="#F5B74F" stopOpacity="0.16" />
-                <stop offset="55%" stopColor="#A78BFA" stopOpacity="0.06" />
+                <stop offset="0%" stopColor="#F4AC65" stopOpacity="0.28" />
+                <stop offset="55%" stopColor="#1C7187" stopOpacity="0.14" />
                 <stop offset="100%" stopColor="#040609" stopOpacity="0" />
+              </radialGradient>
+              <radialGradient id="solarCore" fx="35%" fy="28%">
+                <stop offset="0%" stopColor="#FFF1AD" />
+                <stop offset="45%" stopColor="#F0A34A" />
+                <stop offset="100%" stopColor="#773016" />
+              </radialGradient>
+              <radialGradient id="solarPlanet" fx="32%" fy="28%">
+                <stop offset="0%" stopColor="#70B8CE" />
+                <stop offset="48%" stopColor="#295A70" />
+                <stop offset="100%" stopColor="#0C181F" />
               </radialGradient>
             </defs>
 
@@ -703,38 +823,37 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                 }) scale(${zoom})`}
             >
               {layoutMode === 'RADIAL' && (
-                <>
-                  <circle
-                    cx={cx}
-                    cy={cy}
-                    r={radius}
-                    fill="url(#radarGlow)"
-                    stroke="#161F2E"
-                    strokeWidth="1"
-                  />
-                  <circle
-                    cx={cx}
-                    cy={cy}
-                    r={radius * 0.7}
-                    fill="none"
-                    stroke="#121926"
-                    strokeWidth="1"
-                    strokeDasharray="3 3"
-                  />
-                  <circle
-                    cx={cx}
-                    cy={cy}
-                    r={radius * 0.4}
-                    fill="none"
-                    stroke="#121926"
-                    strokeWidth="1"
-                  />
-                </>
+                <g className="whale-orbital-grid" aria-hidden="true" pointerEvents="none"
+                  transform={`translate(${cx} ${cy}) matrix(${cameraX} ${cameraSkew} 0 ${cameraY} 0 0) translate(${-cx} ${-cy})`}>
+                  <circle cx={cx} cy={cy} r={radius * 1.06} fill="none" stroke="#41849A" strokeOpacity=".35" />
+                  <circle cx={cx} cy={cy} r={radius} fill="none" stroke="#BE8144" strokeOpacity=".65" strokeDasharray="1 4" />
+                  <circle cx={cx} cy={cy} r={radius * .87} fill="none" stroke="#41849A" strokeOpacity=".32" strokeDasharray="10 3 1 3" />
+                  {[-26, 25, 64].map((angle) => (
+                    <ellipse key={angle} cx={cx} cy={cy} rx={radius * 1.05} ry={radius * .35}
+                      transform={`rotate(${angle} ${cx} ${cy})`} fill="none" stroke="#41849A" strokeOpacity=".38" />
+                  ))}
+                  <g transform={`translate(${cx} ${cy}) rotate(-26)`}>
+                    <circle r={globeRadius} fill="url(#radarGlow)" stroke="#83BFCD" strokeOpacity=".65" />
+                    {orbitalWireframe.map((path, index) => (
+                      <path key={index} d={path} fill="none" stroke={index % 3 === 0 ? '#DCAD75' : '#73B4C7'}
+                        strokeWidth=".65" strokeOpacity={index % 3 === 0 ? .58 : .39} />
+                    ))}
+                    <circle r={globeRadius} fill="none" stroke="#FFAA55" strokeWidth="2"
+                      strokeDasharray={`${radius * .72} ${radius * 1.2}`} className="whale-orbital-rim" />
+                    <path d={orbitalAmberPoints} fill="none" stroke="#E58BD0" strokeWidth="1.7" strokeLinecap="round" opacity=".68" />
+                    <path d={orbitalCyanPoints} fill="none" stroke="#70DDF4" strokeWidth="1.05" strokeLinecap="round" opacity=".48" />
+                  </g>
+                  <g transform={`translate(${cx} ${cy}) rotate(${(rotation * 8 * 180) / Math.PI}) translate(${radius} 0) rotate(${orbitDirection * 90})`}>
+                    <path d="M-20 0H-6" stroke="#70DCFD" strokeWidth="2" strokeLinecap="round" opacity=".7" />
+                    <path d="M-7 -3 -9 -6 -2 -4 Q4 -6 9 0 Q4 6 -2 4 L-9 6 -7 3Z"
+                      fill="#C2F6FF" stroke="#45BDDF" strokeWidth="1" />
+                  </g>
+                </g>
               )}
 
               {ALL_NODES.filter((n) => n.id !== 'WHALE CORE').map((n) => {
-                const hub = nodePositions['WHALE CORE'] || { x: cx, y: cy };
-                const c = nodePositions[n.id] || { x: cx, y: cy };
+                const hub = visiblePositions['WHALE CORE'] || { x: cx, y: cy };
+                const c = visiblePositions[n.id] || { x: cx, y: cy };
                 return (
                   <line
                     key={`spoke-${n.id}`}
@@ -742,15 +861,15 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                     y1={hub.y}
                     x2={c.x}
                     y2={c.y}
-                    stroke="#101724"
+                    stroke="#508093" strokeOpacity="0.28"
                     strokeWidth="0.9"
                   />
                 );
               })}
 
               {filteredLinks.map((link, idx) => {
-                const s = nodePositions[link.source] || { x: cx, y: cy };
-                const t = nodePositions[link.target] || { x: cx, y: cy };
+                const s = visiblePositions[link.source] || { x: cx, y: cy };
+                const t = visiblePositions[link.target] || { x: cx, y: cy };
 
                 const strokeColor =
                   link.direction === 'INFLOW_BULLISH'
@@ -782,7 +901,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                 });
 
                 return (
-                  <g key={link.id}>
+                  <g key={link.id} className="whale-orbital-flow">
                     {strands.map((st, sIdx) => (
                       <path
                         key={`${link.id}-strand-${sIdx}`}
@@ -825,7 +944,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
               })}
 
               {ALL_NODES.map((n) => {
-                const coord = nodePositions[n.id] || { x: cx, y: cy };
+                const coord = visiblePositions[n.id] || { x: cx, y: cy };
                 const isHub = n.id === 'WHALE CORE';
                 const isSelected = selectedNode === n.id;
                 const isHovered = hoveredNode === n.id;
@@ -838,7 +957,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                   isSelected || isDraggingThis
                     ? '#56B6F7'
                     : isHub
-                      ? '#F5B74F'
+                      ? '#F4AC65'
                       : isHyperliquid
                         ? '#34D399'
                         : isWallet
@@ -851,7 +970,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                 const dyFromCenter = coord.y - cy;
                 const isNearEquator = layoutMode === 'RADIAL' && Math.abs(dyFromCenter) < 35;
                 const labelXOffset = isNearEquator ? (dxFromCenter < 0 ? -38 : 38) : 0;
-                const labelYOffset = isNearEquator ? 3 : dyFromCenter < 0 ? -19 : 24;
+                const labelYOffset = isNearEquator ? 3 : layoutMode === 'RADIAL' ? -18 : dyFromCenter < 0 ? -19 : 24;
                 const labelAnchor: 'middle' | 'end' | 'start' = isNearEquator
                   ? dxFromCenter < 0
                     ? 'end'
@@ -866,7 +985,16 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                     data-node-y={coord.y}
                     style={{ touchAction: 'none' }}
                     onPointerDown={(e) => handleNodePointerDown(e, n.id)}
-                    onClick={() => handleNodeClick(n.id)}
+                    role="button"
+                    tabIndex={0}
+                    aria-label={n.short + ' — ' + n.tag}
+                    aria-pressed={isSelected}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        handleNodeClick(n.id);
+                      }
+                    }}
                     onMouseEnter={() => {
                       if (!draggingNodeId) setHoveredNode(n.id);
                     }}
@@ -901,28 +1029,53 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                           strokeOpacity={isDraggingThis ? 0.5 : 0.28}
                         />
                       )}
+                      {isHub && (
+                        <circle
+                          cx={coord.x}
+                          cy={coord.y}
+                          r={boxW * 0.68}
+                          fill="url(#radarGlow)"
+                          stroke="#F4AC65"
+                          strokeOpacity="0.45"
+                          strokeDasharray="2 5"
+                          pointerEvents="none"
+                        />
+                      )}
+                      {layoutMode === 'RADIAL' ? (
+                        <g>
+                          <circle cx={coord.x} cy={coord.y} r={isHub ? 29 : 13}
+                            fill={isHub ? 'url(#solarCore)' : 'url(#solarPlanet)'}
+                            stroke={borderColor} strokeWidth={isSelected ? 2 : 1}
+                            className={isHub ? 'whale-orbital-hub' : 'whale-orbital-node'} />
+                          {!isHub && <ellipse cx={coord.x} cy={coord.y} rx="17" ry="4"
+                            transform={`rotate(-25 ${coord.x} ${coord.y})`}
+                            fill="none" stroke={borderColor} opacity=".7" />}
+                        </g>
+                      ) : (
                       <rect
                         x={coord.x - boxW / 2}
                         y={coord.y - boxH / 2}
                         width={boxW}
                         height={boxH}
-                        rx={3}
+                        rx={2}
+                        className={isHub ? "whale-orbital-hub" : "whale-orbital-node"}
                         fill={
                           isSelected || isHovered
-                            ? '#17253B'
+                            ? '#152E36'
                             : isHub
-                              ? '#181207'
-                              : '#0D131F'
+                              ? '#202321'
+                              : '#101E24'
                         }
                         stroke={borderColor}
                         strokeWidth={isSelected || isHovered || isHub ? '1.9' : '1.2'}
                       />
+                      )}
                       <text
                         x={coord.x}
-                        y={coord.y - 2}
+                        y={coord.y + (layoutMode === 'RADIAL' && !isHub ? 3 : -2)}
                         textAnchor="middle"
                         className={`font-extrabold pointer-events-none ${isHub
-                            ? 'fill-[#FF9F1C] text-[8.5px]'
+                            ? 'fill-[#FFD197] text-[8.5px]'
                             : 'fill-[#E2E8F0] text-[7.5px]'
                           }`}
                       >
@@ -930,7 +1083,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                       </text>
                       <text
                         x={coord.x}
-                        y={coord.y + 8}
+                        y={coord.y + (layoutMode === 'RADIAL' && !isHub ? 23 : 8)}
                         textAnchor="middle"
                         className="fill-[#00E5FF] text-[7px] font-mono font-bold pointer-events-none"
                       >
@@ -959,8 +1112,8 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           </svg>
 
           <div className="absolute bottom-1.5 left-2 px-2 py-0.5 bg-[#0A0F1A]/90 border border-[#1E2B42] text-[9px] text-[#94A3B8] pointer-events-none">
-            <span className="hidden sm:inline">💡 Geser kotak Node • Drag latar untuk Pan • Scroll Mouse untuk Zoom</span>
-            <span className="sm:hidden">Geser Node / Pan 1 jari • Pinch 2 jari Zoom</span>
+            <span className="hidden sm:inline">Seret planet • Seret latar untuk putar • Shift + seret untuk geser • Scroll untuk zoom</span>
+            <span className="sm:hidden">Seret latar untuk putar • Cubit untuk zoom</span>
           </div>
 
           {selectedNode && (
@@ -985,7 +1138,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
             data-testid="stream-resize-handle"
             onPointerDown={handleStreamResizePointerDown}
             style={{ touchAction: 'none' }}
-            className={`h-5 sm:h-2.5 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group transition-colors duration-150 touch-drag-surface ${isResizingStream
+            className={`h-5 shrink-0 border-b border-[#1A263B] cursor-ns-resize flex items-center justify-center group transition-colors duration-150 touch-drag-surface ${isResizingStream
                 ? 'bg-[#00E5FF]/40'
                 : 'bg-[#0D1524] hover:bg-[#00E5FF]/30'
               }`}
@@ -1054,7 +1207,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
               <button
                 data-testid="stream-size-small"
                 onClick={() => setPresetStreamHeight('MIN')}
-                className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${streamHeightPx <= 55
+                className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${streamHeightPx <= 110
                     ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
                     : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
                   }`}
@@ -1065,7 +1218,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
               <button
                 data-testid="stream-size-normal"
                 onClick={() => setPresetStreamHeight('SPLIT')}
-                className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${streamHeightPx > 55 && streamHeightPx < 360
+                className={`fc-btn px-1.5 py-0.5 text-[9px] font-extrabold border ${streamHeightPx > 110 && streamHeightPx < 360
                     ? 'bg-[#00E5FF] text-black border-[#00E5FF]'
                     : 'bg-[#111927] text-[#94A3B8] border-[#243249] hover:text-white'
                   }`}
@@ -1088,7 +1241,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           </div>
 
           {/* BODY OF RESIZABLE DRAWER (Hidden when minimized to <= 48px) */}
-          {streamHeightPx > 48 && (
+          {streamHeightPx > 110 && (
             <div className="flex-1 flex flex-col overflow-hidden">
               {/* Chain Filter & Real-Time AI Net Flow Bar */}
               <div className="flex flex-wrap items-center justify-between px-2.5 py-1 bg-[#080C14] border-b border-[#141D2D] text-[9px] gap-1.5 shrink-0">
