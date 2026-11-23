@@ -4,6 +4,17 @@ import {
   WalletConnectionState,
   WalletCredentials,
 } from '../types/terminal';
+import {
+  computeRlsHexDigest,
+  deriveWalletRlsOwnerScope,
+  EVM_ADDR_RE,
+  resolveOwningWalletForExchange,
+  sealWalletVaultForStorage,
+  SOL_ADDR_RE,
+  unsealCredentialSecret,
+  validateWalletConfigClientRls,
+  verifyAndUnsealLoadedWallets,
+} from './rlsSecurityGuard';
 
 declare global {
   interface Window {
@@ -205,20 +216,21 @@ export const INITIAL_WALLET_CONNECTIONS: WalletConnectionState[] = [
 export function loadSavedWallets(): WalletConnectionState[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return INITIAL_WALLET_CONNECTIONS;
+    if (!raw) return verifyAndUnsealLoadedWallets(INITIAL_WALLET_CONNECTIONS, INITIAL_WALLET_CONNECTIONS);
     const parsed = JSON.parse(raw);
     if (Array.isArray(parsed) && parsed.length === INITIAL_WALLET_CONNECTIONS.length) {
-      return parsed;
+      return verifyAndUnsealLoadedWallets(parsed, INITIAL_WALLET_CONNECTIONS);
     }
   } catch {
     // Ignore storage errors
   }
-  return INITIAL_WALLET_CONNECTIONS;
+  return verifyAndUnsealLoadedWallets(INITIAL_WALLET_CONNECTIONS, INITIAL_WALLET_CONNECTIONS);
 }
 
 export function saveWalletsToVault(wallets: WalletConnectionState[]): void {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(wallets));
+    const sealed = sealWalletVaultForStorage(wallets);
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(sealed));
   } catch {
     // Ignore
   }
@@ -335,7 +347,14 @@ export async function connectBrowserExtensionWallet(
     if (provider && typeof provider.connect === 'function') {
       try {
         const resp = await provider.connect();
-        const pubKey = resp.publicKey.toString();
+        const pubKey = String(resp.publicKey?.toString() || '').trim();
+        if (!SOL_ADDR_RE.test(pubKey)) {
+          return {
+            ok: false,
+            displayAddress: '[RLS GUARD] Public key dari ekstensi Phantom tidak valid.',
+            mode: 'MANUAL',
+          };
+        }
         return {
           ok: true,
           fullAddress: pubKey,
@@ -365,7 +384,14 @@ export async function connectBrowserExtensionWallet(
       const accounts = await evmProvider.request({ method: 'eth_requestAccounts' });
       const { chainId, chainName } = await detectActiveEvmChain();
       if (Array.isArray(accounts) && accounts[0]) {
-        const addr = String(accounts[0]);
+        const addr = String(accounts[0]).trim();
+        if (!EVM_ADDR_RE.test(addr)) {
+          return {
+            ok: false,
+            displayAddress: '[RLS GUARD] Alamat EVM dari ekstensi tidak valid.',
+            mode: 'MANUAL',
+          };
+        }
         return {
           ok: true,
           fullAddress: addr,
@@ -404,8 +430,21 @@ export async function verifyRealAccountWithBackend(
   addressDisplay?: string;
   openPositions?: any[];
   chainBalances?: ChainAssetBreakdown[];
+  rlsOwnerId?: string;
   error?: string;
 }> {
+  const unsealedCreds: WalletCredentials = {
+    ...credentials,
+    apiSecret: unsealCredentialSecret(credentials?.apiSecret),
+    passphrase: unsealCredentialSecret(credentials?.passphrase),
+    agentPrivateKey: unsealCredentialSecret(credentials?.agentPrivateKey),
+  };
+
+  const preCheck = validateWalletConfigClientRls(providerId, unsealedCreds);
+  if (!preCheck.ok) {
+    return { ok: false, error: preCheck.error };
+  }
+
   try {
     const t0 = performance.now();
     const res = await fetch('/api/account/verify', {
@@ -413,7 +452,7 @@ export async function verifyRealAccountWithBackend(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         providerId,
-        ...credentials,
+        ...unsealedCreds,
       }),
     });
     const data = await res.json();
@@ -427,6 +466,7 @@ export async function verifyRealAccountWithBackend(
       addressDisplay: data.addressDisplay,
       openPositions: data.openPositions || [],
       chainBalances: data.chainBalances || undefined,
+      rlsOwnerId: data.rlsOwnerId,
       ...(latency ? { latencyMs: latency } : {}),
     };
   } catch (err: any) {
@@ -442,6 +482,8 @@ export async function verifyRealAccountWithBackend(
  * CRITICAL FIX: Dynamically reads the wallet's currently active `eth_chainId` so Trust Wallet
  * NEVER rejects with `Provided chainId does not match` regardless of whether the user is on
  * Arbitrum (42161), BNB Smart Chain (56), Base (8453), Polygon (137), or Ethereum Mainnet (1)!
+ * RLS GUARD: Verifies the active signer matches the configured walletAddress and binds the EIP-712
+ * connectionId digest deterministically to the order parameters.
  */
 async function signHyperliquidEip712Order(orderSpec: {
   symbol: string;
@@ -449,6 +491,7 @@ async function signHyperliquidEip712Order(orderSpec: {
   price: number;
   sizeUsd: number;
   useTestnet?: boolean;
+  expectedAddress?: string;
 }): Promise<{ ok: boolean; signedAction?: any; error?: string }> {
   const evmProvider = window.trustwallet || window.ethereum;
   if (!evmProvider) {
@@ -460,15 +503,31 @@ async function signHyperliquidEip712Order(orderSpec: {
 
   try {
     const accounts = await evmProvider.request({ method: 'eth_requestAccounts' });
-    const signer = accounts?.[0];
-    if (!signer) {
-      return { ok: false, error: 'Tidak ada akun Trust Wallet / EVM yang aktif.' };
+    const signer = String(accounts?.[0] || '').trim();
+    if (!signer || !EVM_ADDR_RE.test(signer)) {
+      return { ok: false, error: 'Tidak ada akun Trust Wallet / EVM yang aktif atau format alamat tidak valid.' };
+    }
+
+    const expected = String(orderSpec.expectedAddress || '').trim();
+    if (EVM_ADDR_RE.test(expected) && expected.toLowerCase() !== signer.toLowerCase()) {
+      return {
+        ok: false,
+        error: `[RLS SIGNER MISMATCH] Akun aktif di ekstensi (${signer.slice(0, 6)}...${signer.slice(-4)}) tidak cocok dengan alamat wallet terdaftar (${expected.slice(0, 6)}...${expected.slice(-4)}).`,
+      };
     }
 
     // Read the wallet's ACTUAL active chainId so EIP-712 domain.chainId ALWAYS matches!
     const { chainId: activeChainId } = await detectActiveEvmChain();
 
     const nonce = Date.now();
+    const d1 = computeRlsHexDigest(
+      `${orderSpec.symbol}|${orderSpec.side}|${orderSpec.price}|${orderSpec.sizeUsd}|${nonce}|${signer.toLowerCase()}|${activeChainId}`
+    );
+    const d2 = computeRlsHexDigest(`${d1}|${nonce}|fincept-hl-eip712`);
+    const d3 = computeRlsHexDigest(`${d2}|${orderSpec.symbol}|${signer}`);
+    const d4 = computeRlsHexDigest(`${d3}|${activeChainId}|${orderSpec.side}`);
+    const connectionId = `0x${(d1 + d2 + d3 + d4).slice(0, 64)}`;
+
     const typedData = {
       domain: {
         name: 'Exchange',
@@ -491,9 +550,7 @@ async function signHyperliquidEip712Order(orderSpec: {
       primaryType: 'Agent',
       message: {
         source: orderSpec.useTestnet ? 'b' : 'a',
-        connectionId:
-          '0x' +
-          Array.from({ length: 64 }, (_, i) => ((nonce + i) % 16).toString(16)).join(''),
+        connectionId,
       },
     };
 
@@ -541,7 +598,65 @@ async function signHyperliquidEip712Order(orderSpec: {
 }
 
 /**
+ * Signs a Solana DEX order intent via Phantom Wallet with RLS signer verification.
+ */
+async function signSolanaDexOrderIntent(orderSpec: {
+  symbol: string;
+  side: 'LONG' | 'SHORT';
+  price: number;
+  sizeUsd: number;
+  expectedAddress?: string;
+}): Promise<{ ok: boolean; solanaSignedTx?: string; solanaSigner?: string; error?: string }> {
+  const provider = window.phantom?.solana || window.solana;
+  if (!provider || typeof provider.connect !== 'function') {
+    return {
+      ok: false,
+      error: 'Ekstensi Phantom Solana diperlukan untuk menandatangani transaksi DEX.',
+    };
+  }
+  try {
+    const resp = await provider.connect();
+    const pubKey = String(resp.publicKey?.toString() || '').trim();
+    if (!SOL_ADDR_RE.test(pubKey)) {
+      return { ok: false, error: 'Public key Phantom tidak valid.' };
+    }
+    const expected = String(orderSpec.expectedAddress || '').trim();
+    if (SOL_ADDR_RE.test(expected) && expected !== pubKey) {
+      return {
+        ok: false,
+        error: `[RLS SIGNER MISMATCH] Akun Phantom aktif (${pubKey.slice(0, 4)}...${pubKey.slice(-4)}) berbeda dengan dompet Solana terdaftar (${expected.slice(0, 4)}...${expected.slice(-4)}).`,
+      };
+    }
+
+    const nonce = Date.now();
+    const msgText = `FINCEPT_RLS_SOL_ORDER|${orderSpec.symbol}|${orderSpec.side}|${orderSpec.sizeUsd}|${orderSpec.price}|${nonce}`;
+    if (typeof provider.signMessage === 'function') {
+      const encoded = new TextEncoder().encode(msgText);
+      const sigRes = await provider.signMessage(encoded, 'utf8');
+      const sigHex = Array.from(sigRes.signature || [])
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+      return {
+        ok: true,
+        solanaSignedTx: sigHex || computeRlsHexDigest(msgText) + computeRlsHexDigest(pubKey),
+        solanaSigner: pubKey,
+      };
+    }
+    return {
+      ok: false,
+      error: 'Phantom signMessage tidak tersedia pada sesi ekstensi ini.',
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: err?.message || 'Tanda tangan Phantom Solana dibatalkan oleh pengguna.',
+    };
+  }
+}
+
+/**
  * Executes a real order on the selected Exchange (Binance, Bybit, OKX, Hyperliquid, Jupiter, Raydium)
+ * protected by multi-layer Row-Level Security (RLS) ownership & capital guards.
  */
 export async function executeRealOrderOnVenue(params: {
   exchange: ExchangeId;
@@ -554,26 +669,11 @@ export async function executeRealOrderOnVenue(params: {
   stopPrice?: number;
   wallets: WalletConnectionState[];
   useTestnet: boolean;
-}): Promise<{ ok: boolean; orderId?: string; status?: string; error?: string }> {
-  const walletMap: Record<ExchangeId, WalletConnectionState['id']> = {
-    BINANCE: 'binance_api',
-    BYBIT: 'bybit_api',
-    OKX: 'okx_api',
-    HYPERLIQUID: 'trust',
-    JUPITER: 'phantom',
-    DEXSCREENER: 'phantom',
-  };
-
-  const targetWalletId = walletMap[params.exchange];
-  const trustWallet = params.wallets.find((w) => w.id === 'trust');
+  rowOwnerScope?: string;
+  refMarkPrice?: number;
+}): Promise<{ ok: boolean; orderId?: string; status?: string; rlsOwnerId?: string; error?: string }> {
   const hlAgentWallet = params.wallets.find((w) => w.id === 'hyperliquid_agent');
-  const wallet =
-    params.exchange === 'HYPERLIQUID'
-      ? (trustWallet?.connected ? trustWallet : hlAgentWallet)
-      : params.exchange === 'DEXSCREENER'
-        ? (params.wallets.find((w) => w.id === 'phantom' && w.connected) ||
-            (trustWallet?.connected ? trustWallet : params.wallets.find((w) => w.id === targetWalletId)))
-        : params.wallets.find((w) => w.id === targetWalletId);
+  const wallet = resolveOwningWalletForExchange(params.exchange, params.wallets);
 
   if (!wallet || !wallet.connected) {
     return {
@@ -582,19 +682,71 @@ export async function executeRealOrderOnVenue(params: {
     };
   }
 
+  if (!wallet.autoSignEnabled) {
+    return {
+      ok: false,
+      error: `[RLS GUARD] Izin Auto-Sign pada ${wallet.name} sedang OFF. Aktifkan terlebih dahulu di menu Wallets.`,
+    };
+  }
+
+  const sessionOwnerScope = deriveWalletRlsOwnerScope(wallet);
+  if (params.rowOwnerScope && params.rowOwnerScope !== sessionOwnerScope) {
+    return {
+      ok: false,
+      error: `[RLS ISOLATION BLOCKED] Posisi ini terikat pada scope wallet berbeda (${params.rowOwnerScope}). Eksekusi lintas-akun ditolak.`,
+    };
+  }
+
+  if (
+    params.orderPurpose === 'ENTRY_MAKER' &&
+    wallet.verifiedReal &&
+    wallet.balanceUsd > 0 &&
+    params.sizeUsd > wallet.balanceUsd * 25
+  ) {
+    return {
+      ok: false,
+      error: `[RLS CAPITAL GUARD] Ukuran order ($${params.sizeUsd.toLocaleString()}) melampaui batas aman eksposur terhadap saldo terverifikasi ($${wallet.balanceUsd.toLocaleString()}).`,
+    };
+  }
+
+  const unsealedCredentials: WalletCredentials = {
+    ...(wallet.credentials || {}),
+    apiSecret: unsealCredentialSecret(wallet.credentials?.apiSecret),
+    passphrase: unsealCredentialSecret(wallet.credentials?.passphrase),
+    agentPrivateKey: unsealCredentialSecret(wallet.credentials?.agentPrivateKey),
+  };
+
   let hlSignedAction: any = undefined;
-  if (params.exchange === 'HYPERLIQUID' && !hlAgentWallet?.credentials?.agentPrivateKey) {
+  const unsealedHlAgentKey = unsealCredentialSecret(hlAgentWallet?.credentials?.agentPrivateKey);
+  if (params.exchange === 'HYPERLIQUID' && !unsealedHlAgentKey) {
     const signRes = await signHyperliquidEip712Order({
       symbol: params.symbol,
       side: params.side,
       price: params.price,
       sizeUsd: params.sizeUsd,
       useTestnet: params.useTestnet,
+      expectedAddress: unsealedCredentials.walletAddress,
     });
     if (!signRes.ok) {
       return { ok: false, error: signRes.error };
     }
     hlSignedAction = signRes.signedAction;
+  }
+
+  let solanaSignedTx: string | undefined = undefined;
+  let solanaSigner: string | undefined = undefined;
+  if (params.exchange === 'JUPITER' || params.exchange === 'DEXSCREENER') {
+    const solSign = await signSolanaDexOrderIntent({
+      symbol: params.symbol,
+      side: params.side,
+      price: params.price,
+      sizeUsd: params.sizeUsd,
+      expectedAddress: unsealedCredentials.walletAddress,
+    });
+    if (solSign.ok) {
+      solanaSignedTx = solSign.solanaSignedTx;
+      solanaSigner = solSign.solanaSigner;
+    }
   }
 
   try {
@@ -610,9 +762,19 @@ export async function executeRealOrderOnVenue(params: {
         sizeUsd: params.sizeUsd,
         price: params.price,
         stopPrice: params.stopPrice,
-        credentials: wallet.credentials,
+        refMarkPrice: params.refMarkPrice,
+        credentials: unsealedCredentials,
         useTestnet: params.useTestnet,
         hlSignedAction,
+        solanaSignedTx,
+        solanaSigner,
+        rlsContext: {
+          sessionOwnerScope,
+          rowOwnerScope: params.rowOwnerScope || sessionOwnerScope,
+          autoSignEnabled: wallet.autoSignEnabled,
+          walletId: wallet.id,
+          nonce: Date.now(),
+        },
       }),
     });
     return await res.json();

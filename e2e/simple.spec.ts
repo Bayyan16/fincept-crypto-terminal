@@ -70,7 +70,7 @@ test('backend rejects missing exchange credentials and unknown routes', async ({
   for (const exchange of ['BINANCE', 'BYBIT', 'OKX']) {
     const response = await request.post('/api/execute/order', {
       data: { exchange, symbol: 'BTC-PERP', binanceSymbol: 'BTCUSDT', side: 'LONG',
-        orderPurpose: 'ENTRY_MAKER', sizeUsd: 500, price: 60000, useTestnet: true },
+        orderPurpose: 'ENTRY_MAKER', sizeUsd: 500, price: 60000, useTestnet: true, bypassOracleGuard: true },
     });
     expect(response.status()).toBe(200);
     expect((await response.json()).ok).toBe(false);
@@ -78,4 +78,177 @@ test('backend rejects missing exchange credentials and unknown routes', async ({
   const unknown = await request.get('/api/unknown-e2e-route');
   expect(unknown.status()).toBe(404);
   expect((await unknown.json()).ok).toBe(false);
+});
+
+test('5-Layer Row-Level Security (RLS) & Wallet Vault guards protect real-money accounts and orders end-to-end', async ({
+  page,
+  request,
+}) => {
+  // 1. Verify backend RLS status endpoint reports all 6 enforced policies
+  const statusRes = await request.get('/api/security/rls-status');
+  expect(statusRes.status()).toBe(200);
+  const statusData = await statusRes.json();
+  expect(statusData.ok).toBe(true);
+  expect(statusData.rlsVersion).toBe('FINCEPT_RLS_V1.0');
+  expect(statusData.enforcedPolicies).toContain('RLS_WALLET_VAULT_ISOLATION');
+  expect(statusData.enforcedPolicies).toContain('RLS_SIGNER_OWNERSHIP_MATCH');
+  expect(statusData.enforcedPolicies).toContain('RLS_ANTI_REPLAY_NONCE_GUARD');
+
+  // 2. Verify Wallet Configuration Guards (EVM burn address, malformed EVM, malformed Solana, identical CEX Key/Secret)
+  const burnEvmRes = await request.post('/api/account/verify', {
+    data: { providerId: 'trust', walletAddress: '0x0000000000000000000000000000000000000000' },
+  });
+  expect((await burnEvmRes.json()).ok).toBe(false);
+
+  const shortEvmRes = await request.post('/api/account/verify', {
+    data: { providerId: 'hyperliquid_agent', walletAddress: '0x12345678901234567890123456789012345678' },
+  });
+  expect((await shortEvmRes.json()).ok).toBe(false);
+
+  const badAgentKeyRes = await request.post('/api/account/verify', {
+    data: {
+      providerId: 'hyperliquid_agent',
+      walletAddress: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303',
+      agentPrivateKey: '0x0000000000000000000000000000000000000000000000000000000000000000',
+    },
+  });
+  const badAgentJson = await badAgentKeyRes.json();
+  expect(badAgentJson.ok).toBe(false);
+  expect(badAgentJson.rlsPolicy).toBe('RLS_AGENT_KEY_VALIDATION');
+
+  const badSolRes = await request.post('/api/account/verify', {
+    data: { providerId: 'phantom', walletAddress: '11111111111111111111111111111111' },
+  });
+  expect((await badSolRes.json()).ok).toBe(false);
+
+  const sameKeySecretRes = await request.post('/api/account/verify', {
+    data: { providerId: 'binance_api', apiKey: 'identicalKey12345', apiSecret: 'identicalKey12345' },
+  });
+  const sameKeyJson = await sameKeySecretRes.json();
+  expect(sameKeyJson.ok).toBe(false);
+  expect(sameKeyJson.rlsPolicy).toBe('RLS_CEX_KEY_SECRET_DISTINCT');
+
+  // 3. Verify Cross-Account RLS Isolation, Fat-Finger Capital Cap, Oracle Price Deviation & Anti-Replay Nonce
+  const crossAccountRes = await request.post('/api/execute/order', {
+    data: {
+      exchange: 'HYPERLIQUID',
+      symbol: 'ETH-PERP',
+      side: 'LONG',
+      orderPurpose: 'SCRATCH_EXIT',
+      sizeUsd: 250,
+      price: 2200,
+      rlsContext: {
+        rowOwnerScope: 'rls:trust:aaaa1111bbbb2222',
+        sessionOwnerScope: 'rls:trust:cccc3333dddd4444',
+      },
+    },
+  });
+  const crossAccountJson = await crossAccountRes.json();
+  expect(crossAccountJson.ok).toBe(false);
+  expect(crossAccountJson.rlsPolicy).toBe('RLS_ROW_OWNERSHIP_ISOLATION');
+
+  const fatFingerRes = await request.post('/api/execute/order', {
+    data: {
+      exchange: 'BINANCE',
+      symbol: 'BTC-PERP',
+      side: 'LONG',
+      orderPurpose: 'ENTRY_MAKER',
+      sizeUsd: 500_000,
+      price: 60000,
+    },
+  });
+  const fatFingerJson = await fatFingerRes.json();
+  expect(fatFingerJson.ok).toBe(false);
+  expect(fatFingerJson.rlsPolicy).toBe('RLS_CAPITAL_CAP_GUARD');
+
+  const oracleDeviationRes = await request.post('/api/execute/order', {
+    data: {
+      exchange: 'HYPERLIQUID',
+      symbol: 'ETH-PERP',
+      side: 'LONG',
+      orderPurpose: 'ENTRY_MAKER',
+      sizeUsd: 250,
+      price: 70000, // Wrong-symbol fat-finger price vs ~$2200 refMarkPrice
+      refMarkPrice: 2200,
+    },
+  });
+  const oracleJson = await oracleDeviationRes.json();
+  expect(oracleJson.ok).toBe(false);
+  expect(oracleJson.rlsPolicy).toBe('RLS_ORACLE_PRICE_DEVIATION_GUARD');
+
+  // Signer mismatch & anti-replay guard on Hyperliquid EIP-712
+  const validSig = '0x' + 'a1'.repeat(64) + '1b';
+  const mismatchRes = await request.post('/api/execute/order', {
+    data: {
+      exchange: 'HYPERLIQUID',
+      symbol: 'ETH-PERP',
+      side: 'LONG',
+      orderPurpose: 'ENTRY_MAKER',
+      sizeUsd: 250,
+      price: 2200,
+      bypassOracleGuard: true,
+      credentials: { walletAddress: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303' },
+      hlSignedAction: {
+        nonce: Date.now(),
+        rawSignature: validSig,
+        signedChainId: 42161,
+        signer: '0x71C0000000000000000000000000000000009A4E',
+      },
+    },
+  });
+  const mismatchJson = await mismatchRes.json();
+  expect(mismatchJson.ok).toBe(false);
+  expect(mismatchJson.rlsPolicy).toBe('RLS_SIGNER_OWNERSHIP_MATCH');
+
+  const replayNonce = Date.now();
+  const firstSignedRes = await request.post('/api/execute/order', {
+    data: {
+      exchange: 'HYPERLIQUID',
+      symbol: 'ETH-PERP',
+      side: 'LONG',
+      orderPurpose: 'ENTRY_MAKER',
+      sizeUsd: 250,
+      price: 2200,
+      bypassOracleGuard: true,
+      credentials: { walletAddress: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303' },
+      hlSignedAction: {
+        nonce: replayNonce,
+        rawSignature: validSig,
+        signedChainId: 42161,
+        signer: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303',
+      },
+    },
+  });
+  expect((await firstSignedRes.json()).ok).toBe(true);
+
+  const replaySignedRes = await request.post('/api/execute/order', {
+    data: {
+      exchange: 'HYPERLIQUID',
+      symbol: 'ETH-PERP',
+      side: 'LONG',
+      orderPurpose: 'ENTRY_MAKER',
+      sizeUsd: 250,
+      price: 2200,
+      bypassOracleGuard: true,
+      credentials: { walletAddress: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303' },
+      hlSignedAction: {
+        nonce: replayNonce,
+        rawSignature: validSig,
+        signedChainId: 42161,
+        signer: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303',
+      },
+    },
+  });
+  const replayJson = await replaySignedRes.json();
+  expect(replayJson.ok).toBe(false);
+  expect(replayJson.rlsPolicy).toBe('RLS_ANTI_REPLAY_NONCE_GUARD');
+
+  // 4. Verify UI Wallet Modal renders RLS 5-Layer Shield & RLS Row Scopes for all 6 wallets
+  await page.goto('/');
+  await page.getByTestId('wallet-modal-trigger').click();
+  await expect(page.getByTestId('wallet-rls-security-banner')).toBeVisible();
+  await expect(page.getByTestId('wallet-rls-enforced-badge')).toContainText('RLS 5-LAYER ACTIVE');
+  for (const wid of ['trust', 'phantom', 'hyperliquid_agent', 'binance_api', 'bybit_api', 'okx_api']) {
+    await expect(page.getByTestId(`wallet-rls-scope-${wid}`)).toContainText('SEALED');
+  }
 });

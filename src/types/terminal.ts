@@ -168,6 +168,8 @@ export interface AgentPosition {
   id: string;
   orderId?: string;
   isRealMoney?: boolean;
+  rlsOwnerScope?: string;
+  rlsRowHash?: string;
   symbol: string;
   side: 'LONG' | 'SHORT';
   marketType: MarketType;
@@ -201,6 +203,8 @@ export interface ClosedTradeLog {
   id: string;
   orderId?: string;
   isRealMoney?: boolean;
+  rlsOwnerScope?: string;
+  rlsRowHash?: string;
   timestamp: string;
   symbol: string;
   side: 'LONG' | 'SHORT';
@@ -273,6 +277,9 @@ export interface WalletConnectionState {
   activeChainName?: string;
   chainBalances?: ChainAssetBreakdown[];
   credentials?: WalletCredentials;
+  rlsOwnerScope?: string;
+  rlsIntegrityTag?: string;
+  rlsPolicyStatus?: 'ENFORCED' | 'TAMPER_RESET';
 }
 
 export interface DexScreenerPoolItem {

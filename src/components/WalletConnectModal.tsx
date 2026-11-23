@@ -7,6 +7,7 @@ import {
   switchEvmWalletNetwork,
   verifyRealAccountWithBackend,
 } from '../engine/walletAdapter';
+import { deriveWalletRlsOwnerScope } from '../engine/rlsSecurityGuard';
 
 interface WalletConnectModalProps {
   isOpen: boolean;
@@ -293,14 +294,20 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
         </div>
 
         {/* Security Notice */}
-        <div className="px-4 py-2 bg-[#0A0E17] border-b border-[#1E2736] text-[11px] text-[#CBD5E1] flex items-center justify-between">
+        <div
+          data-testid="wallet-rls-security-banner"
+          className="px-4 py-2 bg-[#0A0E17] border-b border-[#1E2736] text-[11px] text-[#CBD5E1] flex items-center justify-between"
+        >
           <div>
-            <span className="text-[#00E5FF] font-bold">PROTEKSI REAL-MONEY NON-CUSTODIAL:</span>{' '}
-            Seluruh penandatanganan HMAC-SHA256 & EIP-712 diproses secara lokal di mesin Anda.
-            Gunakan API Key / Agent Wallet dengan izin <strong>Trade-Only (Tanpa Withdraw)</strong>.
+            <span className="text-[#00E5FF] font-bold">PROTEKSI RLS (ROW-LEVEL SECURITY) & REAL-MONEY 5-LAYER SHIELD:</span>{' '}
+            Isolasi pemilik sesi per-wallet, segel brankas kriptografi lokal, anti-replay nonce 5 menit, proteksi harga mark oracle, & izin{' '}
+            <strong>Trade-Only (Tanpa Withdraw)</strong>.
           </div>
-          <span className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-[10px] font-extrabold whitespace-nowrap ml-2">
-            LOCAL GATEWAY ACTIVE
+          <span
+            data-testid="wallet-rls-enforced-badge"
+            className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-[10px] font-extrabold whitespace-nowrap ml-2"
+          >
+            RLS 5-LAYER ACTIVE
           </span>
         </div>
 
@@ -376,6 +383,16 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                   <span className="text-[#64748B]">STATUS / KEY:</span>
                   <span className="text-[#FF9F1C] font-semibold truncate max-w-[230px]">
                     {w.addressOrKeyId}
+                  </span>
+                </div>
+
+                <div
+                  data-testid={`wallet-rls-scope-${w.id}`}
+                  className="px-2 py-0.5 bg-[#070C14] border border-[#142235] text-[9.5px] flex items-center justify-between"
+                >
+                  <span className="text-[#00E5FF] font-bold">RLS ROW SCOPE:</span>
+                  <span className="text-[#00E676] font-mono truncate max-w-[220px]">
+                    {(w.rlsOwnerScope || deriveWalletRlsOwnerScope(w)).slice(0, 24)} • SEALED
                   </span>
                 </div>
 

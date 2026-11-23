@@ -58,6 +58,11 @@ import {
   switchEvmWalletNetwork,
   verifyRealAccountWithBackend,
 } from './engine/walletAdapter';
+import {
+  stampClosedTradeWithRls,
+  stampPositionWithRls,
+  verifyPositionRlsOwnership,
+} from './engine/rlsSecurityGuard';
 import { WhaleChordViz } from './components/WhaleChordViz';
 import { CoinIcon, MarketTokenIcon } from './components/CoinIcon';
 import {
@@ -1100,6 +1105,7 @@ export function App({
         orderPurpose: 'ENTRY_MAKER',
         sizeUsd: orderSizeUsdInput,
         price: entry,
+        refMarkPrice: targetPair.price,
         wallets,
         useTestnet: executionEnv === 'EXCHANGE_TESTNET',
       });
@@ -1125,30 +1131,33 @@ export function App({
       realOrderId = execRes.orderId || `LIVE-${Date.now()}`;
     }
 
-    const newPos: AgentPosition = {
-      id: `pos-${Date.now()}`,
-      orderId: realOrderId,
-      isRealMoney: isReal,
-      symbol: targetPair.symbol,
-      side,
-      marketType: targetPair.marketType,
-      exchange: targetPair.primaryExchange,
-      entryPrice: entry,
-      currentPrice: targetPair.price,
-      sizeUsd: orderSizeUsdInput,
-      leverage: targetLeverage,
-      stopLossPrice: beLockStop,
-      takeProfitPrice: tp,
-      breakevenLocked: true,
-      executionMode: makerOnlyMode ? 'POST_ONLY_MAKER' : 'TWAP_LOW_IMPACT',
-      unrealizedPnlUsd: 0.15,
-      unrealizedPnlPct: 0.03,
-      peakPnlPct: 0.03,
-      openedAt: timeStr,
-      statusReason: `${
-        isReal ? `[${executionEnv} #${realOrderId}]` : '[PAPER]'
-      } Maker Post-Only @ $${entry.toLocaleString()} | BREAKEVEN+FEE LOCKED (4-Agent Forum Verified)`,
-    };
+    const newPos: AgentPosition = stampPositionWithRls(
+      {
+        id: `pos-${Date.now()}`,
+        orderId: realOrderId,
+        isRealMoney: isReal,
+        symbol: targetPair.symbol,
+        side,
+        marketType: targetPair.marketType,
+        exchange: targetPair.primaryExchange,
+        entryPrice: entry,
+        currentPrice: targetPair.price,
+        sizeUsd: orderSizeUsdInput,
+        leverage: targetLeverage,
+        stopLossPrice: beLockStop,
+        takeProfitPrice: tp,
+        breakevenLocked: true,
+        executionMode: makerOnlyMode ? 'POST_ONLY_MAKER' : 'TWAP_LOW_IMPACT',
+        unrealizedPnlUsd: 0.15,
+        unrealizedPnlPct: 0.03,
+        peakPnlPct: 0.03,
+        openedAt: timeStr,
+        statusReason: `${
+          isReal ? `[${executionEnv} #${realOrderId}]` : '[PAPER]'
+        } Maker Post-Only @ $${entry.toLocaleString()} | BREAKEVEN+FEE LOCKED (4-Agent Forum Verified)`,
+      },
+      wallets
+    );
 
     setPositions((prev) =>
       [newPos, ...prev.filter((p) => p.symbol !== targetPair.symbol)].slice(
@@ -1290,6 +1299,12 @@ export function App({
       now.getMinutes()
     ).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
+    const rlsOwnership = verifyPositionRlsOwnership(pos, wallets);
+    if (!rlsOwnership.ok) {
+      setCommandFeedback(rlsOwnership.error || '[RLS ISOLATION BLOCKED] Penutupan posisi ditolak.');
+      return;
+    }
+
     if (pos.isRealMoney || executionEnv !== 'PAPER_SANDBOX') {
       setIsExecutingOrder(true);
       await executeRealOrderOnVenue({
@@ -1302,6 +1317,7 @@ export function App({
         price: pos.currentPrice,
         wallets,
         useTestnet: executionEnv === 'EXCHANGE_TESTNET',
+        rowOwnerScope: pos.rlsOwnerScope,
       });
       setIsExecutingOrder(false);
     }
@@ -1379,36 +1395,39 @@ export function App({
       });
     }
 
-    const closedItem: ClosedTradeLog = {
-      id: `cl-${Date.now()}`,
-      orderId: pos.orderId,
-      isRealMoney: pos.isRealMoney,
-      timestamp: timeStr,
-      symbol: pos.symbol,
-      side: pos.side,
-      exchange: pos.exchange,
-      entryPrice: pos.entryPrice,
-      exitPrice: effectiveExitPrice,
-      sizeUsd: pos.sizeUsd,
-      realizedPnlUsd: finalPnlUsd,
-      realizedPnlPct: finalPnlPct,
-      exitType:
-        mode === 'PROFIT_LOCK'
-          ? 'TAKE_PROFIT'
-          : finalPnlPct >= 0.2
-            ? 'TRAILING_PROFIT_LOCK'
-            : finalPnlPct >= 0
-              ? 'BREAKEVEN_PROTECT'
-              : 'MICRO_LOSS_SCRATCH',
-      hotWalletSettled: isSettledToHotWallet,
-      hotWalletName: isSettledToHotWallet ? hotWalletNameLabel : undefined,
-      hotWalletAddress: isSettledToHotWallet ? hotWalletDisplayAddr : undefined,
-      settlementTxHash: isSettledToHotWallet ? settlementTxHash : undefined,
-      note:
-        mode === 'SCRATCH'
-          ? `Auto-Invalidation Scratch Exit dieksekusi instan (${finalPnlPct}%) saat Orderbook & Whale berbalik arah.`
-          : `Keputusan Agent Take Profit (+${finalPnlPct}% >= Min +50%): Profit +$${finalPnlUsd} langsung masuk otomatis ke ${hotWalletNameLabel} (${hotWalletDisplayAddr}) [Tx: ${settlementTxHash}]!`,
-    };
+    const closedItem: ClosedTradeLog = stampClosedTradeWithRls(
+      {
+        id: `cl-${Date.now()}`,
+        orderId: pos.orderId,
+        isRealMoney: pos.isRealMoney,
+        timestamp: timeStr,
+        symbol: pos.symbol,
+        side: pos.side,
+        exchange: pos.exchange,
+        entryPrice: pos.entryPrice,
+        exitPrice: effectiveExitPrice,
+        sizeUsd: pos.sizeUsd,
+        realizedPnlUsd: finalPnlUsd,
+        realizedPnlPct: finalPnlPct,
+        exitType:
+          mode === 'PROFIT_LOCK'
+            ? 'TAKE_PROFIT'
+            : finalPnlPct >= 0.2
+              ? 'TRAILING_PROFIT_LOCK'
+              : finalPnlPct >= 0
+                ? 'BREAKEVEN_PROTECT'
+                : 'MICRO_LOSS_SCRATCH',
+        hotWalletSettled: isSettledToHotWallet,
+        hotWalletName: isSettledToHotWallet ? hotWalletNameLabel : undefined,
+        hotWalletAddress: isSettledToHotWallet ? hotWalletDisplayAddr : undefined,
+        settlementTxHash: isSettledToHotWallet ? settlementTxHash : undefined,
+        note:
+          mode === 'SCRATCH'
+            ? `Auto-Invalidation Scratch Exit dieksekusi instan (${finalPnlPct}%) saat Orderbook & Whale berbalik arah.`
+            : `Keputusan Agent Take Profit (+${finalPnlPct}% >= Min +50%): Profit +$${finalPnlUsd} langsung masuk otomatis ke ${hotWalletNameLabel} (${hotWalletDisplayAddr}) [Tx: ${settlementTxHash}]!`,
+      },
+      rlsOwnership.rlsOwnerScope
+    );
 
     setLastClosedSymbol(pos.symbol);
     setClosedTrades((prev) => [closedItem, ...prev]);

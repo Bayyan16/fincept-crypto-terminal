@@ -9,6 +9,11 @@ import {
   fetchDexPoolOhlcv,
   resolveTokenIcon,
 } from './multiChainDexScanner.mjs';
+import {
+  enforceRlsOrderExecutionGuard,
+  getRlsSecuritySummary,
+  validateAccountVerifyRls,
+} from './rlsSecurityGuard.mjs';
 
 export { queryDexUniverse, searchDexUniverseLive, fetchSpecificPoolTrades, resolveTokenIcon };
 
@@ -2348,16 +2353,20 @@ async function queryEvmChainPortfolio({
  * 4. Verify Real Wallet / CEX API Credentials & Fetch Real Account Balance + Multi-Chain Portfolio
  */
 export async function verifyAndFetchAccountBalance(payload) {
+  const rlsCheck = validateAccountVerifyRls(payload);
+  if (!rlsCheck.ok) {
+    return {
+      ok: false,
+      rlsPolicy: rlsCheck.policy,
+      rlsOwnerId: rlsCheck.rlsOwnerId,
+      error: rlsCheck.error,
+    };
+  }
+
   const { providerId, apiKey, apiSecret, passphrase, walletAddress, useTestnet } = payload;
 
   if (providerId === 'hyperliquid_agent' || providerId === 'trust') {
-    const userAddr = (walletAddress || '').trim();
-    if (!userAddr.startsWith('0x') || userAddr.length < 40) {
-      return {
-        ok: false,
-        error: 'Masukkan alamat wallet EVM / Trust Wallet yang valid (0x... 42 karakter).',
-      };
-    }
+    const userAddr = rlsCheck.normalizedAddress || (walletAddress || '').trim();
     const hlUrl = useTestnet
       ? 'https://api.hyperliquid-testnet.xyz/info'
       : 'https://api.hyperliquid.xyz/info';
@@ -2465,6 +2474,8 @@ export async function verifyAndFetchAccountBalance(payload) {
 
     return {
       ok: true,
+      rlsPolicy: 'ENFORCED',
+      rlsOwnerId: rlsCheck.rlsOwnerId,
       balanceUsd: totalMultiChainUsd,
       withdrawableUsd: Number(withdrawable.toFixed(2)),
       openPositionsCount: openPositions.length,
@@ -2475,34 +2486,72 @@ export async function verifyAndFetchAccountBalance(payload) {
   }
 
   if (providerId === 'phantom') {
-    const solAddr = (walletAddress || '').trim();
-    if (!solAddr || solAddr.length < 32) {
-      return { ok: false, error: 'Alamat Solana (Phantom) tidak valid.' };
-    }
+    const solAddr = rlsCheck.normalizedAddress || (walletAddress || '').trim();
     const rpcUrl = useTestnet
       ? 'https://api.devnet.solana.com'
       : 'https://api.mainnet-beta.solana.com';
-    const balRes = await fetchJsonWithTimeout(rpcUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        id: 1,
-        method: 'getBalance',
-        params: [solAddr],
+    const usdcMint = SOLANA_MINTS.USDC.mint;
+    const [balRes, usdcTokenRes] = await Promise.all([
+      fetchJsonWithTimeout(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getBalance',
+          params: [solAddr],
+        }),
       }),
-    });
+      fetchJsonWithTimeout(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'getTokenAccountsByOwner',
+          params: [solAddr, { mint: usdcMint }, { encoding: 'jsonParsed' }],
+        }),
+      }),
+    ]);
 
     const lamports = balRes.data?.result?.value || 0;
     const solCoins = lamports / 1e9;
     const solPrice = cachedSnapshot?.hlAssets?.SOL?.price || 84.0;
-    const balanceUsd = Number((solCoins * solPrice).toFixed(2));
+    const solUsd = solCoins * solPrice;
+
+    let splUsdcUsd = 0;
+    const tokenAccounts = usdcTokenRes?.data?.result?.value;
+    if (Array.isArray(tokenAccounts)) {
+      for (const acc of tokenAccounts) {
+        const uiAmt = Number(acc?.account?.data?.parsed?.info?.tokenAmount?.uiAmount || 0);
+        if (Number.isFinite(uiAmt) && uiAmt > 0) {
+          splUsdcUsd += uiAmt;
+        }
+      }
+    }
+    const balanceUsd = Number((solUsd + splUsdcUsd).toFixed(2));
+    const chainBalances = [
+      {
+        chainName: useTestnet ? 'Solana Devnet' : 'Solana Mainnet-Beta',
+        chainId: 'solana',
+        nativeSymbol: 'SOL',
+        nativeBalance: Number(solCoins.toFixed(4)),
+        stableSymbol: 'USDC (SPL)',
+        stableBalanceUsd: Number(splUsdcUsd.toFixed(2)),
+        totalChainUsd: balanceUsd,
+        recommendedFor: 'Eksekusi Jupiter V1 Aggregator & Raydium V3 CLMM (Fee ~$0.0005)',
+      },
+    ];
 
     return {
       ok: true,
+      rlsPolicy: 'ENFORCED',
+      rlsOwnerId: rlsCheck.rlsOwnerId,
       balanceUsd,
       solBalance: Number(solCoins.toFixed(4)),
-      addressDisplay: `${solAddr.slice(0, 4)}...${solAddr.slice(-4)} (${solCoins.toFixed(3)} SOL)`,
+      usdcBalanceUsd: Number(splUsdcUsd.toFixed(2)),
+      chainBalances,
+      addressDisplay: `${solAddr.slice(0, 4)}...${solAddr.slice(-4)} (${solCoins.toFixed(3)} SOL + $${splUsdcUsd.toFixed(2)} USDC)`,
     };
   }
 
@@ -2635,13 +2684,34 @@ export async function verifyAndFetchAccountBalance(payload) {
  * 5. Execute Real-Money Order Across CEX (Binance, Bybit, OKX) or Relay Signed DEX Order
  */
 export async function executeRealExchangeOrder(payload) {
+  const baseCoin = String(payload?.symbol || '')
+    .split('-')[0]
+    .split('/')[0]
+    .trim()
+    .toUpperCase();
+  const liveMarkPrice =
+    Number(
+      cachedSnapshot?.hlAssets?.[baseCoin]?.price ||
+        lastGoodHlAssets?.[baseCoin]?.price ||
+        0
+    ) || 0;
+
+  const rlsGuard = enforceRlsOrderExecutionGuard(payload, liveMarkPrice);
+  if (!rlsGuard.ok) {
+    return {
+      ok: false,
+      rlsPolicy: rlsGuard.policy,
+      rlsOwnerId: rlsGuard.rlsOwnerId,
+      error: rlsGuard.error,
+    };
+  }
+
   const {
     exchange,
     symbol,
     binanceSymbol,
     side,
     orderPurpose,
-    sizeUsd,
     price,
     stopPrice,
     credentials,
@@ -2652,17 +2722,7 @@ export async function executeRealExchangeOrder(payload) {
     (orderPurpose === 'ENTRY_MAKER' && side === 'LONG') ||
     (orderPurpose !== 'ENTRY_MAKER' && side === 'SHORT');
 
-  const qtyRaw = sizeUsd / Math.max(0.0001, price);
-  const quantity =
-    price > 10000
-      ? Number(qtyRaw.toFixed(3))
-      : price > 100
-        ? Number(qtyRaw.toFixed(2))
-        : Number(qtyRaw.toFixed(1));
-
-  if (quantity <= 0) {
-    return { ok: false, error: `Ukuran order ($${sizeUsd}) terlalu kecil untuk harga $${price}.` };
-  }
+  const quantity = rlsGuard.quantity;
 
   if (exchange === 'BINANCE') {
     const { apiKey, apiSecret } = credentials || {};
@@ -2804,7 +2864,7 @@ export async function executeRealExchangeOrder(payload) {
       tdMode: 'cross',
       side: isBuy ? 'buy' : 'sell',
       ordType: orderPurpose === 'ENTRY_MAKER' ? 'post_only' : 'market',
-      sz: String(Math.max(1, Math.round(quantity))),
+      sz: String(quantity),
       ...(orderPurpose === 'ENTRY_MAKER' ? { px: String(price) } : { reduceOnly: true }),
     };
 
@@ -3180,6 +3240,10 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
     const poolAddress = searchParams.get('poolAddress') || '';
     const result = await fetchSpecificPoolTrades({ chain, poolAddress });
     return { status: 200, payload: result };
+  }
+
+  if (pathname === '/api/security/rls-status' && method === 'GET') {
+    return { status: 200, payload: getRlsSecuritySummary() };
   }
 
   if (pathname === '/api/account/verify' && method === 'POST') {
