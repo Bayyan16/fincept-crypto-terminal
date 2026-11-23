@@ -243,7 +243,16 @@ test('5-Layer Row-Level Security (RLS) & Wallet Vault guards protect real-money 
   expect(replayJson.ok).toBe(false);
   expect(replayJson.rlsPolicy).toBe('RLS_ANTI_REPLAY_NONCE_GUARD');
 
-  // 4. Verify UI Wallet Modal renders RLS 5-Layer Shield & RLS Row Scopes for all 6 wallets
+  // 4. Verify Binance / CEX DoH server connectivity ping endpoint works live
+  const bncPingRes = await request.post('/api/account/ping-venue', {
+    data: { providerId: 'binance_api', useTestnet: false },
+  });
+  expect(bncPingRes.status()).toBe(200);
+  const bncPingJson = await bncPingRes.json();
+  expect(bncPingJson.ok).toBe(true);
+  expect(bncPingJson.providerId).toBe('binance_api');
+
+  // 5. Verify UI Wallet Modal renders RLS 5-Layer Shield & RLS Row Scopes for all 6 wallets
   await page.goto('/');
   await page.getByTestId('wallet-modal-trigger').click();
   await expect(page.getByTestId('wallet-rls-security-banner')).toBeVisible();

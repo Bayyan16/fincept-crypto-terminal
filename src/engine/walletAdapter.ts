@@ -421,6 +421,40 @@ export async function connectBrowserExtensionWallet(
  * Verifies real API keys or on-chain wallet addresses via the local backend gateway (/api/account/verify)
  * and returns the live USD balance + multi-chain portfolio breakdown from the exchange/blockchain.
  */
+export async function pingExchangeVenueConnection(
+  providerId: WalletConnectionState['id'],
+  useTestnet = false
+): Promise<{
+  ok: boolean;
+  latencyMs?: number;
+  transport?: string;
+  futuresReachable?: boolean;
+  spotReachable?: boolean;
+  message: string;
+}> {
+  try {
+    const res = await fetch('/api/account/ping-venue', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ providerId, useTestnet }),
+    });
+    const data = await res.json();
+    return {
+      ok: Boolean(data?.ok),
+      latencyMs: data?.latencyMs,
+      transport: data?.transport,
+      futuresReachable: data?.futuresReachable,
+      spotReachable: data?.spotReachable,
+      message: data?.message || (data?.ok ? 'Server venue aktif.' : 'Gagal menghubungi server venue.'),
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : 'Gagal menghubungi gateway lokal.',
+    };
+  }
+}
+
 export async function verifyRealAccountWithBackend(
   providerId: WalletConnectionState['id'],
   credentials: WalletCredentials

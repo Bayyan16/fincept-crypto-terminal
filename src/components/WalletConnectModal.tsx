@@ -3,6 +3,7 @@ import { WalletConnectionState, WalletCredentials } from '../types/terminal';
 import {
   connectBrowserExtensionWallet,
   FLEXIBLE_EVM_NETWORKS,
+  pingExchangeVenueConnection,
   saveWalletsToVault,
   switchEvmWalletNetwork,
   verifyRealAccountWithBackend,
@@ -186,6 +187,17 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
         text: res.error || 'Gagal mengganti jaringan di Trust Wallet.',
       });
     }
+  };
+
+  const handlePingVenueServer = async (w: WalletConnectionState) => {
+    setVerifyingId(w.id);
+    setStatusBanner(null);
+    const res = await pingExchangeVenueConnection(w.id, Boolean(w.credentials?.useTestnet));
+    setVerifyingId(null);
+    setStatusBanner({
+      tone: res.ok ? 'SUCCESS' : 'ERROR',
+      text: `[${w.name}] ${res.message}`,
+    });
   };
 
   const handleVerifyRealCredentials = async (w: WalletConnectionState) => {
@@ -527,7 +539,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                     )}
 
                     <div className="flex items-center gap-2 pt-1">
-                      {isWeb3 && (
+                      {isWeb3 ? (
                         <button
                           onClick={() => handleBrowserExtensionConnect(w)}
                           disabled={verifyingId === w.id}
@@ -536,6 +548,18 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                           {verifyingId === w.id
                             ? 'CONNECTING...'
                             : '1-CLICK BROWSER EXTENSION'}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          data-testid={`wallet-ping-${w.id}`}
+                          onClick={() => handlePingVenueServer(w)}
+                          disabled={verifyingId === w.id}
+                          className="wm-btn wm-glow flex-1 py-1 bg-[#142238] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF] font-extrabold text-[10px] disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {verifyingId === w.id
+                            ? 'TESTING...'
+                            : '⚡ TEST KONEKSI SERVER'}
                         </button>
                       )}
                       <button

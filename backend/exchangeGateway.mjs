@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import https from 'node:https';
 import {
   refreshMultiChainDexUniverse,
   fetchMultiChainLiveSwaps,
@@ -172,17 +173,123 @@ async function fetchHlpEcosystemStates() {
   return cachedHlpStates.length > 0 ? cachedHlpStates : responses;
 }
 
-async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 3400) {
+const dohIpCache = new Map();
+const ISP_SINKHOLE_IPS = new Set(['0.0.0.0', '127.0.0.1', '43.173.57.48', '108.137.176.189']);
+const binanceTimeOffsetMap = new Map();
+
+async function resolveDohIpForHost(hostname) {
+  const cached = dohIpCache.get(hostname);
+  if (cached && Date.now() - cached.ts < 600_000) {
+    return cached.ip;
+  }
+  const dohEndpoints = [
+    `https://dns.google/resolve?name=${encodeURIComponent(hostname)}&type=A`,
+    `https://cloudflare-dns.com/dns-query?name=${encodeURIComponent(hostname)}&type=A`,
+  ];
+  for (const endpoint of dohEndpoints) {
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 2400);
+      const res = await fetch(endpoint, {
+        headers: { Accept: 'application/dns-json' },
+        signal: controller.signal,
+      });
+      clearTimeout(t);
+      if (!res.ok) continue;
+      const json = await res.json();
+      const ans = (json?.Answer || []).find(
+        (a) => a?.type === 1 && a?.data && !ISP_SINKHOLE_IPS.has(String(a.data).trim())
+      );
+      if (ans?.data) {
+        const ip = String(ans.data).trim();
+        dohIpCache.set(hostname, { ip, ts: Date.now() });
+        return ip;
+      }
+    } catch {
+      // try next DoH provider
+    }
+  }
+  return null;
+}
+
+async function fetchViaDohHttps(urlStr, options = {}, timeoutMs = 4500) {
+  const urlObj = new URL(urlStr);
+  const ip = await resolveDohIpForHost(urlObj.hostname);
+  if (!ip) {
+    return { ok: false, status: 0, error: `DoH resolution failed for ${urlObj.hostname}` };
+  }
+  const bodyStr =
+    typeof options.body === 'string'
+      ? options.body
+      : options.body
+        ? JSON.stringify(options.body)
+        : undefined;
+  const reqHeaders = {
+    ...(options.headers || {}),
+    Host: urlObj.hostname,
+    'User-Agent': 'Fincept-Crypto-Terminal/1.0',
+  };
+  if (bodyStr && !reqHeaders['Content-Length'] && !reqHeaders['content-length']) {
+    reqHeaders['Content-Length'] = Buffer.byteLength(bodyStr);
+  }
+
+  return new Promise((resolve) => {
+    const req = https.request(
+      {
+        host: ip,
+        port: Number(urlObj.port || 443),
+        path: `${urlObj.pathname}${urlObj.search}`,
+        method: options.method || 'GET',
+        servername: urlObj.hostname,
+        headers: reqHeaders,
+        timeout: timeoutMs,
+      },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          const text = Buffer.concat(chunks).toString('utf8');
+          const status = res.statusCode || 0;
+          const ok = status >= 200 && status < 300;
+          try {
+            resolve({ ok, status, data: JSON.parse(text), transport: 'DoH_TLS' });
+          } catch {
+            resolve({ ok, status, data: text, transport: 'DoH_TLS' });
+          }
+        });
+      }
+    );
+    req.on('error', (err) => {
+      resolve({ ok: false, status: 0, error: err instanceof Error ? err.message : String(err) });
+    });
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({ ok: false, status: 0, error: 'DoH TLS request timeout' });
+    });
+    if (bodyStr) req.write(bodyStr);
+    req.end();
+  });
+}
+
+async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 3400, bypassCooldown = false) {
   let hostname = '';
   try {
     hostname = new URL(url).hostname;
   } catch {
     hostname = '';
   }
-  if (hostname && THROTTLE_GUARDED_HOSTS.has(hostname)) {
+  if (!bypassCooldown && hostname && THROTTLE_GUARDED_HOSTS.has(hostname)) {
     const blockedUntil = hostCooldownUntil.get(hostname) || 0;
     if (Date.now() < blockedUntil) {
       return { ok: false, status: 0, error: 'Host in cooldown after timeout' };
+    }
+  }
+
+  // If we already resolved a working DoH IP for a guarded exchange host (ISP DNS bypass), use DoH TLS directly
+  if (hostname && THROTTLE_GUARDED_HOSTS.has(hostname) && dohIpCache.has(hostname)) {
+    const dohDirect = await fetchViaDohHttps(url, options, Math.max(timeoutMs, 4200));
+    if (dohDirect.status > 0) {
+      return dohDirect;
     }
   }
 
@@ -199,12 +306,36 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 3400) {
     }
   } catch (err) {
     clearTimeout(timer);
-    const msg = err instanceof Error ? err.message : String(err);
+    // Automatic DNS-over-HTTPS (DoH) fallback when local ISP blocks/poisons Binance, Bybit, or OKX DNS
     if (hostname && THROTTLE_GUARDED_HOSTS.has(hostname)) {
-      hostCooldownUntil.set(hostname, Date.now() + 90_000);
+      const dohRes = await fetchViaDohHttps(url, options, Math.max(timeoutMs, 4500));
+      if (dohRes.status > 0) {
+        hostCooldownUntil.delete(hostname);
+        return dohRes;
+      }
+      if (!bypassCooldown) {
+        hostCooldownUntil.set(hostname, Date.now() + 60_000);
+      }
+      return dohRes;
     }
+    const msg = err instanceof Error ? err.message : String(err);
     return { ok: false, status: 0, error: msg };
   }
+}
+
+async function getSyncedBinanceTimestamp(baseUrl, isFutures = true) {
+  const cached = binanceTimeOffsetMap.get(baseUrl);
+  if (cached && Date.now() - cached.ts < 60_000) {
+    return Date.now() + cached.offsetMs;
+  }
+  const timePath = isFutures ? '/fapi/v1/time' : '/api/v3/time';
+  const res = await fetchJsonWithTimeout(`${baseUrl}${timePath}`, {}, 3800, true);
+  if (res.ok && Number.isFinite(Number(res.data?.serverTime))) {
+    const offsetMs = Number(res.data.serverTime) - Date.now();
+    binanceTimeOffsetMap.set(baseUrl, { offsetMs, ts: Date.now() });
+    return Date.now() + offsetMs;
+  }
+  return Date.now();
 }
 
 /**
@@ -2559,39 +2690,134 @@ export async function verifyAndFetchAccountBalance(payload) {
     if (!apiKey || !apiSecret) {
       return { ok: false, error: 'Masukkan Binance API Key & Secret.' };
     }
-    const baseUrl = useTestnet
+    const cleanKey = apiKey.trim();
+    const cleanSecret = apiSecret.trim();
+    const futuresBaseUrl = useTestnet
       ? 'https://testnet.binancefuture.com'
       : 'https://fapi.binance.com';
-    const timestamp = Date.now();
-    const queryString = `recvWindow=5000&timestamp=${timestamp}`;
-    const signature = crypto
-      .createHmac('sha256', apiSecret.trim())
-      .update(queryString)
-      .digest('hex');
+    const spotBaseUrl = useTestnet
+      ? 'https://testnet.binance.vision'
+      : 'https://api.binance.com';
 
-    const res = await fetchJsonWithTimeout(
-      `${baseUrl}/fapi/v2/balance?${queryString}&signature=${signature}`,
-      {
-        method: 'GET',
-        headers: { 'X-MBX-APIKEY': apiKey.trim() },
-      }
-    );
+    const [fTs, sTs] = await Promise.all([
+      getSyncedBinanceTimestamp(futuresBaseUrl, true),
+      getSyncedBinanceTimestamp(spotBaseUrl, false),
+    ]);
 
-    if (!res.ok || !Array.isArray(res.data)) {
+    const fQuery = `recvWindow=10000&timestamp=${fTs}`;
+    const fSig = crypto.createHmac('sha256', cleanSecret).update(fQuery).digest('hex');
+
+    const sQuery = `omitZeroBalances=true&recvWindow=10000&timestamp=${sTs}`;
+    const sSig = crypto.createHmac('sha256', cleanSecret).update(sQuery).digest('hex');
+
+    const [fRes, sRes] = await Promise.all([
+      fetchJsonWithTimeout(
+        `${futuresBaseUrl}/fapi/v2/balance?${fQuery}&signature=${fSig}`,
+        {
+          method: 'GET',
+          headers: { 'X-MBX-APIKEY': cleanKey },
+        },
+        4800,
+        true
+      ),
+      fetchJsonWithTimeout(
+        `${spotBaseUrl}/api/v3/account?${sQuery}&signature=${sSig}`,
+        {
+          method: 'GET',
+          headers: { 'X-MBX-APIKEY': cleanKey },
+        },
+        4800,
+        true
+      ),
+    ]);
+
+    const futuresOk = fRes.ok && Array.isArray(fRes.data);
+    const spotOk = sRes.ok && Array.isArray(sRes.data?.balances);
+
+    if (!futuresOk && !spotOk) {
+      const rawCode = fRes.data?.code || sRes.data?.code;
+      const rawMsg = fRes.data?.msg || sRes.data?.msg || fRes.error || sRes.error || 'Binance API Key verification failed.';
+      const hint =
+        rawCode === -2015
+          ? `${rawMsg} — Pastikan API Key benar, izin 'Enable Reading' aktif, IP tidak dibatasi, atau centang 'Gunakan Testnet' jika memakai kunci Testnet.`
+          : rawCode === -1022
+            ? `${rawMsg} — API Secret tidak cocok dengan API Key.`
+            : rawMsg;
       return {
         ok: false,
-        error: res.data?.msg || res.error || 'Binance API Key verification failed.',
+        rlsOwnerId: rlsCheck.rlsOwnerId,
+        error: hint,
       };
     }
 
-    const totalUsd = res.data
-      .filter((a) => ['USDT', 'USDC', 'FDUSD', 'BUSD'].includes(a.asset))
-      .reduce((acc, a) => acc + parseFloat(a.balance || '0'), 0);
+    const pxMap = {
+      USDT: 1,
+      USDC: 1,
+      FDUSD: 1,
+      BUSD: 1,
+      BTC: cachedSnapshot?.hlAssets?.BTC?.price || 73800,
+      ETH: cachedSnapshot?.hlAssets?.ETH?.price || 2220,
+      BNB: cachedSnapshot?.hlAssets?.BNB?.price || 610,
+      SOL: cachedSnapshot?.hlAssets?.SOL?.price || 145,
+    };
+
+    let futuresUsd = 0;
+    if (futuresOk) {
+      for (const a of fRes.data) {
+        const bal = parseFloat(a?.balance || '0');
+        const mult = pxMap[String(a?.asset || '').toUpperCase()] || 0;
+        if (bal > 0 && mult > 0) futuresUsd += bal * mult;
+      }
+    }
+
+    let spotUsd = 0;
+    if (spotOk) {
+      for (const b of sRes.data.balances) {
+        const amt = parseFloat(b?.free || '0') + parseFloat(b?.locked || '0');
+        const mult = pxMap[String(b?.asset || '').toUpperCase()] || 0;
+        if (amt > 0 && mult > 0) spotUsd += amt * mult;
+      }
+    }
+
+    const totalUsd = Number((futuresUsd + spotUsd).toFixed(2));
+    const scopeMode =
+      futuresOk && spotOk ? 'Futures+Spot' : futuresOk ? 'USDT-M Futures' : 'Spot Wallet';
+    const chainBalances = [
+      {
+        chainName: `Binance USDT-M Futures (${useTestnet ? 'Testnet' : 'Mainnet'})`,
+        chainId: 'binance-futures',
+        nativeSymbol: 'BNB',
+        nativeBalance: 0,
+        stableSymbol: 'USDT / USDC Margin',
+        stableBalanceUsd: Number(futuresUsd.toFixed(2)),
+        totalChainUsd: Number(futuresUsd.toFixed(2)),
+        recommendedFor: futuresOk
+          ? 'Aktif — Eksekusi Perpetual Futures Maker Post-Only & Stop Guard'
+          : 'Belum diaktifkan pada API Key ini',
+      },
+      {
+        chainName: `Binance Spot Account (${useTestnet ? 'Testnet' : 'Mainnet'})`,
+        chainId: 'binance-spot',
+        nativeSymbol: 'BTC/ETH/BNB',
+        nativeBalance: 0,
+        stableSymbol: 'USDT / USDC Spot',
+        stableBalanceUsd: Number(spotUsd.toFixed(2)),
+        totalChainUsd: Number(spotUsd.toFixed(2)),
+        recommendedFor: spotOk
+          ? 'Aktif — Likuiditas Spot & Collateral Multi-Asset'
+          : 'Tidak ada akses Spot pada API Key ini',
+      },
+    ];
 
     return {
       ok: true,
-      balanceUsd: Number(totalUsd.toFixed(2)),
-      addressDisplay: `BINANCE-${apiKey.slice(0, 5)}... (${useTestnet ? 'Testnet' : 'Mainnet'})`,
+      rlsPolicy: 'ENFORCED',
+      rlsOwnerId: rlsCheck.rlsOwnerId,
+      balanceUsd: totalUsd,
+      futuresBalanceUsd: Number(futuresUsd.toFixed(2)),
+      spotBalanceUsd: Number(spotUsd.toFixed(2)),
+      chainBalances,
+      addressDisplay: `BINANCE-${cleanKey.slice(0, 5)}... (${useTestnet ? 'Testnet' : 'Mainnet'} • ${scopeMode})`,
     };
   }
 
@@ -2754,8 +2980,9 @@ export async function executeRealExchangeOrder(payload) {
       params.set('closePosition', 'true');
     }
 
-    params.set('recvWindow', '5000');
-    params.set('timestamp', String(Date.now()));
+    params.set('recvWindow', '10000');
+    const syncedTs = await getSyncedBinanceTimestamp(baseUrl, true);
+    params.set('timestamp', String(syncedTs));
 
     const queryStr = params.toString();
     const signature = crypto
@@ -2768,7 +2995,9 @@ export async function executeRealExchangeOrder(payload) {
       {
         method: 'POST',
         headers: { 'X-MBX-APIKEY': apiKey.trim() },
-      }
+      },
+      5000,
+      true
     );
 
     if (!res.ok || res.data?.code) {
@@ -3244,6 +3473,96 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
 
   if (pathname === '/api/security/rls-status' && method === 'GET') {
     return { status: 200, payload: getRlsSecuritySummary() };
+  }
+
+  if (pathname === '/api/account/ping-venue' && method === 'POST') {
+    const body = await readBody();
+    const providerId = body?.providerId || 'binance_api';
+    const useTestnet = Boolean(body?.useTestnet);
+    const t0 = Date.now();
+
+    if (providerId === 'binance_api') {
+      const fUrl = useTestnet
+        ? 'https://testnet.binancefuture.com/fapi/v1/time'
+        : 'https://fapi.binance.com/fapi/v1/time';
+      const sUrl = useTestnet
+        ? 'https://testnet.binance.vision/api/v3/time'
+        : 'https://api.binance.com/api/v3/time';
+      const [fPing, sPing] = await Promise.all([
+        fetchJsonWithTimeout(fUrl, {}, 4200, true),
+        fetchJsonWithTimeout(sUrl, {}, 4200, true),
+      ]);
+      const latencyMs = Date.now() - t0;
+      const ok = Boolean(fPing.ok || sPing.ok);
+      return {
+        status: 200,
+        payload: {
+          ok,
+          providerId,
+          useTestnet,
+          latencyMs,
+          futuresReachable: Boolean(fPing.ok),
+          spotReachable: Boolean(sPing.ok),
+          serverTime: fPing.data?.serverTime || sPing.data?.serverTime || Date.now(),
+          transport: fPing.transport || sPing.transport || 'DIRECT_TLS',
+          message: ok
+            ? `Koneksi Binance (${useTestnet ? 'Testnet' : 'Mainnet'}) AKTIF via ${
+                fPing.transport === 'DoH_TLS' || sPing.transport === 'DoH_TLS'
+                  ? 'DNS-over-HTTPS (Bypass Blokir ISP)'
+                  : 'Direct TLS'
+              } • Futures: ${fPing.ok ? 'ONLINE' : 'OFFLINE'} | Spot: ${
+                sPing.ok ? 'ONLINE' : 'OFFLINE'
+              } (${latencyMs}ms). Siap memverifikasi API Key & Secret!`
+            : `Gagal menjangkau server Binance: ${fPing.error || sPing.error || 'Timeout'}`,
+        },
+      };
+    }
+
+    const pingUrl =
+      providerId === 'bybit_api'
+        ? `${useTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com'}/v5/market/time`
+        : providerId === 'okx_api'
+          ? 'https://www.okx.com/api/v5/public/time'
+          : providerId === 'phantom'
+            ? useTestnet
+              ? 'https://api.devnet.solana.com'
+              : 'https://api.mainnet-beta.solana.com'
+            : useTestnet
+              ? 'https://api.hyperliquid-testnet.xyz/info'
+              : 'https://api.hyperliquid.xyz/info';
+
+    const pingOpts =
+      providerId === 'phantom'
+        ? {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth' }),
+          }
+        : providerId === 'trust' || providerId === 'hyperliquid_agent'
+          ? {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ type: 'meta' }),
+            }
+          : {};
+
+    const pRes = await fetchJsonWithTimeout(pingUrl, pingOpts, 4200, true);
+    const latencyMs = Date.now() - t0;
+    return {
+      status: 200,
+      payload: {
+        ok: Boolean(pRes.ok),
+        providerId,
+        useTestnet,
+        latencyMs,
+        transport: pRes.transport || 'DIRECT_TLS',
+        message: pRes.ok
+          ? `Koneksi server ${providerId.toUpperCase()} (${useTestnet ? 'Testnet' : 'Mainnet'}) AKTIF (${latencyMs}ms via ${
+              pRes.transport || 'Direct TLS'
+            }).`
+          : `Gagal menghubungi server ${providerId}: ${pRes.error || 'Timeout'}`,
+      },
+    };
   }
 
   if (pathname === '/api/account/verify' && method === 'POST') {
