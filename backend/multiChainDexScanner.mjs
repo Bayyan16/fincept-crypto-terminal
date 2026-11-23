@@ -127,19 +127,51 @@ let inFlightUniverseRefresh = null;
 const gtChainLastFetchMs = new Map();
 let gtUniverseRotationIdx = 0;
 
+const PROTECTED_CANONICAL_SYMBOLS = new Set([
+  'BTC',
+  'WBTC',
+  'ETH',
+  'WETH',
+  'SOL',
+  'WSOL',
+  'BNB',
+  'WBNB',
+  'XRP',
+  'DOGE',
+  'ADA',
+  'TRX',
+  'AVAX',
+  'LINK',
+  'HYPE',
+  'WHYPE',
+  'SUI',
+  'TON',
+  'DOT',
+  'NEAR',
+  'LTC',
+  'USDC',
+  'USDT',
+]);
+
 function registerTokenImageHint(chainId, tokenAddr, symbol, imageUrl) {
   const url = String(imageUrl || '').trim();
   if (!url || !/^https?:\/\//i.test(url)) return;
+  if (/\/weth(\.|[-_?])/i.test(url)) return;
   const cid = canonicalChainId(chainId);
-  if (tokenAddr) tokenImageHintMap.set(`${cid}:${String(tokenAddr).toLowerCase()}`, url);
-  if (symbol) tokenImageHintMap.set(`sym:${String(symbol).toUpperCase().replace(/[^A-Z0-9]/g, '')}`, url);
+  const normSym = symbol ? String(symbol).toUpperCase().replace(/[^A-Z0-9]/g, '') : '';
+  if (tokenAddr && !PROTECTED_CANONICAL_SYMBOLS.has(normSym)) {
+    tokenImageHintMap.set(`${cid}:${String(tokenAddr).toLowerCase()}`, url);
+  }
+  if (normSym && !PROTECTED_CANONICAL_SYMBOLS.has(normSym)) {
+    tokenImageHintMap.set(`sym:${normSym}`, url);
+  }
 }
 
 function buildBackendIconPath(symbol, chainId, addr = '') {
   const sym = encodeURIComponent(String(symbol || 'TOK').trim());
   const cid = encodeURIComponent(canonicalChainId(chainId));
   const a = encodeURIComponent(String(addr || '').trim());
-  return `/api/live/token-icon?symbol=${sym}&chain=${cid}${a ? `&addr=${a}` : ''}`;
+  return `/api/live/token-icon?symbol=${sym}&chain=${cid}${a ? `&addr=${a}` : ''}&v=2`;
 }
 
 let lastHlSpotTokensCount = 0;
@@ -1302,6 +1334,13 @@ const CHAIN_BADGE_COLORS = {
   ethereum: '#627EEA',
 };
 
+const OFFICIAL_ETH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32"><g fill="none" fill-rule="evenodd"><circle cx="16" cy="16" r="16" fill="#627EEA"/><g fill="#FFF" fill-rule="nonzero"><path fill-opacity=".602" d="M16.498 4v8.87l7.497 3.35z"/><path d="M16.498 4L9 16.22l7.498-3.35z"/><path fill-opacity=".602" d="M16.498 21.968v6.027L24 17.616z"/><path d="M16.498 27.995v-6.028L9 17.616z"/><path fill-opacity=".2" d="M16.498 20.573l7.497-4.353-7.497-3.348z"/><path fill-opacity=".602" d="M9 16.22l7.498 4.353v-7.701z"/></g></g></svg>`;
+
+const OFFICIAL_TOKEN_SVGS = {
+  ETH: OFFICIAL_ETH_SVG,
+  WETH: OFFICIAL_ETH_SVG,
+};
+
 const KNOWN_TOKEN_ICON_URLS = {
   PEOPLE: 'https://coin-images.coingecko.com/coins/images/20612/large/GN_UVm3d_400x400.jpg',
   CANTO: 'https://coin-images.coingecko.com/coins/images/26959/large/canto-network.png',
@@ -1312,8 +1351,8 @@ const KNOWN_TOKEN_ICON_URLS = {
 
 /**
  * Resolve ANY market/token icon cleanly (never returns >= 400).
- * Checks: Indexed DexScreener/Raydium/GT image -> Curated Map -> Hyperliquid coins CDN ->
- * CoinCap 2x PNG CDN -> SpotHQ PNG CDN -> Live CoinGecko/DexScreener Lookup -> Bespoke SVG Emblem.
+ * Checks: Authoritative Official SVG -> Indexed DexScreener/Raydium/GT image -> Curated Map ->
+ * Hyperliquid coins CDN -> CoinCap 2x PNG CDN -> SpotHQ PNG CDN -> Live CoinGecko/DexScreener Lookup -> Bespoke SVG Emblem.
  */
 export async function resolveTokenIcon({ symbol = 'TOK', chain = 'solana', addr = '' } = {}) {
   const cid = canonicalChainId(chain);
@@ -1322,6 +1361,15 @@ export async function resolveTokenIcon({ symbol = 'TOK', chain = 'solana', addr 
   const strippedK = cleanSym.replace(/^K(?=[A-Z]{2,})/, '');
   const unwrapped = strippedK.replace(/^W(?=(ETH|BTC|BNB|SOL|AVAX|MATIC|HYPE)$)/, '');
   const cacheKey = `${cid}:${String(addr || '').toLowerCase()}:${cleanSym}`;
+
+  const officialSvg =
+    OFFICIAL_TOKEN_SVGS[cleanSym] ||
+    OFFICIAL_TOKEN_SVGS[strippedK] ||
+    OFFICIAL_TOKEN_SVGS[unwrapped];
+  if (officialSvg) {
+    iconCacheMap.set(cacheKey, { contentType: 'image/svg+xml', data: officialSvg, ts: Date.now() });
+    return { status: 200, contentType: 'image/svg+xml', payload: officialSvg };
+  }
 
   const cached = iconCacheMap.get(cacheKey);
   if (cached && Date.now() - cached.ts < 86_400_000) {

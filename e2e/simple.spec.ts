@@ -24,9 +24,33 @@ test('market selector closes after selecting a searched market', async ({ page }
   await page.goto('/');
   await page.locator('.market-picker summary').click();
   await page.getByTestId('watchlist-market-search').fill('ETH');
-  await page.getByTestId('market-ETH-PERP').click();
+  const ethItem = page.getByTestId('market-ETH-PERP');
+  const ethImg = ethItem.locator('img[alt="ETH icon"]');
+  await expect(ethImg).toBeVisible();
+  expect(
+    await ethImg.evaluate((el: HTMLImageElement) => el.complete && el.naturalWidth > 0)
+  ).toBe(true);
+  await ethItem.click();
   await expect(page.locator('.market-picker summary')).toContainText('ETH-PERP');
   await expect(page.locator('.market-picker-panel')).toBeHidden();
+});
+
+test('ETH-PERP and WETH resolve authentic official Ethereum (#627EEA) diamond icon without DEX hint pollution', async ({
+  request,
+}) => {
+  await request.get('/api/live/snapshot');
+  for (const query of [
+    '/api/live/token-icon?symbol=ETH&chain=hyperliquid&v=2',
+    '/api/live/token-icon?symbol=WETH&chain=ethereum&v=2',
+    '/api/live/token-icon?symbol=ETH&chain=bsc&addr=0x2170Ed0880ac9A755fd29B2688956BD959F933F8&v=2',
+  ]) {
+    const res = await request.get(query);
+    expect(res.status()).toBe(200);
+    expect(res.headers()['content-type']).toContain('image/svg+xml');
+    const body = await res.text();
+    expect(body).toContain('#627EEA');
+    expect(body).toContain('M16.498 4v8.87l7.497 3.35z');
+  }
 });
 
 test('AI orbital camera, planet selection and flight controls work', async ({ page }) => {

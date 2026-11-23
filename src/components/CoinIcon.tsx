@@ -86,9 +86,13 @@ export const VectorCoinGlyph: React.FC<CoinIconProps> = ({
         );
       case 'ETH':
         return (
-          <g fill={style.fg}>
-            <polygon points="10,3.2 5.7,10.2 10,12.7 14.3,10.2" opacity="0.95" />
-            <polygon points="10,13.6 5.7,11.1 10,16.8 14.3,11.1" opacity="0.8" />
+          <g fill={style.fg} fillRule="nonzero" transform="translate(2, 2) scale(0.5)">
+            <path fillOpacity={0.602} d="M16.498 4v8.87l7.497 3.35z" />
+            <path d="M16.498 4L9 16.22l7.498-3.35z" />
+            <path fillOpacity={0.602} d="M16.498 21.968v6.027L24 17.616z" />
+            <path d="M16.498 27.995v-6.028L9 17.616z" />
+            <path fillOpacity={0.2} d="M16.498 20.573l7.497-4.353-7.497-3.348z" />
+            <path fillOpacity={0.602} d="M9 16.22l7.498 4.353v-7.701z" />
           </g>
         );
       case 'XRP':
@@ -282,8 +286,10 @@ export const CoinIcon: React.FC<CoinIconProps> = ({ coin, size = 14, className =
   }, [sym]);
 
   const candidates = [
-    `/api/live/token-icon?symbol=${encodeURIComponent(sym)}&chain=hyperliquid`,
-    `https://app.hyperliquid.xyz/coins/${encodeURIComponent(sym)}.svg`,
+    `/api/live/token-icon?symbol=${encodeURIComponent(sym)}&chain=hyperliquid&v=2`,
+    sym === 'ETH'
+      ? 'https://assets.coincap.io/assets/icons/eth@2x.png'
+      : `https://app.hyperliquid.xyz/coins/${encodeURIComponent(sym)}.svg`,
     `https://assets.coincap.io/assets/icons/${encodeURIComponent(sym.toLowerCase())}@2x.png`,
   ];
 
@@ -337,7 +343,7 @@ export const MarketTokenIcon: React.FC<MarketTokenIconProps> = ({
     imageUrl ||
     `/api/live/token-icon?symbol=${encodeURIComponent(symbol || 'TOK')}&chain=${encodeURIComponent(
       chainId
-    )}${address ? `&addr=${encodeURIComponent(address)}` : ''}`;
+    )}${address ? `&addr=${encodeURIComponent(address)}` : ''}&v=2`;
 
   if (failed || !src) {
     return <CoinIcon coin={symbol} size={size} className={className} />;
