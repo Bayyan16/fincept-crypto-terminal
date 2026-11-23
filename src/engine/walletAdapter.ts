@@ -428,6 +428,7 @@ export async function pingExchangeVenueConnection(
   ok: boolean;
   latencyMs?: number;
   transport?: string;
+  publicIp?: string;
   futuresReachable?: boolean;
   spotReachable?: boolean;
   message: string;
@@ -443,6 +444,7 @@ export async function pingExchangeVenueConnection(
       ok: Boolean(data?.ok),
       latencyMs: data?.latencyMs,
       transport: data?.transport,
+      publicIp: data?.publicIp,
       futuresReachable: data?.futuresReachable,
       spotReachable: data?.spotReachable,
       message: data?.message || (data?.ok ? 'Server venue aktif.' : 'Gagal menghubungi server venue.'),
@@ -465,6 +467,8 @@ export async function verifyRealAccountWithBackend(
   openPositions?: any[];
   chainBalances?: ChainAssetBreakdown[];
   rlsOwnerId?: string;
+  resolvedUseTestnet?: boolean;
+  publicIp?: string;
   error?: string;
 }> {
   const unsealedCreds: WalletCredentials = {
@@ -501,6 +505,9 @@ export async function verifyRealAccountWithBackend(
       openPositions: data.openPositions || [],
       chainBalances: data.chainBalances || undefined,
       rlsOwnerId: data.rlsOwnerId,
+      resolvedUseTestnet:
+        typeof data.resolvedUseTestnet === 'boolean' ? data.resolvedUseTestnet : undefined,
+      publicIp: data.publicIp,
       ...(latency ? { latencyMs: latency } : {}),
     };
   } catch (err: any) {

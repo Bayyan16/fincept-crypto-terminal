@@ -59,6 +59,8 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
 }) => {
   const [expandedId, setExpandedId] = useState<WalletConnectionState['id'] | null>('hyperliquid_agent');
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const [publicIpv4, setPublicIpv4] = useState<string>('');
+  const [copiedIp, setCopiedIp] = useState<boolean>(false);
   const [statusBanner, setStatusBanner] = useState<{
     tone: 'SUCCESS' | 'ERROR' | 'INFO';
     text: string;
@@ -69,6 +71,11 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setVisibility('open');
+      pingExchangeVenueConnection('binance_api', false)
+        .then((r) => {
+          if (r.publicIp) setPublicIpv4(r.publicIp);
+        })
+        .catch(() => {});
       return;
     }
     setVisibility((prev) => (prev === 'open' ? 'closing' : 'closed'));
@@ -193,6 +200,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
     setVerifyingId(w.id);
     setStatusBanner(null);
     const res = await pingExchangeVenueConnection(w.id, Boolean(w.credentials?.useTestnet));
+    if (res.publicIp) setPublicIpv4(res.publicIp);
     setVerifyingId(null);
     setStatusBanner({
       tone: res.ok ? 'SUCCESS' : 'ERROR',
@@ -200,11 +208,23 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
     });
   };
 
+  const handleCopyPublicIp = async () => {
+    if (!publicIpv4) return;
+    try {
+      await navigator.clipboard.writeText(publicIpv4);
+      setCopiedIp(true);
+      setTimeout(() => setCopiedIp(false), 2000);
+    } catch {
+      // ignore
+    }
+  };
+
   const handleVerifyRealCredentials = async (w: WalletConnectionState) => {
     setVerifyingId(w.id);
     setStatusBanner(null);
     const creds = w.credentials || {};
     const res = await verifyRealAccountWithBackend(w.id, creds);
+    if (res.publicIp) setPublicIpv4(res.publicIp);
     setVerifyingId(null);
 
     if (!res.ok) {
@@ -214,6 +234,11 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
       });
       return;
     }
+
+    const effectiveTestnet =
+      typeof res.resolvedUseTestnet === 'boolean'
+        ? res.resolvedUseTestnet
+        : Boolean(creds.useTestnet);
 
     onUpdateWallets((prev) => {
       const next = prev.map((item) =>
@@ -226,6 +251,10 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
               chainBalances: res.chainBalances || item.chainBalances,
               addressOrKeyId: res.addressDisplay || item.addressOrKeyId,
               balanceUsd: res.balanceUsd ?? item.balanceUsd,
+              credentials: {
+                ...(item.credentials || {}),
+                useTestnet: effectiveTestnet,
+              },
             }
           : item
       );
@@ -235,7 +264,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
 
     setStatusBanner({
       tone: 'SUCCESS',
-      text: `[${w.name}] TERVERIFIKASI REAL! Saldo Multi-Chain Live: $${(
+      text: `[${w.name}] TERVERIFIKASI REAL (${effectiveTestnet ? 'Testnet' : 'Mainnet'})! Saldo Live: $${(
         res.balanceUsd ?? 0
       ).toLocaleString()} (${res.addressDisplay})`,
     });
@@ -493,6 +522,35 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                       </>
                     ) : (
                       <>
+                        {w.id === 'binance_api' && (
+                          <div
+                            data-testid="binance-ip-whitelist-helper"
+                            className="p-2 bg-[#091320] border border-[#1E3A5F] text-[9.5px] text-[#CBD5E1] space-y-1"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-[#00E5FF] font-extrabold">
+                                IP PUBLIK WHITELIST BINANCE ANDA:
+                              </span>
+                              <div className="flex items-center gap-1.5">
+                                <code className="px-1.5 py-0.5 bg-[#05080F] border border-[#00E676]/50 text-[#00E676] font-extrabold">
+                                  {publicIpv4 || 'Mendeteksi...'}
+                                </code>
+                                {publicIpv4 && (
+                                  <button
+                                    type="button"
+                                    onClick={handleCopyPublicIp}
+                                    className="wm-btn px-1.5 py-0.5 bg-[#FF9F1C] text-black font-extrabold text-[9px]"
+                                  >
+                                    {copiedIp ? '✓ COPIED' : 'COPY IP'}
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                            <div className="text-[#94A3B8] leading-tight">
+                              Agar <strong>Enable Spot & Margin</strong> dan <strong>Enable Futures</strong> bisa dicentang di Binance: klik <strong>Edit restrictions</strong> &rarr; pilih <strong>Restrict access to trusted IPs only</strong> &rarr; paste IP di atas &rarr; klik <strong>Confirm</strong> (buka tab Futures di Binance lebih dulu jika membuat API Key Futures baru).
+                            </div>
+                          </div>
+                        )}
                         <div>
                           <label className="block text-[9.5px] text-[#94A3B8] mb-0.5">
                             API KEY ({w.name.toUpperCase()})

@@ -176,6 +176,37 @@ async function fetchHlpEcosystemStates() {
 const dohIpCache = new Map();
 const ISP_SINKHOLE_IPS = new Set(['0.0.0.0', '127.0.0.1', '43.173.57.48', '108.137.176.189']);
 const binanceTimeOffsetMap = new Map();
+let cachedPublicIpv4 = '';
+let lastPublicIpFetchMs = 0;
+
+async function detectMachinePublicIpv4() {
+  if (cachedPublicIpv4 && Date.now() - lastPublicIpFetchMs < 300_000) {
+    return cachedPublicIpv4;
+  }
+  const endpoints = [
+    'https://checkip.amazonaws.com',
+    'https://api.ipify.org',
+    'https://icanhazip.com',
+  ];
+  for (const url of endpoints) {
+    try {
+      const controller = new AbortController();
+      const t = setTimeout(() => controller.abort(), 2200);
+      const res = await fetch(url, { signal: controller.signal });
+      clearTimeout(t);
+      if (!res.ok) continue;
+      const txt = (await res.text()).trim();
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(txt)) {
+        cachedPublicIpv4 = txt;
+        lastPublicIpFetchMs = Date.now();
+        return txt;
+      }
+    } catch {
+      // try next
+    }
+  }
+  return cachedPublicIpv4 || '';
+}
 
 async function resolveDohIpForHost(hostname) {
   const cached = dohIpCache.get(hostname);
@@ -2692,60 +2723,91 @@ export async function verifyAndFetchAccountBalance(payload) {
     }
     const cleanKey = apiKey.trim();
     const cleanSecret = apiSecret.trim();
-    const futuresBaseUrl = useTestnet
-      ? 'https://testnet.binancefuture.com'
-      : 'https://fapi.binance.com';
-    const spotBaseUrl = useTestnet
-      ? 'https://testnet.binance.vision'
-      : 'https://api.binance.com';
 
-    const [fTs, sTs] = await Promise.all([
-      getSyncedBinanceTimestamp(futuresBaseUrl, true),
-      getSyncedBinanceTimestamp(spotBaseUrl, false),
-    ]);
+    const probeBinanceEnv = async (isTestnetEnv) => {
+      const futuresBaseUrl = isTestnetEnv
+        ? 'https://testnet.binancefuture.com'
+        : 'https://fapi.binance.com';
+      const spotBaseUrl = isTestnetEnv
+        ? 'https://testnet.binance.vision'
+        : 'https://api.binance.com';
 
-    const fQuery = `recvWindow=10000&timestamp=${fTs}`;
-    const fSig = crypto.createHmac('sha256', cleanSecret).update(fQuery).digest('hex');
+      const [fTs, sTs] = await Promise.all([
+        getSyncedBinanceTimestamp(futuresBaseUrl, true),
+        getSyncedBinanceTimestamp(spotBaseUrl, false),
+      ]);
 
-    const sQuery = `omitZeroBalances=true&recvWindow=10000&timestamp=${sTs}`;
-    const sSig = crypto.createHmac('sha256', cleanSecret).update(sQuery).digest('hex');
+      const fQuery = `recvWindow=10000&timestamp=${fTs}`;
+      const fSig = crypto.createHmac('sha256', cleanSecret).update(fQuery).digest('hex');
 
-    const [fRes, sRes] = await Promise.all([
-      fetchJsonWithTimeout(
-        `${futuresBaseUrl}/fapi/v2/balance?${fQuery}&signature=${fSig}`,
-        {
-          method: 'GET',
-          headers: { 'X-MBX-APIKEY': cleanKey },
-        },
-        4800,
-        true
-      ),
-      fetchJsonWithTimeout(
-        `${spotBaseUrl}/api/v3/account?${sQuery}&signature=${sSig}`,
-        {
-          method: 'GET',
-          headers: { 'X-MBX-APIKEY': cleanKey },
-        },
-        4800,
-        true
-      ),
-    ]);
+      const sQuery = `omitZeroBalances=true&recvWindow=10000&timestamp=${sTs}`;
+      const sSig = crypto.createHmac('sha256', cleanSecret).update(sQuery).digest('hex');
 
-    const futuresOk = fRes.ok && Array.isArray(fRes.data);
-    const spotOk = sRes.ok && Array.isArray(sRes.data?.balances);
+      const [fRes, sRes] = await Promise.all([
+        fetchJsonWithTimeout(
+          `${futuresBaseUrl}/fapi/v2/balance?${fQuery}&signature=${fSig}`,
+          {
+            method: 'GET',
+            headers: { 'X-MBX-APIKEY': cleanKey },
+          },
+          4800,
+          true
+        ),
+        fetchJsonWithTimeout(
+          `${spotBaseUrl}/api/v3/account?${sQuery}&signature=${sSig}`,
+          {
+            method: 'GET',
+            headers: { 'X-MBX-APIKEY': cleanKey },
+          },
+          4800,
+          true
+        ),
+      ]);
+      return {
+        isTestnetEnv,
+        fRes,
+        sRes,
+        futuresOk: fRes.ok && Array.isArray(fRes.data),
+        spotOk: sRes.ok && Array.isArray(sRes.data?.balances),
+      };
+    };
+
+    let attempt = await probeBinanceEnv(Boolean(useTestnet));
+    let autoCorrectedUseTestnet = Boolean(useTestnet);
+
+    // If user accidentally checked "Gunakan Testnet" with a real Mainnet key (or vice versa), auto-probe the opposite environment!
+    if (!attempt.futuresOk && !attempt.spotOk) {
+      const fallbackAttempt = await probeBinanceEnv(!useTestnet);
+      if (fallbackAttempt.futuresOk || fallbackAttempt.spotOk) {
+        attempt = fallbackAttempt;
+        autoCorrectedUseTestnet = fallbackAttempt.isTestnetEnv;
+      }
+    }
+
+    const { fRes, sRes, futuresOk, spotOk } = attempt;
+    const publicIp = await detectMachinePublicIpv4();
 
     if (!futuresOk && !spotOk) {
       const rawCode = fRes.data?.code || sRes.data?.code;
-      const rawMsg = fRes.data?.msg || sRes.data?.msg || fRes.error || sRes.error || 'Binance API Key verification failed.';
+      const rawMsg =
+        fRes.data?.msg ||
+        sRes.data?.msg ||
+        fRes.error ||
+        sRes.error ||
+        'Binance API Key verification failed.';
+      const ipText = publicIp ? ` (IP Publik Anda: ${publicIp})` : '';
       const hint =
         rawCode === -2015
-          ? `${rawMsg} — Pastikan API Key benar, izin 'Enable Reading' aktif, IP tidak dibatasi, atau centang 'Gunakan Testnet' jika memakai kunci Testnet.`
+          ? `${rawMsg}${ipText} — Pastikan API Key benar, izin 'Enable Reading' aktif, dan jika di Binance memakai 'Restrict access to trusted IPs only', masukkan IP ${
+              publicIp || 'Anda'
+            }.`
           : rawCode === -1022
             ? `${rawMsg} — API Secret tidak cocok dengan API Key.`
             : rawMsg;
       return {
         ok: false,
         rlsOwnerId: rlsCheck.rlsOwnerId,
+        publicIp,
         error: hint,
       };
     }
@@ -2782,9 +2844,10 @@ export async function verifyAndFetchAccountBalance(payload) {
     const totalUsd = Number((futuresUsd + spotUsd).toFixed(2));
     const scopeMode =
       futuresOk && spotOk ? 'Futures+Spot' : futuresOk ? 'USDT-M Futures' : 'Spot Wallet';
+    const envLabel = autoCorrectedUseTestnet ? 'Testnet' : 'Mainnet';
     const chainBalances = [
       {
-        chainName: `Binance USDT-M Futures (${useTestnet ? 'Testnet' : 'Mainnet'})`,
+        chainName: `Binance USDT-M Futures (${envLabel})`,
         chainId: 'binance-futures',
         nativeSymbol: 'BNB',
         nativeBalance: 0,
@@ -2796,7 +2859,7 @@ export async function verifyAndFetchAccountBalance(payload) {
           : 'Belum diaktifkan pada API Key ini',
       },
       {
-        chainName: `Binance Spot Account (${useTestnet ? 'Testnet' : 'Mainnet'})`,
+        chainName: `Binance Spot Account (${envLabel})`,
         chainId: 'binance-spot',
         nativeSymbol: 'BTC/ETH/BNB',
         nativeBalance: 0,
@@ -2816,8 +2879,10 @@ export async function verifyAndFetchAccountBalance(payload) {
       balanceUsd: totalUsd,
       futuresBalanceUsd: Number(futuresUsd.toFixed(2)),
       spotBalanceUsd: Number(spotUsd.toFixed(2)),
+      resolvedUseTestnet: autoCorrectedUseTestnet,
+      publicIp,
       chainBalances,
-      addressDisplay: `BINANCE-${cleanKey.slice(0, 5)}... (${useTestnet ? 'Testnet' : 'Mainnet'} • ${scopeMode})`,
+      addressDisplay: `BINANCE-${cleanKey.slice(0, 5)}... (${envLabel} • ${scopeMode})`,
     };
   }
 
@@ -2999,6 +3064,51 @@ export async function executeRealExchangeOrder(payload) {
       5000,
       true
     );
+
+    // If Futures order returns -2015 (e.g. Spot-only Binance API Key without Futures enabled), seamlessly fallback to Binance Spot /api/v3/order
+    if ((!res.ok || res.data?.code) && (orderPurpose === 'ENTRY_MAKER' || orderPurpose === 'SCRATCH_EXIT')) {
+      const spotBaseUrl = useTestnet
+        ? 'https://testnet.binance.vision'
+        : 'https://api.binance.com';
+      const spotParams = new URLSearchParams();
+      spotParams.set('symbol', binanceSymbol || symbol.replace('-PERP', 'USDT'));
+      spotParams.set('side', isBuy ? 'BUY' : 'SELL');
+      spotParams.set('quantity', String(quantity));
+      if (orderPurpose === 'ENTRY_MAKER') {
+        spotParams.set('type', 'LIMIT_MAKER');
+        spotParams.set('price', String(price));
+      } else {
+        spotParams.set('type', 'MARKET');
+      }
+      spotParams.set('recvWindow', '10000');
+      const spotTs = await getSyncedBinanceTimestamp(spotBaseUrl, false);
+      spotParams.set('timestamp', String(spotTs));
+      const spotQueryStr = spotParams.toString();
+      const spotSig = crypto
+        .createHmac('sha256', apiSecret.trim())
+        .update(spotQueryStr)
+        .digest('hex');
+      const spotRes = await fetchJsonWithTimeout(
+        `${spotBaseUrl}/api/v3/order?${spotQueryStr}&signature=${spotSig}`,
+        {
+          method: 'POST',
+          headers: { 'X-MBX-APIKEY': apiKey.trim() },
+        },
+        5000,
+        true
+      );
+      if (spotRes.ok && !spotRes.data?.code) {
+        return {
+          ok: true,
+          exchange: 'BINANCE',
+          venueMode: 'SPOT',
+          orderId: String(spotRes.data.orderId),
+          status: spotRes.data.status || 'NEW',
+          executedQty: quantity,
+          executedPrice: price,
+        };
+      }
+    }
 
     if (!res.ok || res.data?.code) {
       return {
@@ -3488,9 +3598,10 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
       const sUrl = useTestnet
         ? 'https://testnet.binance.vision/api/v3/time'
         : 'https://api.binance.com/api/v3/time';
-      const [fPing, sPing] = await Promise.all([
+      const [fPing, sPing, publicIp] = await Promise.all([
         fetchJsonWithTimeout(fUrl, {}, 4200, true),
         fetchJsonWithTimeout(sUrl, {}, 4200, true),
+        detectMachinePublicIpv4(),
       ]);
       const latencyMs = Date.now() - t0;
       const ok = Boolean(fPing.ok || sPing.ok);
@@ -3501,6 +3612,7 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
           providerId,
           useTestnet,
           latencyMs,
+          publicIp,
           futuresReachable: Boolean(fPing.ok),
           spotReachable: Boolean(sPing.ok),
           serverTime: fPing.data?.serverTime || sPing.data?.serverTime || Date.now(),
@@ -3512,7 +3624,7 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
                   : 'Direct TLS'
               } • Futures: ${fPing.ok ? 'ONLINE' : 'OFFLINE'} | Spot: ${
                 sPing.ok ? 'ONLINE' : 'OFFLINE'
-              } (${latencyMs}ms). Siap memverifikasi API Key & Secret!`
+              } (${latencyMs}ms)${publicIp ? ` • IP Whitelist: ${publicIp}` : ''}.`
             : `Gagal menjangkau server Binance: ${fPing.error || sPing.error || 'Timeout'}`,
         },
       };
