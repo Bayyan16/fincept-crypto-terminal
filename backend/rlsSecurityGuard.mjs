@@ -38,6 +38,9 @@ export const ALLOWED_ORDER_PURPOSES = new Set(['ENTRY_MAKER', 'SCRATCH_EXIT', 'B
 export const MIN_SINGLE_ORDER_USD = 10;
 export const MAX_SINGLE_ORDER_USD = 250_000;
 export const NONCE_MAX_DRIFT_MS = 5 * 60 * 1000; // 5 minutes anti-replay window
+export const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute burst window
+export const MAX_ORDERS_PER_WINDOW = 15;
+export const MAX_EXIT_ORDERS_PER_WINDOW = 60; // Independent reserved bucket for risk-reducing exits/stops
 
 const EVM_ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;
 const EVM_BURN_ADDRESSES = new Set([
@@ -53,9 +56,38 @@ const SOLANA_INVALID_ADDRESSES = new Set([
 ]);
 const SAFE_CREDENTIAL_TOKEN_REGEX = /^[^\s&=?#\r\n\0]{8,256}$/;
 
-// Anti-replay nonce ledger & audit ring buffer
+// Anti-replay nonce ledger, burst rate-limiter & audit ring buffer
 const usedNoncesMap = new Map();
+const executionBurstMap = new Map();
 const rlsAuditLedger = [];
+
+export function resetRlsRateLimitersForTest() {
+  executionBurstMap.clear();
+  usedNoncesMap.clear();
+}
+
+function checkBurstRateLimitReadOnly(bucketKey, maxOrders, nowMs = Date.now()) {
+  const bucket = executionBurstMap.get(bucketKey) || [];
+  const recent = bucket.filter((ts) => nowMs - ts <= RATE_LIMIT_WINDOW_MS);
+  if (recent.length !== bucket.length) {
+    executionBurstMap.set(bucketKey, recent);
+  }
+  if (recent.length >= maxOrders) {
+    return { ok: false, count: recent.length };
+  }
+  return { ok: true, count: recent.length };
+}
+
+function recordBurstRateLimit(bucketKey, nowMs = Date.now()) {
+  const bucket = executionBurstMap.get(bucketKey) || [];
+  const recent = bucket.filter((ts) => nowMs - ts <= RATE_LIMIT_WINDOW_MS);
+  recent.push(nowMs);
+  if (executionBurstMap.size > 500) {
+    const oldest = executionBurstMap.keys().next().value;
+    if (oldest !== undefined) executionBurstMap.delete(oldest);
+  }
+  executionBurstMap.set(bucketKey, recent);
+}
 
 function cleanupExpiredNonces(nowMs = Date.now()) {
   if (usedNoncesMap.size < 200) return;
@@ -105,12 +137,14 @@ export function getRlsSecuritySummary() {
       'RLS_ANTI_REPLAY_NONCE_GUARD',
       'RLS_NUMERIC_AND_CAPITAL_CAP_GUARD',
       'RLS_ORACLE_PRICE_AND_LOT_PRECISION_GUARD',
+      'RLS_EXECUTION_RATE_LIMITER',
       'RLS_SECRET_REDACTION_GUARD',
     ],
     limits: {
       minSingleOrderUsd: MIN_SINGLE_ORDER_USD,
       maxSingleOrderUsd: MAX_SINGLE_ORDER_USD,
       nonceWindowMs: NONCE_MAX_DRIFT_MS,
+      maxOrdersPerMinute: MAX_ORDERS_PER_WINDOW,
       allowedEvmChains: [...ALLOWED_EVM_CHAIN_IDS],
     },
     stats: {
@@ -497,8 +531,11 @@ export function enforceRlsOrderExecutionGuard(payload = {}, liveMarkPrice = 0) {
   }
 
   // 4. Live Oracle Mark-Price Deviation Guard (Fat-Finger / Wrong-Symbol Price Protection)
-  const refPx = Number(payload.refMarkPrice || liveMarkPrice || 0);
-  if (orderPurpose === 'ENTRY_MAKER' && Number.isFinite(refPx) && refPx > 0 && payload.bypassOracleGuard !== true) {
+  // Server-authoritative liveMarkPrice takes precedence over client-supplied refMarkPrice; client CANNOT bypass Layer 4!
+  const serverMark = Number(liveMarkPrice || 0);
+  const clientMark = Number(payload.refMarkPrice || 0);
+  const refPx = Number.isFinite(serverMark) && serverMark > 0 ? serverMark : clientMark;
+  if (orderPurpose === 'ENTRY_MAKER' && Number.isFinite(refPx) && refPx > 0) {
     const deviationRatio = Math.abs(numPrice - refPx) / refPx;
     if (deviationRatio > 0.35) {
       const err = `[RLS ORACLE PRICE GUARD] Harga order ($${numPrice}) menyimpang ${(deviationRatio * 100).toFixed(1)}% dari harga mark on-chain ($${refPx}). Order diblokir untuk mencegah kerugian slippage ekstrem.`;
@@ -549,6 +586,55 @@ export function enforceRlsOrderExecutionGuard(payload = {}, liveMarkPrice = 0) {
     return { ok: false, policy: 'RLS_LOT_PRECISION_GUARD', rlsOwnerId, error: lotCheck.error };
   }
 
+  // 5B. Universal Anti-Replay Nonce / Idempotency Guard across ALL CEX & DEX venues
+  // Read-only check here; keys are committed ONLY after all remaining guards succeed so rejected requests remain safely retryable!
+  const pendingNonceCommits = [];
+  const universalNonce =
+    payload.idempotencyKey !== undefined && payload.idempotencyKey !== null && payload.idempotencyKey !== ''
+      ? String(payload.idempotencyKey)
+      : rlsContext?.nonce !== undefined && rlsContext?.nonce !== null
+        ? rlsContext.nonce
+        : undefined;
+  if (universalNonce !== undefined && !(exchange === 'HYPERLIQUID' && hlSignedAction?.nonce !== undefined)) {
+    const nowMs = Date.now();
+    if (typeof universalNonce === 'number' || /^\d{12,15}$/.test(String(universalNonce))) {
+      const nonceNum = Number(universalNonce);
+      if (!Number.isFinite(nonceNum) || Math.abs(nowMs - nonceNum) > NONCE_MAX_DRIFT_MS) {
+        const err = '[RLS ANTI-REPLAY GUARD] Nonce order kedaluwarsa atau berada di luar jendela 5 menit.';
+        recordRlsAuditEvent({ action: 'EXECUTE_ORDER', policy: 'RLS_ANTI_REPLAY_NONCE_GUARD', allowed: false, rlsOwnerId, exchange, symbol, reason: err });
+        return { ok: false, policy: 'RLS_ANTI_REPLAY_NONCE_GUARD', rlsOwnerId, error: err };
+      }
+    }
+    cleanupExpiredNonces(nowMs);
+    const uKey = `${exchange.toLowerCase()}:${rlsOwnerId}:${String(universalNonce)}`;
+    if (usedNoncesMap.has(uKey)) {
+      const err = '[RLS ANTI-REPLAY GUARD] Instruksi order dengan nonce/idempotency key ini sudah pernah diproses (Duplicate Replay Blocked).';
+      recordRlsAuditEvent({ action: 'EXECUTE_ORDER', policy: 'RLS_ANTI_REPLAY_NONCE_GUARD', allowed: false, rlsOwnerId, exchange, symbol, reason: err });
+      return { ok: false, policy: 'RLS_ANTI_REPLAY_NONCE_GUARD', rlsOwnerId, error: err };
+    }
+    pendingNonceCommits.push({ key: uKey, ts: nowMs });
+  }
+
+  // 5C. Layer 5 Execution Burst Rate-Limiter (independent reserved bucket for risk-reducing exits/stops)
+  const isRiskReducing = orderPurpose === 'SCRATCH_EXIT' || orderPurpose === 'BREAKEVEN_STOP';
+  const burstBucketKey = `${isRiskReducing ? 'exit' : 'entry'}:${rlsOwnerId}`;
+  const burstLimit = isRiskReducing ? MAX_EXIT_ORDERS_PER_WINDOW : MAX_ORDERS_PER_WINDOW;
+  const burstNowMs = Date.now();
+  const burstCheck = checkBurstRateLimitReadOnly(burstBucketKey, burstLimit, burstNowMs);
+  if (!burstCheck.ok) {
+    const err = `[RLS RATE LIMITER] Batas keamanan burst (${burstLimit} ${isRiskReducing ? 'exit/stop' : 'entry'} order/menit) tercapai untuk sesi ini. Eksekusi dijeda otomatis.`;
+    recordRlsAuditEvent({
+      action: 'EXECUTE_ORDER',
+      policy: 'RLS_EXECUTION_RATE_LIMITER',
+      allowed: false,
+      rlsOwnerId,
+      exchange,
+      symbol,
+      reason: err,
+    });
+    return { ok: false, policy: 'RLS_EXECUTION_RATE_LIMITER', rlsOwnerId, error: err };
+  }
+
   // 6. Venue-Specific Cryptographic Signature & RLS Signer Binding Guard
   if (exchange === 'HYPERLIQUID' && hlSignedAction) {
     const rawSig = String(hlSignedAction.rawSignature || hlSignedAction.signature || '').trim();
@@ -597,7 +683,7 @@ export function enforceRlsOrderExecutionGuard(payload = {}, liveMarkPrice = 0) {
         recordRlsAuditEvent({ action: 'EXECUTE_ORDER', policy: 'RLS_ANTI_REPLAY_NONCE_GUARD', allowed: false, rlsOwnerId, exchange, symbol, reason: err });
         return { ok: false, policy: 'RLS_ANTI_REPLAY_NONCE_GUARD', rlsOwnerId, error: err };
       }
-      usedNoncesMap.set(nonceKey, nowMs);
+      pendingNonceCommits.push({ key: nonceKey, ts: nowMs });
     }
   }
 
@@ -619,6 +705,12 @@ export function enforceRlsOrderExecutionGuard(payload = {}, liveMarkPrice = 0) {
       return { ok: false, policy: 'RLS_SIGNER_OWNERSHIP_MATCH', rlsOwnerId, error: err };
     }
   }
+
+  // Commit anti-replay nonces and burst window timestamp ONLY after every security layer passes
+  for (const item of pendingNonceCommits) {
+    usedNoncesMap.set(item.key, item.ts);
+  }
+  recordBurstRateLimit(burstBucketKey, burstNowMs);
 
   recordRlsAuditEvent({
     action: 'EXECUTE_ORDER',
