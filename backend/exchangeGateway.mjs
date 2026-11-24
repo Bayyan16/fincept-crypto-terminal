@@ -3213,19 +3213,24 @@ export async function executeRealExchangeOrder(payload) {
     const params = new URLSearchParams();
     params.set('symbol', resolvedBinSymbol);
     params.set('side', isBuy ? 'BUY' : 'SELL');
-    params.set('quantity', String(binOrderQty));
 
     if (orderPurpose === 'ENTRY_MAKER') {
-      params.set('type', 'LIMIT');
-      params.set('timeInForce', 'GTX');
-      params.set('price', String(binOrderPrice));
+      params.set('quantity', String(binOrderQty));
+      params.set('type', payload.makerOnly === false ? 'MARKET' : 'LIMIT');
+      if (payload.makerOnly !== false) {
+        params.set('timeInForce', 'GTX');
+        params.set('price', String(binOrderPrice));
+      }
     } else if (orderPurpose === 'SCRATCH_EXIT') {
+      params.set('quantity', String(binOrderQty));
       params.set('type', 'MARKET');
       params.set('reduceOnly', 'true');
     } else if (orderPurpose === 'BREAKEVEN_STOP') {
+      // Binance Futures forbids sending `quantity` together with `closePosition=true` (error -1106)
       params.set('type', 'STOP_MARKET');
       params.set('stopPrice', String(binOrderStopPrice));
       params.set('closePosition', 'true');
+      params.set('workingType', 'MARK_PRICE');
     }
 
     params.set('recvWindow', '10000');
@@ -3356,16 +3361,43 @@ export async function executeRealExchangeOrder(payload) {
 
     const timestamp = String(Date.now());
 
-    const orderBody = {
-      category: 'linear',
-      symbol: bybitSymbol,
-      side: isBuy ? 'Buy' : 'Sell',
-      orderType: orderPurpose === 'ENTRY_MAKER' ? 'Limit' : 'Market',
-      qty: String(bybitQty),
-      ...(orderPurpose === 'ENTRY_MAKER'
-        ? { price: String(bybitPrice), timeInForce: 'PostOnly' }
-        : { reduceOnly: true }),
-    };
+    const bybitStopPrice = bybitSpec?.tickSize
+      ? alignPriceToTickSize(Number(stopPrice || price) * normBybit.priceScale, bybitSpec.tickSize)
+      : Number(stopPrice || price) * normBybit.priceScale;
+    const isBybitSpot = marketType === 'SPOT' || payload.venueMode === 'SPOT';
+    const orderBody =
+      orderPurpose === 'ENTRY_MAKER'
+        ? {
+            category: isBybitSpot ? 'spot' : 'linear',
+            symbol: bybitSymbol,
+            side: isBuy ? 'Buy' : 'Sell',
+            orderType: payload.makerOnly === false ? 'Market' : 'Limit',
+            qty: String(bybitQty),
+            ...(payload.makerOnly === false
+              ? {}
+              : { price: String(bybitPrice), timeInForce: 'PostOnly' }),
+          }
+        : orderPurpose === 'BREAKEVEN_STOP'
+          ? {
+              category: isBybitSpot ? 'spot' : 'linear',
+              symbol: bybitSymbol,
+              side: isBuy ? 'Buy' : 'Sell',
+              orderType: 'Market',
+              qty: String(bybitQty),
+              triggerPrice: String(bybitStopPrice),
+              triggerDirection: side === 'LONG' ? 2 : 1,
+              triggerBy: 'MarkPrice',
+              stopOrderType: 'StopLoss',
+              ...(isBybitSpot ? {} : { reduceOnly: true }),
+            }
+          : {
+              category: isBybitSpot ? 'spot' : 'linear',
+              symbol: bybitSymbol,
+              side: isBuy ? 'Buy' : 'Sell',
+              orderType: 'Market',
+              qty: String(bybitQty),
+              ...(isBybitSpot ? {} : { reduceOnly: true }),
+            };
 
     const bodyStr = JSON.stringify(orderBody);
     const prehash = timestamp + apiKey.trim() + recvWindow + bodyStr;
@@ -3490,22 +3522,47 @@ export async function executeRealExchangeOrder(payload) {
     }
 
     const timestamp = new Date().toISOString();
+    const okxScaledStop = Number(stopPrice || price) * normOkx.priceScale;
+    const okxStopPrice = okxSpec?.tickSize
+      ? alignPriceToTickSize(okxScaledStop, okxSpec.tickSize)
+      : okxScaledStop;
 
-    const orderBody = {
-      instId,
-      tdMode: isOkxSpot ? 'cash' : 'cross',
-      side: isBuy ? 'buy' : 'sell',
-      ordType: orderPurpose === 'ENTRY_MAKER' ? 'post_only' : 'market',
-      sz: String(okxSz),
-      ...(orderPurpose === 'ENTRY_MAKER'
-        ? { px: String(okxOrderPrice) }
-        : isOkxSpot
-          ? {}
-          : { reduceOnly: true }),
-    };
+    const effectiveOkxPath =
+      orderPurpose === 'BREAKEVEN_STOP' ? '/api/v5/trade/order-algo' : requestPath;
+
+    const orderBody =
+      orderPurpose === 'BREAKEVEN_STOP'
+        ? {
+            instId,
+            tdMode: isOkxSpot ? 'cash' : 'cross',
+            side: isBuy ? 'buy' : 'sell',
+            ordType: 'conditional',
+            sz: String(okxSz),
+            slTriggerPx: String(okxStopPrice),
+            slOrdPx: '-1',
+            slTriggerPxType: 'mark',
+            ...(isOkxSpot ? {} : { reduceOnly: true }),
+          }
+        : {
+            instId,
+            tdMode: isOkxSpot ? 'cash' : 'cross',
+            side: isBuy ? 'buy' : 'sell',
+            ordType:
+              orderPurpose === 'ENTRY_MAKER'
+                ? payload.makerOnly === false
+                  ? 'market'
+                  : 'post_only'
+                : 'market',
+            sz: String(okxSz),
+            ...(orderPurpose === 'ENTRY_MAKER' && payload.makerOnly !== false
+              ? { px: String(okxOrderPrice) }
+              : orderPurpose !== 'ENTRY_MAKER' && !isOkxSpot
+                ? { reduceOnly: true }
+                : {}),
+          };
 
     const bodyStr = JSON.stringify(orderBody);
-    const prehash = `${timestamp}POST${requestPath}${bodyStr}`;
+    const prehash = `${timestamp}POST${effectiveOkxPath}${bodyStr}`;
     const signature = crypto
       .createHmac('sha256', apiSecret.trim())
       .update(prehash)
@@ -3520,7 +3577,7 @@ export async function executeRealExchangeOrder(payload) {
     };
     if (useTestnet) headers['x-simulated-trading'] = '1';
 
-    const res = await fetchJsonWithTimeout(`https://www.okx.com${requestPath}`, {
+    const res = await fetchJsonWithTimeout(`https://www.okx.com${effectiveOkxPath}`, {
       method: 'POST',
       headers,
       body: bodyStr,
@@ -3539,11 +3596,18 @@ export async function executeRealExchangeOrder(payload) {
       ok: true,
       exchange: 'OKX',
       venueMode: isOkxSpot ? 'SPOT' : 'FUTURES',
-      orderId: String(res.data?.data?.[0]?.ordId || Date.now()),
-      status: 'LIVE',
+      orderId: String(
+        res.data?.data?.[0]?.algoId || res.data?.data?.[0]?.ordId || Date.now()
+      ),
+      status: orderPurpose === 'BREAKEVEN_STOP' ? 'CONDITIONAL_SL' : 'LIVE',
       executedQty: Number((okxEffectiveCoins / (normOkx.qtyScale || 1)).toFixed(8)),
       executedContracts: isOkxSpot ? undefined : okxSz,
-      executedPrice: Number((okxOrderPrice / (normOkx.priceScale || 1)).toFixed(10)),
+      executedPrice: Number(
+        (
+          (orderPurpose === 'BREAKEVEN_STOP' ? okxStopPrice : okxOrderPrice) /
+          (normOkx.priceScale || 1)
+        ).toFixed(10)
+      ),
     };
   }
 
