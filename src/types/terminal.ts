@@ -209,6 +209,7 @@ export interface ClosedTradeLog {
   rlsOwnerScope?: string;
   rlsRowHash?: string;
   timestamp: string;
+  closedDateKey?: string;
   symbol: string;
   side: 'LONG' | 'SHORT';
   exchange: ExchangeId;

@@ -39,7 +39,12 @@ import {
   scanAllMarketMultiAgentCandidates,
   selectBestLowRiskHunterCandidate,
 } from './engine/agentSkills';
-import { computePositionPnl } from '../backend/positionMath.mjs';
+import {
+  computeDailyRealizedPnlUsd,
+  computePositionPnl,
+  evaluateDailyDrawdownCircuitBreaker,
+  getUtcTradingDayKey,
+} from '../backend/positionMath.mjs';
 import {
   auditActivePositionsAccuracy,
   buildVerifiedMacroNewsFeed,
@@ -249,7 +254,7 @@ export function App({
   const [orderSizeUsdInput, setOrderSizeUsdInput] = useState<number>(500);
   const [leverageInput, setLeverageInput] = useState<number>(6);
   const [maxDailyDrawdownUsd, setMaxDailyDrawdownUsd] = useState<number>(150);
-  const [circuitBreakerTriggered] = useState<boolean>(false);
+  const [circuitBreakerTriggered, setCircuitBreakerTriggered] = useState<boolean>(false);
   const [isExecutingOrder, setIsExecutingOrder] = useState<boolean>(false);
 
   // Autonomous Agent Settings
@@ -1022,7 +1027,8 @@ export function App({
             updatedBase,
             mkt,
             whaleTxs,
-            autoTakeProfitTriggerPct
+            autoTakeProfitTriggerPct,
+            maxMicroLossScratchPct
           );
 
           const openedTs = Number((pos.id.match(/(\d{13})/) || [])[1] || 0);
@@ -1061,6 +1067,7 @@ export function App({
     whaleTxs,
     autoBreakevenTriggerPct,
     autoTakeProfitTriggerPct,
+    maxMicroLossScratchPct,
     agentAutonomousEnabled,
   ]);
 
@@ -1083,6 +1090,39 @@ export function App({
       }
     }
   }, [positions, wallets, executionEnv, markets]);
+
+  // 4B. Live Daily Drawdown Circuit Breaker Monitor
+  // Halts new manual & autonomous entries when daily net loss exceeds maxDailyDrawdownUsd,
+  // while keeping automatic protective exits (scratch/TP/BE) active for open positions.
+  useEffect(() => {
+    const isRealEnv = executionEnv !== 'PAPER_SANDBOX';
+    const relevantPositions = isRealEnv
+      ? positions.filter((p) => p.isRealMoney)
+      : positions.filter((p) => !p.isRealMoney);
+    const unrealizedSum = relevantPositions.reduce((s, p) => s + p.unrealizedPnlUsd, 0);
+    const realizedSum = computeDailyRealizedPnlUsd({
+      closedTrades,
+      isRealEnv,
+      tradingDayKey: getUtcTradingDayKey(),
+    });
+    const check = evaluateDailyDrawdownCircuitBreaker({
+      realizedPnlUsd: realizedSum,
+      unrealizedPnlUsd: unrealizedSum,
+      maxDailyDrawdownUsd,
+    });
+    if (check.triggered && !circuitBreakerTriggered) {
+      setCircuitBreakerTriggered(true);
+      setCommandFeedback(
+        `🚨 [CIRCUIT BREAKER TRIPPED] Kerugian harian ($${check.netPnlUsd.toFixed(2)}) melampaui batas -$${check.limitUsd}. Entry baru dihentikan; proteksi exit posisi terbuka tetap aktif.`
+      );
+    }
+  }, [
+    positions,
+    closedTrades,
+    maxDailyDrawdownUsd,
+    executionEnv,
+    circuitBreakerTriggered,
+  ]);
 
   // Execute Real or Paper Order across ALL synced DEX & CEX markets
   const handleManualAgentEntry = async (
@@ -1179,6 +1219,7 @@ export function App({
         sizeUsd: orderSizeUsdInput,
         price: entry,
         leverage: targetPair.marketType === 'SPOT' ? 1 : targetLeverage,
+        makerOnly: makerOnlyMode,
         marketType: targetPair.marketType,
         refMarkPrice: targetPair.price,
         wallets,
@@ -1350,7 +1391,7 @@ export function App({
 
   // Continuous Autonomous Post-TP Hunter Loop: Whenever positions.length < maxConcurrentPositions (3) & Auto-Agent is ON
   useEffect(() => {
-    if (!agentAutonomousEnabled || positions.length >= maxConcurrentPositions) {
+    if (!agentAutonomousEnabled || circuitBreakerTriggered || positions.length >= maxConcurrentPositions) {
       setHunterCountdownSec(null);
       return;
     }
@@ -1370,6 +1411,7 @@ export function App({
     return () => clearInterval(interval);
   }, [
     agentAutonomousEnabled,
+    circuitBreakerTriggered,
     positions.length,
     maxConcurrentPositions,
     lastClosedSymbol,
@@ -1528,6 +1570,7 @@ export function App({
         orderId: pos.orderId,
         isRealMoney: pos.isRealMoney,
         timestamp: timeStr,
+        closedDateKey: getUtcTradingDayKey(now),
         symbol: pos.symbol,
         side: pos.side,
         exchange: pos.exchange,
@@ -1605,6 +1648,12 @@ export function App({
   };
 
   const handleSimulateWhaleSurge = (direction: 'BULLISH' | 'BEARISH') => {
+    if (executionEnv !== 'PAPER_SANDBOX') {
+      setCommandFeedback(
+        `[BLOCKED] Simulasi Whale Surge dinonaktifkan pada mode ${executionEnv} untuk mencegah eksekusi order real-money dari sinyal simulasi.`
+      );
+      return;
+    }
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(
       now.getMinutes()
@@ -4128,9 +4177,30 @@ export function App({
                       otomatis, dan menghentikan bot jika batas kerugian harian tersentuh.
                     </p>
                   </div>
-                  <span className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-[9.5px] font-extrabold">
-                    ✓ 8/8 PROTEKSI AKTIF
-                  </span>
+                  <div className="flex items-center gap-1.5">
+                    <span
+                      className={`px-2 py-0.5 border text-[9.5px] font-extrabold ${
+                        circuitBreakerTriggered
+                          ? 'bg-[#FF1744]/20 border-[#FF1744] text-[#FF1744]'
+                          : 'bg-[#00E676]/15 border-[#00E676] text-[#00E676]'
+                      }`}
+                    >
+                      {circuitBreakerTriggered
+                        ? '🚨 CIRCUIT BREAKER TRIPPED'
+                        : '✓ 8/8 PROTEKSI AKTIF'}
+                    </span>
+                    {circuitBreakerTriggered && (
+                      <button
+                        onClick={() => {
+                          setCircuitBreakerTriggered(false);
+                          setCommandFeedback('✓ Circuit Breaker di-reset secara manual.');
+                        }}
+                        className="px-2 py-0.5 bg-[#FF9F1C] text-black text-[9.5px] font-extrabold"
+                      >
+                        RESET BREAKER
+                      </button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">

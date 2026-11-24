@@ -370,7 +370,8 @@ export function evaluateActivePositionDeepIntelligence(
   pos: AgentPosition,
   market: MarketPair | undefined,
   recentWhales: WhaleTransaction[],
-  autoTakeProfitTriggerPct = 50
+  autoTakeProfitTriggerPct = 50,
+  maxMicroLossScratchPct = -0.95
 ): DeepPositionEvaluation {
   if (!market) {
     return {
@@ -446,11 +447,15 @@ export function evaluateActivePositionDeepIntelligence(
 
   // Decision Tree: Floating Loss vs Profit Management
   if (pos.unrealizedPnlPct < 0) {
-    // Check if Orderbook + On-Chain Whales + Sentiment have broken down OR deep invalidation reached
+    const scratchThreshold =
+      Number.isFinite(maxMicroLossScratchPct) && maxMicroLossScratchPct < 0
+        ? maxMicroLossScratchPct
+        : -0.95;
+    // Check if Orderbook + On-Chain Whales + Sentiment have broken down OR configured micro-loss cap reached
     if (
       compositeScore < 42 ||
       (orderbookDefenseScore < 38 && whaleConvictionScore < 40) ||
-      pos.unrealizedPnlPct <= -0.95
+      pos.unrealizedPnlPct <= scratchThreshold
     ) {
       return {
         decision: 'AUTO_CUT_INVALIDATED',

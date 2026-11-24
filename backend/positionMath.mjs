@@ -51,3 +51,59 @@ export function computePositionPnl({
     effectiveQty: qty,
   };
 }
+
+/**
+ * Returns the UTC trading-day key (`YYYY-MM-DD`) for a given timestamp/Date.
+ */
+export function getUtcTradingDayKey(dateInput = new Date()) {
+  const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
+  if (Number.isNaN(d.getTime())) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * Computes daily realized PnL for the current UTC trading day,
+ * cleanly excluding seeded demo fixtures (`cl-1`..`cl-4`) while including
+ * runtime paper/real closes matching the active environment and day boundary.
+ */
+export function computeDailyRealizedPnlUsd({
+  closedTrades = [],
+  isRealEnv = false,
+  tradingDayKey = getUtcTradingDayKey(),
+}) {
+  if (!Array.isArray(closedTrades) || closedTrades.length === 0) return 0;
+  let sum = 0;
+  for (const c of closedTrades) {
+    if (!c || typeof c !== 'object') continue;
+    const id = String(c.id || '');
+    if (c.isSeededDemo || /^cl-[1-4]$/.test(id)) continue;
+    if (isRealEnv ? !c.isRealMoney : Boolean(c.isRealMoney)) continue;
+    if (c.closedDateKey !== tradingDayKey) continue;
+    const pnl = Number(c.realizedPnlUsd);
+    if (Number.isFinite(pnl)) sum += pnl;
+  }
+  return Number(sum.toFixed(2));
+}
+
+/**
+ * Evaluates whether the Daily Drawdown Circuit Breaker should trip based on
+ * net realized + unrealized PnL against the user's positive USD limit.
+ */
+export function evaluateDailyDrawdownCircuitBreaker({
+  realizedPnlUsd = 0,
+  unrealizedPnlUsd = 0,
+  maxDailyDrawdownUsd = 150,
+}) {
+  const limit = Math.abs(Number(maxDailyDrawdownUsd) || 0);
+  if (limit <= 0) {
+    return { triggered: false, netPnlUsd: 0, limitUsd: 0 };
+  }
+  const netPnlUsd = Number(((Number(realizedPnlUsd) || 0) + (Number(unrealizedPnlUsd) || 0)).toFixed(2));
+  return {
+    triggered: netPnlUsd <= -limit,
+    netPnlUsd,
+    limitUsd: limit,
+  };
+}
