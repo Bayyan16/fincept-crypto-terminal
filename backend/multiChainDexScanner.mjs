@@ -1346,7 +1346,6 @@ const OFFICIAL_TOKEN_SVGS = {
 const KNOWN_TOKEN_ICON_URLS = {
   PEOPLE: 'https://coin-images.coingecko.com/coins/images/20612/large/GN_UVm3d_400x400.jpg',
   CANTO: 'https://coin-images.coingecko.com/coins/images/26959/large/canto-network.png',
-  MYRO: 'https://coin-images.coingecko.com/coins/images/32878/large/photo_2026-06-22_19-15-07.jpg',
   RAY: 'https://assets.coincap.io/assets/icons/ray@2x.png',
   JUP: 'https://static.jup.ag/jup/icon.png',
 };

@@ -2196,7 +2196,7 @@ export function App({
   return (
     <div
       data-testid="app-root"
-      className={`workspace-shell flex flex-col min-h-screen lg:h-screen w-full max-w-full bg-[#0B0F17] text-[#E2E8F0] font-sans overflow-x-hidden lg:overflow-hidden select-none antialiased ${simple ? 'simple-workspace' : ''}`}
+      className={`workspace-shell flex flex-col min-h-screen lg:h-screen w-full max-w-full bg-[#0B0F17] text-[#E2E8F0] font-sans overflow-x-hidden lg:overflow-hidden antialiased ${simple ? 'simple-workspace' : ''}`}
     >
       <aside className="workspace-sidebar">
         <div className="workspace-brand">
@@ -3094,7 +3094,7 @@ export function App({
                             <div className="flex items-center gap-2 flex-wrap">
                               <span className="text-[#64748B] font-mono">{w.timestamp}</span>
                               <span
-                                className={`px-1.5 py-0.2 font-extrabold text-[9.5px] ${
+                                className={`px-1.5 py-[1px] font-extrabold text-[9.5px] ${
                                   w.direction === 'BULLISH'
                                     ? 'bg-[#00E676]/15 text-[#00E676] border border-[#00E676]/50'
                                     : 'bg-[#FF1744]/15 text-[#FF1744] border border-[#FF1744]/50'
@@ -3108,7 +3108,7 @@ export function App({
                               >
                                 {w.symbol}
                               </span>
-                              <span className="px-1.5 py-0.2 bg-[#131D2E] text-[#00E5FF] font-mono text-[9.5px] font-bold">
+                              <span className="px-1.5 py-[1px] bg-[#131D2E] text-[#00E5FF] font-mono text-[9.5px] font-bold">
                                 {w.chainName || w.exchange} • Block #{w.blockNumber?.toLocaleString() || '541,928,310'}
                               </span>
                             </div>
@@ -3270,7 +3270,7 @@ export function App({
                         .map((a, i) => (
                           <div
                             key={`ask-${i}`}
-                            className="grid grid-cols-12 items-center py-0.2"
+                            className="grid grid-cols-12 items-center py-[1px]"
                           >
                             <span className="col-span-5 text-[#FF1744] font-bold">
                               {a.price.toLocaleString()}
@@ -3301,7 +3301,7 @@ export function App({
                       {orderbook.bids.slice(0, 5).map((b, i) => (
                         <div
                           key={`bid-${i}`}
-                          className="grid grid-cols-12 items-center py-0.2"
+                          className="grid grid-cols-12 items-center py-[1px]"
                         >
                           <span className="col-span-5 text-[#00E676] font-bold">
                             {b.price.toLocaleString()}
@@ -3448,14 +3448,14 @@ export function App({
                               </span>
                             )}
                             {pos.breakevenLocked && (
-                              <span className="text-[9.5px] px-1.5 py-0.2 bg-[#00E676]/15 text-[#00E676] border border-[#00E676]/50 font-bold">
+                              <span className="text-[9.5px] px-1.5 py-[1px] bg-[#00E676]/15 text-[#00E676] border border-[#00E676]/50 font-bold">
                                 ✓ BREAKEVEN+FEE LOCKED
                               </span>
                             )}
                             {/* Deep Intelligence Decision Badge: Hold Floating Loss vs Ride Profit */}
                             {pos.aiHoldDecision && (
                               <span
-                                className={`text-[9px] px-1.5 py-0.2 font-extrabold border ${
+                                className={`text-[9px] px-1.5 py-[1px] font-extrabold border ${
                                   pos.aiHoldDecision === 'HOLD_FLOATING_LOSS'
                                     ? 'bg-[#FF9F1C]/15 text-[#FF9F1C] border-[#FF9F1C]/60'
                                     : pos.aiHoldDecision === 'RIDE_PROFIT_TRAIL'
@@ -4574,7 +4574,7 @@ export function App({
                           <div className="flex items-center justify-between">
                             <div className="flex items-center gap-1.5">
                               <span
-                                className={`px-1.5 py-0.2 font-extrabold text-[9.5px] ${
+                                className={`px-1.5 py-[1px] font-extrabold text-[9.5px] ${
                                   pos.side === 'LONG'
                                     ? 'bg-[#00E676] text-black'
                                     : 'bg-[#FF1744] text-white'
@@ -4588,7 +4588,7 @@ export function App({
                               </span>
                             </div>
                             <span
-                              className={`px-1.5 py-0.2 text-[9.5px] font-extrabold border ${
+                              className={`px-1.5 py-[1px] text-[9.5px] font-extrabold border ${
                                 pos.aiHoldDecision === 'HOLD_FLOATING_LOSS'
                                   ? 'bg-[#FF9F1C]/15 text-[#FF9F1C] border-[#FF9F1C]'
                                   : 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]'
@@ -5077,7 +5077,7 @@ export function App({
                       <div>
                         <div className="flex items-center justify-between">
                           <span className="font-extrabold text-white">{net.shortName}</span>
-                          <span className="px-1.5 py-0.2 bg-[#141E30] text-[#00E5FF] text-[9px] font-bold">
+                          <span className="px-1.5 py-[1px] bg-[#141E30] text-[#00E5FF] text-[9px] font-bold">
                             ID: {net.chainId}
                           </span>
                         </div>
@@ -5140,7 +5140,7 @@ export function App({
                               }`}
                             />
                             <span className="font-extrabold text-white">{w.name}</span>
-                            <span className="px-1.5 py-0.2 bg-[#131C2E] text-[#00E5FF] text-[9.5px] font-bold">
+                            <span className="px-1.5 py-[1px] bg-[#131C2E] text-[#00E5FF] text-[9.5px] font-bold">
                               {w.verifiedReal ? 'REAL MAINNET' : w.connected ? 'CONNECTED' : 'OFFLINE'}
                             </span>
                           </div>

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useId, useState } from 'react';
 import { ClosedTradeLog } from '../types/terminal';
 
 interface VaultSettlementCourier3DVizProps {
@@ -14,6 +14,10 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
   selectedTradeIdOverride,
   onSelectTrade,
 }) => {
+  const svgUid = useId().replace(/:/g, '');
+  const profitGlowId = `profitVaultGlow-${svgUid}`;
+  const lossGlowId = `lossVaultGlow-${svgUid}`;
+  const courierGlowId = `courierHubGlow-${svgUid}`;
   const [internalSelectedTradeId, setInternalSelectedTradeId] = useState<string>(
     closedTrades[0]?.id || ''
   );
@@ -106,17 +110,17 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
           aria-label="3D Isometric Profit Vault Inflow and External Loss Vault Outflow Courier Agent"
         >
           <defs>
-            <radialGradient id="profitVaultGlow" cx="50%" cy="50%" r="50%">
+            <radialGradient id={profitGlowId} cx="50%" cy="50%" r="50%">
               <stop offset="0%" stopColor="#34D399" stopOpacity="0.38" />
               <stop offset="70%" stopColor="#34D399" stopOpacity="0.06" />
               <stop offset="100%" stopColor="#050811" stopOpacity="0" />
             </radialGradient>
-            <radialGradient id="lossVaultGlow" cx="50%" cy="50%" r="50%">
+            <radialGradient id={lossGlowId} cx="50%" cy="50%" r="50%">
               <stop offset="0%" stopColor="#F87171" stopOpacity="0.34" />
               <stop offset="70%" stopColor="#F87171" stopOpacity="0.06" />
               <stop offset="100%" stopColor="#050811" stopOpacity="0" />
             </radialGradient>
-            <radialGradient id="courierHubGlow" cx="50%" cy="50%" r="50%">
+            <radialGradient id={courierGlowId} cx="50%" cy="50%" r="50%">
               <stop offset="0%" stopColor="#56B6F7" stopOpacity="0.32" />
               <stop offset="100%" stopColor="#050811" stopOpacity="0" />
             </radialGradient>
@@ -285,7 +289,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
             className="cursor-pointer"
             onClick={() => setFilterMode(filterMode === 'PROFIT_IN' ? 'ALL' : 'PROFIT_IN')}
           >
-            <circle cx="155" cy="112" r="76" fill="url(#profitVaultGlow)" />
+            <circle cx="155" cy="112" r="76" fill={`url(#${profitGlowId})`} />
             {/* Isometric 3D Vault Pedestal */}
             <polygon
               points="155,102 225,130 155,158 85,130"
@@ -417,7 +421,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
 
           {/* ==================== CENTER STATION: 3D TREASURY COURIER AGENT (450, 120) ==================== */}
           <g data-testid="treasury-courier-agent-node">
-            <circle cx="450" cy="118" r="70" fill="url(#courierHubGlow)" />
+            <circle cx="450" cy="118" r="70" fill={`url(#${courierGlowId})`} />
             {/* Isometric 3D Settlement Nexus Platform */}
             <polygon
               points="450,104 516,130 450,156 384,130"
@@ -538,7 +542,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
             className="cursor-pointer"
             onClick={() => setFilterMode(filterMode === 'LOSS_OUT' ? 'ALL' : 'LOSS_OUT')}
           >
-            <circle cx="745" cy="112" r="76" fill="url(#lossVaultGlow)" />
+            <circle cx="745" cy="112" r="76" fill={`url(#${lossGlowId})`} />
             {/* Isometric 3D External Vault Pedestal */}
             <polygon
               points="745,102 815,130 745,158 675,130"
@@ -699,7 +703,7 @@ export const VaultSettlementCourier3DViz: React.FC<VaultSettlementCourier3DVizPr
                     <div className="flex items-center gap-1.5 flex-wrap">
                       <span className="text-[8.5px] font-mono text-[#64748B]">{trade.timestamp}</span>
                       <span
-                        className={`px-1 py-0.2 text-[8.5px] font-extrabold ${
+                        className={`px-1 py-[1px] text-[8.5px] font-extrabold ${
                           trade.side === 'LONG'
                             ? 'bg-[#00E676]/20 text-[#00E676] border border-[#00E676]/50'
                             : 'bg-[#FF1744]/20 text-[#FF1744] border border-[#FF1744]/50'
