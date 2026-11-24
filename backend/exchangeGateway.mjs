@@ -3035,6 +3035,113 @@ export async function executeRealExchangeOrder(payload) {
         error: 'Binance API Key & Secret belum dimasukkan di menu Wallets & API.',
       };
     }
+    const spotBaseUrl = useTestnet
+      ? 'https://testnet.binance.vision'
+      : 'https://api.binance.com';
+    const isExplicitSpot = marketType === 'SPOT' || payload.venueMode === 'SPOT';
+
+    const executeBinanceSpotOrder = async () => {
+      if (orderPurpose === 'ENTRY_MAKER' && side === 'SHORT') {
+        return {
+          ok: false,
+          error:
+            'Binance Spot tidak mendukung pembukaan posisi SHORT (gunakan Binance Futures atau arah BUY/LONG pada Spot).',
+        };
+      }
+      const normSpot = normalizeExchangeSymbol({
+        exchange: 'BINANCE',
+        symbol,
+        binanceSymbol: undefined,
+        marketType: 'SPOT',
+      });
+      const spotSpec = await fetchExchangeInstrumentSpec({
+        exchange: 'BINANCE',
+        exchangeSymbol: normSpot.exchangeSymbol,
+        useTestnet: Boolean(useTestnet),
+        marketType: 'SPOT',
+        fetchJson: fetchJsonWithTimeout,
+      });
+      const spotScaledPx = Number(price) * normSpot.priceScale;
+      const spotOrderPx = spotSpec?.tickSize
+        ? alignPriceToTickSize(spotScaledPx, spotSpec.tickSize)
+        : spotScaledPx;
+      const spotOrderQty = spotSpec?.stepSize
+        ? quantizeFloorToStep(quantity * normSpot.qtyScale, spotSpec.stepSize)
+        : quantity * normSpot.qtyScale;
+      if (spotOrderQty <= 0 || (spotSpec?.minQty && spotOrderQty < spotSpec.minQty)) {
+        return {
+          ok: false,
+          error: `[BINANCE SPOT LOT GUARD] Kuantitas Spot (${spotOrderQty}) di bawah batas minimum untuk ${normSpot.exchangeSymbol}.`,
+        };
+      }
+      const spotParams = new URLSearchParams();
+      spotParams.set('symbol', normSpot.exchangeSymbol);
+      spotParams.set('side', isBuy ? 'BUY' : 'SELL');
+      spotParams.set('quantity', String(spotOrderQty));
+      if (orderPurpose === 'ENTRY_MAKER') {
+        spotParams.set('type', payload.makerOnly === false ? 'MARKET' : 'LIMIT_MAKER');
+        if (payload.makerOnly !== false) {
+          spotParams.set('price', String(spotOrderPx));
+        }
+      } else if (orderPurpose === 'BREAKEVEN_STOP') {
+        const rawStop = Number(stopPrice || price) * normSpot.priceScale;
+        const spotStopPx = spotSpec?.tickSize
+          ? alignPriceToTickSize(rawStop, spotSpec.tickSize)
+          : rawStop;
+        const spotLimitPx = spotSpec?.tickSize
+          ? alignPriceToTickSize(rawStop * (isBuy ? 1.002 : 0.998), spotSpec.tickSize)
+          : Number((rawStop * (isBuy ? 1.002 : 0.998)).toFixed(6));
+        spotParams.set('type', 'STOP_LOSS_LIMIT');
+        spotParams.set('timeInForce', 'GTC');
+        spotParams.set('stopPrice', String(spotStopPx));
+        spotParams.set('price', String(spotLimitPx));
+      } else {
+        spotParams.set('type', 'MARKET');
+      }
+      spotParams.set('recvWindow', '10000');
+      const spotTs = await getSyncedBinanceTimestamp(spotBaseUrl, false);
+      spotParams.set('timestamp', String(spotTs));
+      const spotQueryStr = spotParams.toString();
+      const spotSig = crypto
+        .createHmac('sha256', apiSecret.trim())
+        .update(spotQueryStr)
+        .digest('hex');
+      const spotRes = await fetchJsonWithTimeout(
+        `${spotBaseUrl}/api/v3/order?${spotQueryStr}&signature=${spotSig}`,
+        {
+          method: 'POST',
+          headers: { 'X-MBX-APIKEY': apiKey.trim() },
+        },
+        5000,
+        true
+      );
+      if (!spotRes.ok || spotRes.data?.code) {
+        return {
+          ok: false,
+          error: `Binance Spot Order Rejected: ${spotRes.data?.msg || spotRes.error || 'Unknown error'}`,
+        };
+      }
+      const rawSpotExecQty = Number(spotRes.data?.executedQty || 0) || spotOrderQty;
+      const rawSpotCumQuote = Number(spotRes.data?.cummulativeQuoteQty || 0);
+      const rawSpotExecPx =
+        Number(spotRes.data?.executedQty || 0) > 0 && rawSpotCumQuote > 0
+          ? rawSpotCumQuote / Number(spotRes.data.executedQty)
+          : spotOrderPx;
+      return {
+        ok: true,
+        exchange: 'BINANCE',
+        venueMode: 'SPOT',
+        orderId: String(spotRes.data.orderId),
+        status: spotRes.data.status || 'NEW',
+        executedQty: Number((rawSpotExecQty / (normSpot.qtyScale || 1)).toFixed(8)),
+        executedPrice: Number((rawSpotExecPx / (normSpot.priceScale || 1)).toFixed(10)),
+      };
+    };
+
+    if (isExplicitSpot) {
+      return executeBinanceSpotOrder();
+    }
+
     const baseUrl = useTestnet
       ? 'https://testnet.binancefuture.com'
       : 'https://fapi.binance.com';
@@ -3141,49 +3248,14 @@ export async function executeRealExchangeOrder(payload) {
       true
     );
 
-    // If Futures order returns -2015 (e.g. Spot-only Binance API Key without Futures enabled), seamlessly fallback to Binance Spot /api/v3/order
-    if ((!res.ok || res.data?.code) && (orderPurpose === 'ENTRY_MAKER' || orderPurpose === 'SCRATCH_EXIT')) {
-      const spotBaseUrl = useTestnet
-        ? 'https://testnet.binance.vision'
-        : 'https://api.binance.com';
-      const spotParams = new URLSearchParams();
-      spotParams.set('symbol', binanceSymbol || symbol.replace('-PERP', 'USDT'));
-      spotParams.set('side', isBuy ? 'BUY' : 'SELL');
-      spotParams.set('quantity', String(quantity));
-      if (orderPurpose === 'ENTRY_MAKER') {
-        spotParams.set('type', 'LIMIT_MAKER');
-        spotParams.set('price', String(price));
-      } else {
-        spotParams.set('type', 'MARKET');
-      }
-      spotParams.set('recvWindow', '10000');
-      const spotTs = await getSyncedBinanceTimestamp(spotBaseUrl, false);
-      spotParams.set('timestamp', String(spotTs));
-      const spotQueryStr = spotParams.toString();
-      const spotSig = crypto
-        .createHmac('sha256', apiSecret.trim())
-        .update(spotQueryStr)
-        .digest('hex');
-      const spotRes = await fetchJsonWithTimeout(
-        `${spotBaseUrl}/api/v3/order?${spotQueryStr}&signature=${spotSig}`,
-        {
-          method: 'POST',
-          headers: { 'X-MBX-APIKEY': apiKey.trim() },
-        },
-        5000,
-        true
-      );
-      if (spotRes.ok && !spotRes.data?.code) {
-        return {
-          ok: true,
-          exchange: 'BINANCE',
-          venueMode: 'SPOT',
-          orderId: String(spotRes.data.orderId),
-          status: spotRes.data.status || 'NEW',
-          executedQty: quantity,
-          executedPrice: price,
-        };
-      }
+    // STRICT Spot-only API Key fallback: ONLY on Futures error -2015 AND ONLY for Spot-safe BUY (LONG entry).
+    // NEVER fall back on margin/precision/Post-Only errors (-2019, -5022, -1111) and NEVER convert Futures SHORT into Spot SELL!
+    if (
+      res.data?.code === -2015 &&
+      orderPurpose === 'ENTRY_MAKER' &&
+      side === 'LONG'
+    ) {
+      return executeBinanceSpotOrder();
     }
 
     if (!res.ok || res.data?.code) {
