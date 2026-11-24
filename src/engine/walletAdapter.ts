@@ -731,6 +731,7 @@ export async function executeRealOrderOnVenue(params: {
   price: number;
   stopPrice?: number;
   leverage?: number;
+  makerOnly?: boolean;
   marketType?: MarketType;
   venueMode?: 'FUTURES' | 'SPOT';
   wallets: WalletConnectionState[];
@@ -810,6 +811,7 @@ export async function executeRealOrderOnVenue(params: {
       stopPrice: params.stopPrice,
       sizeUsd: params.sizeUsd,
       quantity: params.quantity,
+      makerOnly: params.makerOnly,
       useTestnet: params.useTestnet,
       expectedAddress: unsealedCredentials.walletAddress,
     });
@@ -851,6 +853,7 @@ export async function executeRealOrderOnVenue(params: {
         price: params.price,
         stopPrice: params.stopPrice,
         leverage: params.leverage,
+        makerOnly: params.makerOnly,
         marketType: params.marketType,
         venueMode: params.venueMode,
         refMarkPrice: params.refMarkPrice,
