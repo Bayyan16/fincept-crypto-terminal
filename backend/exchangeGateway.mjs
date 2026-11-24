@@ -2509,6 +2509,7 @@ async function queryEvmChainPortfolio({
       Number(safeHexToBigInt(ercHex, 0n)) / Math.pow(10, stableDecimals);
 
     return {
+      rpcOk: Boolean(natRes.ok || ercRes.ok),
       chainName,
       chainId,
       nativeSymbol,
@@ -2520,6 +2521,7 @@ async function queryEvmChainPortfolio({
     };
   } catch {
     return {
+      rpcOk: false,
       chainName,
       chainId,
       nativeSymbol,
@@ -2554,8 +2556,8 @@ export async function verifyAndFetchAccountBalance(payload) {
       ? 'https://api.hyperliquid-testnet.xyz/info'
       : 'https://api.hyperliquid.xyz/info';
 
-    const ethPx = cachedSnapshot?.hlAssets?.ETH?.price || 2220;
-    const bnbPx = 610;
+    const ethPx = cachedSnapshot?.hlAssets?.ETH?.price || lastGoodHlAssets?.ETH?.price || 2220;
+    const bnbPx = cachedSnapshot?.hlAssets?.BNB?.price || lastGoodHlAssets?.BNB?.price || 610;
 
     const [chRes, spotRes, arbPortfolio, bscPortfolio, basePortfolio, ethPortfolio] =
       await Promise.all([
@@ -2618,6 +2620,24 @@ export async function verifyAndFetchAccountBalance(payload) {
           recommendedFor: 'Settlement Institusional Whale Besar (Biaya Gas Tinggi ~$1-$5)',
         }),
       ]);
+
+    const anyUpstreamReachable = Boolean(
+      chRes.ok ||
+        spotRes.ok ||
+        arbPortfolio.rpcOk ||
+        bscPortfolio.rpcOk ||
+        basePortfolio.rpcOk ||
+        ethPortfolio.rpcOk
+    );
+    if (!anyUpstreamReachable) {
+      return {
+        ok: false,
+        rlsPolicy: 'ENFORCED',
+        rlsOwnerId: rlsCheck.rlsOwnerId,
+        error:
+          'Gagal menghubungi Hyperliquid L1 & seluruh EVM RPC — saldo tidak dapat diverifikasi (tidak mengembalikan $0 palsu).',
+      };
+    }
 
     const perpAccountValue = parseFloat(chRes.data?.marginSummary?.accountValue || '0');
     const withdrawable = parseFloat(chRes.data?.withdrawable || '0');
@@ -2696,6 +2716,15 @@ export async function verifyAndFetchAccountBalance(payload) {
         }),
       }),
     ]);
+
+    if (!balRes.ok && !usdcTokenRes.ok) {
+      return {
+        ok: false,
+        rlsPolicy: 'ENFORCED',
+        rlsOwnerId: rlsCheck.rlsOwnerId,
+        error: `Gagal menghubungi Solana RPC (${balRes.error || usdcTokenRes.error || 'Timeout'}) — verifikasi saldo Phantom dibatalkan.`,
+      };
+    }
 
     const lamports = balRes.data?.result?.value || 0;
     const solCoins = lamports / 1e9;
@@ -2796,12 +2825,22 @@ export async function verifyAndFetchAccountBalance(payload) {
     let attempt = await probeBinanceEnv(Boolean(useTestnet));
     let autoCorrectedUseTestnet = Boolean(useTestnet);
 
-    // If user accidentally checked "Gunakan Testnet" with a real Mainnet key (or vice versa), auto-probe the opposite environment!
+    // SAFETY: Never silently flip a user's explicit Testnet request into real-money Mainnet!
     if (!attempt.futuresOk && !attempt.spotOk) {
-      const fallbackAttempt = await probeBinanceEnv(!useTestnet);
-      if (fallbackAttempt.futuresOk || fallbackAttempt.spotOk) {
-        attempt = fallbackAttempt;
-        autoCorrectedUseTestnet = fallbackAttempt.isTestnetEnv;
+      const oppositeAttempt = await probeBinanceEnv(!useTestnet);
+      if (oppositeAttempt.futuresOk || oppositeAttempt.spotOk) {
+        if (Boolean(useTestnet) && !oppositeAttempt.isTestnetEnv) {
+          return {
+            ok: false,
+            rlsPolicy: 'ENFORCED',
+            rlsOwnerId: rlsCheck.rlsOwnerId,
+            error:
+              '[SAFETY BLOCK] Opsi Testnet aktif, namun API Key ini terdeteksi milik Binance MAINNET (dana asli). Matikan checkbox Testnet secara eksplisit bila Anda benar-benar ingin menghubungkan akun Mainnet.',
+          };
+        }
+        // Safe direction only (Mainnet requested, Testnet key detected)
+        attempt = oppositeAttempt;
+        autoCorrectedUseTestnet = oppositeAttempt.isTestnetEnv;
       }
     }
 
@@ -2833,23 +2872,35 @@ export async function verifyAndFetchAccountBalance(payload) {
       };
     }
 
+    const liveAssetsMap = cachedSnapshot?.hlAssets || lastGoodHlAssets || {};
     const pxMap = {
       USDT: 1,
       USDC: 1,
       FDUSD: 1,
       BUSD: 1,
-      BTC: cachedSnapshot?.hlAssets?.BTC?.price || 73800,
-      ETH: cachedSnapshot?.hlAssets?.ETH?.price || 2220,
-      BNB: cachedSnapshot?.hlAssets?.BNB?.price || 610,
-      SOL: cachedSnapshot?.hlAssets?.SOL?.price || 145,
+      TUSD: 1,
+      DAI: 1,
+      BTC: liveAssetsMap.BTC?.price || 73800,
+      ETH: liveAssetsMap.ETH?.price || 2220,
+      BNB: liveAssetsMap.BNB?.price || 610,
+      SOL: liveAssetsMap.SOL?.price || 145,
+    };
+    const resolveAssetUsdPx = (assetSym) => {
+      const sym = String(assetSym || '').toUpperCase();
+      if (pxMap[sym]) return pxMap[sym];
+      if (liveAssetsMap[sym]?.price > 0) return Number(liveAssetsMap[sym].price);
+      if (liveAssetsMap[`k${sym}`]?.price > 0) return Number(liveAssetsMap[`k${sym}`].price) / 1000;
+      return 0;
     };
 
     let futuresUsd = 0;
     if (futuresOk) {
       for (const a of fRes.data) {
-        const bal = parseFloat(a?.balance || '0');
-        const mult = pxMap[String(a?.asset || '').toUpperCase()] || 0;
-        if (bal > 0 && mult > 0) futuresUsd += bal * mult;
+        const walletBal = parseFloat(a?.balance || '0');
+        const unPnl = parseFloat(a?.crossUnPnl || '0');
+        const netBal = walletBal + (Number.isFinite(unPnl) ? unPnl : 0);
+        const mult = resolveAssetUsdPx(a?.asset);
+        if (Number.isFinite(netBal) && mult > 0) futuresUsd += netBal * mult;
       }
     }
 
@@ -2857,7 +2908,7 @@ export async function verifyAndFetchAccountBalance(payload) {
     if (spotOk) {
       for (const b of sRes.data.balances) {
         const amt = parseFloat(b?.free || '0') + parseFloat(b?.locked || '0');
-        const mult = pxMap[String(b?.asset || '').toUpperCase()] || 0;
+        const mult = resolveAssetUsdPx(b?.asset);
         if (amt > 0 && mult > 0) spotUsd += amt * mult;
       }
     }
@@ -2912,7 +2963,11 @@ export async function verifyAndFetchAccountBalance(payload) {
       return { ok: false, error: 'Masukkan Bybit API Key & Secret.' };
     }
     const baseUrl = useTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
-    const timestamp = String(Date.now());
+    const timeRes = await fetchJsonWithTimeout(`${baseUrl}/v5/market/time`, {}, 3000, true);
+    const serverTimeMs = Number(timeRes?.data?.time || 0);
+    const timestamp = String(
+      Number.isFinite(serverTimeMs) && serverTimeMs > 1_600_000_000_000 ? serverTimeMs : Date.now()
+    );
     const recvWindow = '5000';
     const queryString = 'accountType=UNIFIED';
     const prehash = timestamp + apiKey.trim() + recvWindow + queryString;
@@ -2931,12 +2986,16 @@ export async function verifyAndFetchAccountBalance(payload) {
           'X-BAPI-RECV-WINDOW': recvWindow,
           'X-BAPI-SIGN': signature,
         },
-      }
+      },
+      5000,
+      true
     );
 
     if (!res.ok || res.data?.retCode !== 0) {
       return {
         ok: false,
+        rlsPolicy: 'ENFORCED',
+        rlsOwnerId: rlsCheck.rlsOwnerId,
         error: res.data?.retMsg || res.error || 'Bybit API verification failed.',
       };
     }
@@ -2944,6 +3003,8 @@ export async function verifyAndFetchAccountBalance(payload) {
     const totalEquity = parseFloat(res.data?.result?.list?.[0]?.totalEquity || '0');
     return {
       ok: true,
+      rlsPolicy: 'ENFORCED',
+      rlsOwnerId: rlsCheck.rlsOwnerId,
       balanceUsd: Number(totalEquity.toFixed(2)),
       addressDisplay: `BYBIT-${apiKey.slice(0, 5)}... (${useTestnet ? 'Testnet' : 'Mainnet'})`,
     };
@@ -2969,14 +3030,21 @@ export async function verifyAndFetchAccountBalance(payload) {
     };
     if (useTestnet) headers['x-simulated-trading'] = '1';
 
-    const res = await fetchJsonWithTimeout(`https://www.okx.com${requestPath}`, {
-      method: 'GET',
-      headers,
-    });
+    const res = await fetchJsonWithTimeout(
+      `https://www.okx.com${requestPath}`,
+      {
+        method: 'GET',
+        headers,
+      },
+      5000,
+      true
+    );
 
     if (!res.ok || res.data?.code !== '0') {
       return {
         ok: false,
+        rlsPolicy: 'ENFORCED',
+        rlsOwnerId: rlsCheck.rlsOwnerId,
         error: res.data?.msg || res.error || 'OKX API verification failed.',
       };
     }
@@ -2984,6 +3052,8 @@ export async function verifyAndFetchAccountBalance(payload) {
     const totalEq = parseFloat(res.data?.data?.[0]?.totalEq || '0');
     return {
       ok: true,
+      rlsPolicy: 'ENFORCED',
+      rlsOwnerId: rlsCheck.rlsOwnerId,
       balanceUsd: Number(totalEq.toFixed(2)),
       addressDisplay: `OKX-${apiKey.slice(0, 5)}... (${useTestnet ? 'Demo/Testnet' : 'Mainnet'})`,
     };
@@ -3419,17 +3489,22 @@ export async function executeRealExchangeOrder(payload) {
       .update(prehash)
       .digest('hex');
 
-    const res = await fetchJsonWithTimeout(`${baseUrl}/v5/order/create`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-BAPI-API-KEY': apiKey.trim(),
-        'X-BAPI-TIMESTAMP': timestamp,
-        'X-BAPI-RECV-WINDOW': recvWindow,
-        'X-BAPI-SIGN': signature,
+    const res = await fetchJsonWithTimeout(
+      `${baseUrl}/v5/order/create`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-BAPI-API-KEY': apiKey.trim(),
+          'X-BAPI-TIMESTAMP': timestamp,
+          'X-BAPI-RECV-WINDOW': recvWindow,
+          'X-BAPI-SIGN': signature,
+        },
+        body: bodyStr,
       },
-      body: bodyStr,
-    });
+      5500,
+      true
+    );
 
     if (!res.ok || res.data?.retCode !== 0) {
       return {
@@ -3590,11 +3665,16 @@ export async function executeRealExchangeOrder(payload) {
     };
     if (useTestnet) headers['x-simulated-trading'] = '1';
 
-    const res = await fetchJsonWithTimeout(`https://www.okx.com${effectiveOkxPath}`, {
-      method: 'POST',
-      headers,
-      body: bodyStr,
-    });
+    const res = await fetchJsonWithTimeout(
+      `https://www.okx.com${effectiveOkxPath}`,
+      {
+        method: 'POST',
+        headers,
+        body: bodyStr,
+      },
+      5500,
+      true
+    );
 
     if (!res.ok || res.data?.code !== '0') {
       return {
