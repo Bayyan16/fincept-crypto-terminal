@@ -3499,8 +3499,7 @@ export function App({
               </div>
             </div>
 
-            {/* Right pane */}
-            <div className="desk-whale-pane flex flex-col">
+            {/* Split-pane grid resize handle (direct child of .workspace-desk for grid-area: resize) */}
             <div
               role="separator"
               aria-label="Lebar panel Trading Desk"
@@ -3530,6 +3529,9 @@ export function App({
                 resizeDesk(deskSplit + (event.key === 'ArrowRight' ? 2 : -2));
               }}
             />
+
+            {/* Right pane */}
+            <div className="desk-whale-pane flex flex-col">
               <div className="flex-1 min-h-0">
                 <WhaleChordViz
                   links={chordLinks}
