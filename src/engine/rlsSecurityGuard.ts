@@ -5,6 +5,15 @@ import {
   WalletConnectionState,
   WalletCredentials,
 } from '../types/terminal';
+import {
+  computeRlsHexDigestCore,
+  computeWalletRowIntegrityTagCore,
+  deriveWalletRlsOwnerScopeCore,
+  sealSessionSecretCore,
+  sealWalletVaultForStorageCore,
+  unsealSessionSecretCore,
+  verifyAndUnsealLoadedWalletsCore,
+} from '../../backend/vaultIntegrity.mjs';
 
 /**
  * FINCEPT CLIENT-SIDE ROW-LEVEL SECURITY (RLS) & WALLET VAULT GUARD V1.0
@@ -31,177 +40,60 @@ const INVALID_SOL_SET = new Set([
   'So11111111111111111111111111111111111111111',
 ]);
 
-const VAULT_SEAL_PREFIX = 'rls_sealed_v1:';
-const RLS_SALT = 'fincept-rls-vault-guard-2026-v1';
-
 /**
  * Deterministic 64-bit FNV-1a dual-lane hex digest for synchronous client-side RLS row integrity.
  */
 export function computeRlsHexDigest(input: string): string {
-  let h1 = 0x811c9dc5;
-  let h2 = 0xcbf29ce4;
-  const payload = `${RLS_SALT}:${input}`;
-  for (let i = 0; i < payload.length; i++) {
-    const code = payload.charCodeAt(i);
-    h1 ^= code;
-    h1 = Math.imul(h1, 0x01000193) >>> 0;
-    h2 ^= code ^ (i & 0xff);
-    h2 = Math.imul(h2, 0x01000193) >>> 0;
-  }
-  return `${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
+  return computeRlsHexDigestCore(input);
 }
 
 /**
- * Seals a sensitive credential string at rest in localStorage so raw plaintext secrets are not exposed.
+ * Seals a sensitive credential string in active session memory with an ephemeral per-session key.
+ * Secrets are never written to persistent localStorage.
  */
 export function sealCredentialSecret(plain?: string): string {
-  if (!plain) return '';
-  if (plain.startsWith(VAULT_SEAL_PREFIX)) return plain;
-  try {
-    const bytes = new TextEncoder().encode(plain);
-    const keyBytes = new TextEncoder().encode(RLS_SALT);
-    const xored = new Uint8Array(bytes.length);
-    for (let i = 0; i < bytes.length; i++) {
-      xored[i] = bytes[i] ^ keyBytes[i % keyBytes.length];
-    }
-    let hex = '';
-    for (let i = 0; i < xored.length; i++) {
-      hex += xored[i].toString(16).padStart(2, '0');
-    }
-    return `${VAULT_SEAL_PREFIX}${hex}`;
-  } catch {
-    return plain;
-  }
+  return sealSessionSecretCore(plain);
 }
 
 /**
- * Unseals a credential secret into memory when needed for local signing/verification.
+ * Unseals a credential secret from session memory (or migrates legacy sealed values).
  */
 export function unsealCredentialSecret(sealed?: string): string {
-  if (!sealed) return '';
-  if (!sealed.startsWith(VAULT_SEAL_PREFIX)) return sealed;
-  try {
-    const hex = sealed.slice(VAULT_SEAL_PREFIX.length);
-    if (hex.length % 2 !== 0) return '';
-    const xored = new Uint8Array(hex.length / 2);
-    for (let i = 0; i < xored.length; i++) {
-      xored[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-    }
-    const keyBytes = new TextEncoder().encode(RLS_SALT);
-    const out = new Uint8Array(xored.length);
-    for (let i = 0; i < xored.length; i++) {
-      out[i] = xored[i] ^ keyBytes[i % keyBytes.length];
-    }
-    return new TextDecoder().decode(out);
-  } catch {
-    return '';
-  }
+  return unsealSessionSecretCore(sealed);
 }
 
 /**
  * Computes the canonical Row-Level Security (RLS) owner scope for a wallet row.
  */
 export function deriveWalletRlsOwnerScope(wallet: WalletConnectionState): string {
-  const creds = wallet.credentials || {};
-  const identity =
-    creds.walletAddress?.trim().toLowerCase() ||
-    (creds.apiKey ? `${wallet.id}:${creds.apiKey.trim().slice(0, 8)}` : '') ||
-    wallet.id;
-  return `rls:${wallet.id}:${computeRlsHexDigest(identity)}`;
+  return deriveWalletRlsOwnerScopeCore(wallet);
 }
 
 /**
  * Computes the tamper-evident RLS integrity tag over a wallet row's critical state.
  */
 export function computeWalletRowIntegrityTag(wallet: WalletConnectionState): string {
-  const creds = wallet.credentials || {};
-  const canonical = [
-    wallet.id,
-    wallet.type,
-    Boolean(wallet.connected),
-    Boolean(wallet.verifiedReal),
-    Number(wallet.balanceUsd || 0).toFixed(2),
-    (creds.walletAddress || '').trim().toLowerCase(),
-    (creds.apiKey || '').trim(),
-  ].join('|');
-  return computeRlsHexDigest(canonical);
+  return computeWalletRowIntegrityTagCore(wallet);
 }
 
 /**
- * Seals all wallet rows before writing to localStorage (binds RLS owner scope, integrity tag, and encrypts secrets).
+ * Seals all wallet metadata rows before writing to localStorage (binds RLS owner scope & integrity tag,
+ * and strips raw secrets so API secrets/private keys are NEVER persisted to localStorage).
  */
 export function sealWalletVaultForStorage(wallets: WalletConnectionState[]): WalletConnectionState[] {
-  return wallets.map((w) => {
-    const creds = w.credentials || {};
-    const unsealedWallet: WalletConnectionState = {
-      ...w,
-      credentials: {
-        ...creds,
-        apiSecret: unsealCredentialSecret(creds.apiSecret),
-        passphrase: unsealCredentialSecret(creds.passphrase),
-        agentPrivateKey: unsealCredentialSecret(creds.agentPrivateKey),
-      },
-    };
-    const rlsOwnerScope = deriveWalletRlsOwnerScope(unsealedWallet);
-    const rlsIntegrityTag = computeWalletRowIntegrityTag(unsealedWallet);
-
-    return {
-      ...unsealedWallet,
-      rlsOwnerScope,
-      rlsIntegrityTag,
-      rlsPolicyStatus: 'ENFORCED',
-      credentials: {
-        ...unsealedWallet.credentials,
-        apiSecret: sealCredentialSecret(unsealedWallet.credentials?.apiSecret),
-        passphrase: sealCredentialSecret(unsealedWallet.credentials?.passphrase),
-        agentPrivateKey: sealCredentialSecret(unsealedWallet.credentials?.agentPrivateKey),
-      },
-    };
-  });
+  return sealWalletVaultForStorageCore(wallets);
 }
 
 /**
- * Unseals and verifies RLS integrity of wallet rows loaded from localStorage.
- * If a row's verifiedReal or balanceUsd was tampered with in localStorage, resets verifiedReal to false.
+ * Unseals and verifies RLS integrity of wallet rows loaded from localStorage by matching `row.id`
+ * (never by array index). Resets `verifiedReal`, `autoSignEnabled`, and `balanceUsd` if tampered or
+ * if `rlsIntegrityTag` was deleted on a privileged row.
  */
 export function verifyAndUnsealLoadedWallets(
   rawList: WalletConnectionState[],
   fallbackDefaults: WalletConnectionState[]
 ): WalletConnectionState[] {
-  return rawList.map((row, idx) => {
-    const def = fallbackDefaults[idx] || fallbackDefaults[0];
-    const creds = row.credentials || {};
-    const unsealed: WalletConnectionState = {
-      ...def,
-      ...row,
-      id: def.id,
-      type: def.type,
-      credentials: {
-        ...creds,
-        apiSecret: unsealCredentialSecret(creds.apiSecret),
-        passphrase: unsealCredentialSecret(creds.passphrase),
-        agentPrivateKey: unsealCredentialSecret(creds.agentPrivateKey),
-      },
-    };
-
-    const expectedTag = computeWalletRowIntegrityTag(unsealed);
-    const hasTamper =
-      Boolean(row.rlsIntegrityTag) && row.rlsIntegrityTag !== expectedTag;
-
-    const safeBalance =
-      Number.isFinite(Number(unsealed.balanceUsd)) && Number(unsealed.balanceUsd) >= 0
-        ? Number(unsealed.balanceUsd)
-        : def.balanceUsd;
-
-    return {
-      ...unsealed,
-      balanceUsd: hasTamper ? def.balanceUsd : safeBalance,
-      verifiedReal: hasTamper ? false : Boolean(unsealed.verifiedReal),
-      rlsOwnerScope: deriveWalletRlsOwnerScope(unsealed),
-      rlsIntegrityTag: expectedTag,
-      rlsPolicyStatus: hasTamper ? 'TAMPER_RESET' : 'ENFORCED',
-    };
-  });
+  return verifyAndUnsealLoadedWalletsCore(rawList, fallbackDefaults);
 }
 
 /**

@@ -8,7 +8,10 @@ import {
   switchEvmWalletNetwork,
   verifyRealAccountWithBackend,
 } from '../engine/walletAdapter';
-import { deriveWalletRlsOwnerScope } from '../engine/rlsSecurityGuard';
+import {
+  computeWalletRowIntegrityTag,
+  deriveWalletRlsOwnerScope,
+} from '../engine/rlsSecurityGuard';
 
 interface WalletConnectModalProps {
   isOpen: boolean;
@@ -241,23 +244,28 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
         : Boolean(creds.useTestnet);
 
     onUpdateWallets((prev) => {
-      const next = prev.map((item) =>
-        item.id === w.id
-          ? {
-              ...item,
-              connected: true,
-              verifiedReal: true,
-              autoSignEnabled: true,
-              chainBalances: res.chainBalances || item.chainBalances,
-              addressOrKeyId: res.addressDisplay || item.addressOrKeyId,
-              balanceUsd: res.balanceUsd ?? item.balanceUsd,
-              credentials: {
-                ...(item.credentials || {}),
-                useTestnet: effectiveTestnet,
-              },
-            }
-          : item
-      );
+      const next = prev.map((item) => {
+        if (item.id !== w.id) return item;
+        const updatedRow: WalletConnectionState = {
+          ...item,
+          connected: true,
+          verifiedReal: true,
+          autoSignEnabled: true,
+          chainBalances: res.chainBalances || item.chainBalances,
+          addressOrKeyId: res.addressDisplay || item.addressOrKeyId,
+          balanceUsd: res.balanceUsd ?? item.balanceUsd,
+          rlsPolicyStatus: 'ENFORCED',
+          credentials: {
+            ...(item.credentials || {}),
+            useTestnet: effectiveTestnet,
+          },
+        };
+        return {
+          ...updatedRow,
+          rlsOwnerScope: res.rlsOwnerId || deriveWalletRlsOwnerScope(updatedRow),
+          rlsIntegrityTag: computeWalletRowIntegrityTag(updatedRow),
+        };
+      });
       saveWalletsToVault(next);
       return next;
     });
