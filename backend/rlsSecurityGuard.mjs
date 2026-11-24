@@ -516,7 +516,26 @@ export function enforceRlsOrderExecutionGuard(payload = {}, liveMarkPrice = 0) {
   }
 
   // 5. Safe Lot Quantity & Rounding-Explosion Guard
-  const lotCheck = computeSafeOrderQuantity(numSizeUsd, numPrice);
+  // For exits/stops, honor exact `payload.quantity` (entry executedQty) when provided so price appreciation never leaves residual exposure!
+  const explicitQty = Number(payload.quantity);
+  const useExplicitExitQty =
+    orderPurpose !== 'ENTRY_MAKER' && Number.isFinite(explicitQty) && explicitQty > 0;
+  let lotCheck;
+  if (useExplicitExitQty) {
+    const exitNotional = Number((explicitQty * numPrice).toFixed(2));
+    if (!Number.isFinite(exitNotional) || exitNotional <= 0 || exitNotional > MAX_SINGLE_ORDER_USD * 2) {
+      lotCheck = {
+        ok: false,
+        quantity: 0,
+        effectiveNotionalUsd: exitNotional,
+        error: `[RLS LOT PRECISION GUARD] Kuantitas close (${explicitQty}) menghasilkan nilai $${exitNotional} di luar batas aman.`,
+      };
+    } else {
+      lotCheck = { ok: true, quantity: explicitQty, effectiveNotionalUsd: exitNotional };
+    }
+  } else {
+    lotCheck = computeSafeOrderQuantity(numSizeUsd, numPrice);
+  }
   if (!lotCheck.ok) {
     recordRlsAuditEvent({
       action: 'EXECUTE_ORDER',

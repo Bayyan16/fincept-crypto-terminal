@@ -177,6 +177,9 @@ export interface AgentPosition {
   entryPrice: number;
   currentPrice: number;
   sizeUsd: number;
+  executedQty?: number;
+  venueMode?: 'FUTURES' | 'SPOT';
+  stopOrderId?: string;
   leverage: number;
   stopLossPrice: number;
   takeProfitPrice: number;

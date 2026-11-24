@@ -727,10 +727,12 @@ export async function executeRealOrderOnVenue(params: {
   side: 'LONG' | 'SHORT';
   orderPurpose: 'ENTRY_MAKER' | 'SCRATCH_EXIT' | 'BREAKEVEN_STOP';
   sizeUsd: number;
+  quantity?: number;
   price: number;
   stopPrice?: number;
   leverage?: number;
   marketType?: MarketType;
+  venueMode?: 'FUTURES' | 'SPOT';
   wallets: WalletConnectionState[];
   useTestnet: boolean;
   rowOwnerScope?: string;
@@ -807,6 +809,7 @@ export async function executeRealOrderOnVenue(params: {
       price: params.price,
       stopPrice: params.stopPrice,
       sizeUsd: params.sizeUsd,
+      quantity: params.quantity,
       useTestnet: params.useTestnet,
       expectedAddress: unsealedCredentials.walletAddress,
     });
@@ -844,10 +847,12 @@ export async function executeRealOrderOnVenue(params: {
         side: params.side,
         orderPurpose: params.orderPurpose,
         sizeUsd: params.sizeUsd,
+        quantity: params.quantity,
         price: params.price,
         stopPrice: params.stopPrice,
         leverage: params.leverage,
         marketType: params.marketType,
+        venueMode: params.venueMode,
         refMarkPrice: params.refMarkPrice,
         credentials: unsealedCredentials,
         useTestnet: params.useTestnet,
