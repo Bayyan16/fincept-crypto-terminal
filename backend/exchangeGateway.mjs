@@ -15,6 +15,7 @@ import {
   getRlsSecuritySummary,
   validateAccountVerifyRls,
 } from './rlsSecurityGuard.mjs';
+import { BoundedMap } from './boundedMap.mjs';
 import {
   alignPriceToTickSize,
   convertCoinsToOkxContracts,
@@ -79,13 +80,16 @@ let hlTradeRotationIdx = 0;
 let lastGoodHlAssets = {};
 let lastGoodHlpVaultSummary = null;
 let lastGoodWhalePositions = [];
-const cachedCandlesMap = new Map();
-const cachedBookMap = new Map();
-const hostCooldownUntil = new Map();
+const cachedCandlesMap = new BoundedMap(250);
+const cachedBookMap = new BoundedMap(150);
+const hostCooldownUntil = new BoundedMap(100);
 const THROTTLE_GUARDED_HOSTS = new Set([
   'fapi.binance.com',
   'api.binance.com',
+  'testnet.binancefuture.com',
+  'testnet.binance.vision',
   'api.bybit.com',
+  'api-testnet.bybit.com',
   'www.okx.com',
 ]);
 
@@ -197,7 +201,7 @@ async function fetchHlpEcosystemStates() {
   return cachedHlpStates.length > 0 ? cachedHlpStates : responses;
 }
 
-const dohIpCache = new Map();
+const dohIpCache = new BoundedMap(100);
 const ISP_SINKHOLE_IPS = new Set(['0.0.0.0', '127.0.0.1', '43.173.57.48', '108.137.176.189']);
 const binanceTimeOffsetMap = new Map();
 let cachedPublicIpv4 = '';
@@ -315,9 +319,11 @@ async function fetchViaDohHttps(urlStr, options = {}, timeoutMs = 4500) {
       }
     );
     req.on('error', (err) => {
+      dohIpCache.delete(urlObj.hostname);
       resolve({ ok: false, status: 0, error: err instanceof Error ? err.message : String(err) });
     });
     req.on('timeout', () => {
+      dohIpCache.delete(urlObj.hostname);
       req.destroy();
       resolve({ ok: false, status: 0, error: 'DoH TLS request timeout' });
     });
@@ -438,7 +444,7 @@ async function fetchJupiterLiveQuote(symbol = 'SOL', tradeUsd = 25000, refPrice 
   return parsed;
 }
 
-const cachedFullArchiveMap = new Map();
+const cachedFullArchiveMap = new BoundedMap(60);
 
 function formatGatewayCandleLabel(tsMs, interval) {
   const d = new Date(tsMs);
