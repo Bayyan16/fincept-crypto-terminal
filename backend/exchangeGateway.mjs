@@ -15,6 +15,14 @@ import {
   getRlsSecuritySummary,
   validateAccountVerifyRls,
 } from './rlsSecurityGuard.mjs';
+import {
+  alignPriceToTickSize,
+  convertCoinsToOkxContracts,
+  fetchExchangeInstrumentSpec,
+  normalizeExchangeSymbol,
+  quantizeFloorToStep,
+  resolveHyperliquidAssetKey,
+} from './exchangeInstruments.mjs';
 
 export { queryDexUniverse, searchDexUniverseLive, fetchSpecificPoolTrades, resolveTokenIcon };
 
@@ -2975,15 +2983,12 @@ export async function verifyAndFetchAccountBalance(payload) {
  * 5. Execute Real-Money Order Across CEX (Binance, Bybit, OKX) or Relay Signed DEX Order
  */
 export async function executeRealExchangeOrder(payload) {
-  const baseCoin = String(payload?.symbol || '')
-    .split('-')[0]
-    .split('/')[0]
-    .trim()
-    .toUpperCase();
+  const hlAssetMap = cachedSnapshot?.hlAssets || lastGoodHlAssets || {};
+  const hlAssetKey = resolveHyperliquidAssetKey(payload?.symbol, hlAssetMap);
   const liveMarkPrice =
     Number(
-      cachedSnapshot?.hlAssets?.[baseCoin]?.price ||
-        lastGoodHlAssets?.[baseCoin]?.price ||
+      cachedSnapshot?.hlAssets?.[hlAssetKey]?.price ||
+        lastGoodHlAssets?.[hlAssetKey]?.price ||
         0
     ) || 0;
 
@@ -3033,7 +3038,37 @@ export async function executeRealExchangeOrder(payload) {
     const baseUrl = useTestnet
       ? 'https://testnet.binancefuture.com'
       : 'https://fapi.binance.com';
-    const resolvedBinSymbol = binanceSymbol || symbol.replace('-PERP', 'USDT');
+    const normBin = normalizeExchangeSymbol({
+      exchange: 'BINANCE',
+      symbol,
+      binanceSymbol,
+      marketType: marketType || 'PERP',
+    });
+    const resolvedBinSymbol = normBin.exchangeSymbol;
+    const binSpec = await fetchExchangeInstrumentSpec({
+      exchange: 'BINANCE',
+      exchangeSymbol: resolvedBinSymbol,
+      useTestnet: Boolean(useTestnet),
+      marketType: marketType || 'PERP',
+      fetchJson: fetchJsonWithTimeout,
+    });
+    const scaledBinPrice = Number(price) * normBin.priceScale;
+    const scaledBinStopPrice = Number(stopPrice || price) * normBin.priceScale;
+    const binOrderPrice = binSpec?.tickSize
+      ? alignPriceToTickSize(scaledBinPrice, binSpec.tickSize)
+      : scaledBinPrice;
+    const binOrderStopPrice = binSpec?.tickSize
+      ? alignPriceToTickSize(scaledBinStopPrice, binSpec.tickSize)
+      : scaledBinStopPrice;
+    const binOrderQty = binSpec?.stepSize
+      ? quantizeFloorToStep(quantity * normBin.qtyScale, binSpec.stepSize)
+      : quantity * normBin.qtyScale;
+    if (binOrderQty <= 0 || (binSpec?.minQty && binOrderQty < binSpec.minQty)) {
+      return {
+        ok: false,
+        error: `[BINANCE LOT GUARD] Kuantitas terukur (${binOrderQty}) di bawah batas minimum Binance (${binSpec?.minQty || 'stepSize'}) untuk ${resolvedBinSymbol}.`,
+      };
+    }
 
     // Sync target leverage on Binance Futures before ENTRY_MAKER (ignore -2015 Spot-only keys which fall through)
     if (orderPurpose === 'ENTRY_MAKER' && marketType !== 'SPOT' && Number(leverage) >= 1) {
@@ -3071,18 +3106,18 @@ export async function executeRealExchangeOrder(payload) {
     const params = new URLSearchParams();
     params.set('symbol', resolvedBinSymbol);
     params.set('side', isBuy ? 'BUY' : 'SELL');
-    params.set('quantity', String(quantity));
+    params.set('quantity', String(binOrderQty));
 
     if (orderPurpose === 'ENTRY_MAKER') {
       params.set('type', 'LIMIT');
       params.set('timeInForce', 'GTX');
-      params.set('price', String(price));
+      params.set('price', String(binOrderPrice));
     } else if (orderPurpose === 'SCRATCH_EXIT') {
       params.set('type', 'MARKET');
       params.set('reduceOnly', 'true');
     } else if (orderPurpose === 'BREAKEVEN_STOP') {
       params.set('type', 'STOP_MARKET');
-      params.set('stopPrice', String(stopPrice || price));
+      params.set('stopPrice', String(binOrderStopPrice));
       params.set('closePosition', 'true');
     }
 
@@ -3158,13 +3193,16 @@ export async function executeRealExchangeOrder(payload) {
       };
     }
 
+    const rawBinExecQty = Number(res.data?.executedQty || 0) || binOrderQty;
+    const rawBinExecPx = Number(res.data?.avgPrice || 0) || binOrderPrice;
     return {
       ok: true,
       exchange: 'BINANCE',
+      venueMode: 'FUTURES',
       orderId: String(res.data.orderId),
       status: res.data.status || 'NEW',
-      executedQty: quantity,
-      executedPrice: price,
+      executedQty: Number((rawBinExecQty / (normBin.qtyScale || 1)).toFixed(8)),
+      executedPrice: Number((rawBinExecPx / (normBin.priceScale || 1)).toFixed(10)),
     };
   }
 
@@ -3177,7 +3215,32 @@ export async function executeRealExchangeOrder(payload) {
       };
     }
     const baseUrl = useTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
-    const bybitSymbol = binanceSymbol || symbol.replace('-PERP', 'USDT');
+    const normBybit = normalizeExchangeSymbol({
+      exchange: 'BYBIT',
+      symbol,
+      binanceSymbol,
+      marketType: marketType || 'PERP',
+    });
+    const bybitSymbol = normBybit.exchangeSymbol;
+    const bybitSpec = await fetchExchangeInstrumentSpec({
+      exchange: 'BYBIT',
+      exchangeSymbol: bybitSymbol,
+      useTestnet: Boolean(useTestnet),
+      marketType: marketType || 'PERP',
+      fetchJson: fetchJsonWithTimeout,
+    });
+    const bybitPrice = bybitSpec?.tickSize
+      ? alignPriceToTickSize(Number(price) * normBybit.priceScale, bybitSpec.tickSize)
+      : Number(price) * normBybit.priceScale;
+    const bybitQty = bybitSpec?.stepSize
+      ? quantizeFloorToStep(quantity * normBybit.qtyScale, bybitSpec.stepSize)
+      : quantity * normBybit.qtyScale;
+    if (bybitQty <= 0 || (bybitSpec?.minQty && bybitQty < bybitSpec.minQty)) {
+      return {
+        ok: false,
+        error: `[BYBIT LOT GUARD] Kuantitas terukur (${bybitQty}) di bawah batas minimum Bybit (${bybitSpec?.minQty || 'qtyStep'}) untuk ${bybitSymbol}.`,
+      };
+    }
     const recvWindow = '5000';
 
     if (orderPurpose === 'ENTRY_MAKER' && marketType !== 'SPOT' && Number(leverage) >= 1) {
@@ -3226,9 +3289,9 @@ export async function executeRealExchangeOrder(payload) {
       symbol: bybitSymbol,
       side: isBuy ? 'Buy' : 'Sell',
       orderType: orderPurpose === 'ENTRY_MAKER' ? 'Limit' : 'Market',
-      qty: String(quantity),
+      qty: String(bybitQty),
       ...(orderPurpose === 'ENTRY_MAKER'
-        ? { price: String(price), timeInForce: 'PostOnly' }
+        ? { price: String(bybitPrice), timeInForce: 'PostOnly' }
         : { reduceOnly: true }),
     };
 
@@ -3261,10 +3324,11 @@ export async function executeRealExchangeOrder(payload) {
     return {
       ok: true,
       exchange: 'BYBIT',
+      venueMode: marketType === 'SPOT' ? 'SPOT' : 'FUTURES',
       orderId: String(res.data?.result?.orderId || Date.now()),
       status: 'LIVE',
-      executedQty: quantity,
-      executedPrice: price,
+      executedQty: Number((bybitQty / (normBybit.qtyScale || 1)).toFixed(8)),
+      executedPrice: Number((bybitPrice / (normBybit.priceScale || 1)).toFixed(10)),
     };
   }
 
@@ -3277,9 +3341,47 @@ export async function executeRealExchangeOrder(payload) {
       };
     }
     const requestPath = '/api/v5/trade/order';
-    const instId = `${symbol.split('-')[0]}-USDT-SWAP`;
+    const isOkxSpot = marketType === 'SPOT';
+    const normOkx = normalizeExchangeSymbol({
+      exchange: 'OKX',
+      symbol,
+      binanceSymbol,
+      marketType: marketType || 'PERP',
+    });
+    const instId = normOkx.exchangeSymbol;
+    const okxSpec = await fetchExchangeInstrumentSpec({
+      exchange: 'OKX',
+      exchangeSymbol: instId,
+      useTestnet: Boolean(useTestnet),
+      marketType: marketType || 'PERP',
+      fetchJson: fetchJsonWithTimeout,
+    });
 
-    if (orderPurpose === 'ENTRY_MAKER' && marketType !== 'SPOT' && Number(leverage) >= 1) {
+    const okxScaledPrice = Number(price) * normOkx.priceScale;
+    const okxOrderPrice = okxSpec?.tickSize
+      ? alignPriceToTickSize(okxScaledPrice, okxSpec.tickSize)
+      : okxScaledPrice;
+
+    let okxSz = quantity * normOkx.qtyScale;
+    let okxEffectiveCoins = okxSz;
+    if (!isOkxSpot) {
+      const contractConv = convertCoinsToOkxContracts({
+        coins: quantity * normOkx.qtyScale,
+        ctVal: okxSpec?.ctVal,
+        lotSz: okxSpec?.lotSz || 1,
+        minSz: okxSpec?.minSz || 1,
+      });
+      if (!contractConv.ok) {
+        return { ok: false, error: contractConv.error };
+      }
+      okxSz = contractConv.contracts;
+      okxEffectiveCoins = contractConv.effectiveCoins;
+    } else if (okxSpec?.lotSz) {
+      okxSz = quantizeFloorToStep(okxSz, okxSpec.lotSz);
+      okxEffectiveCoins = okxSz;
+    }
+
+    if (orderPurpose === 'ENTRY_MAKER' && !isOkxSpot && Number(leverage) >= 1) {
       const levTs = new Date().toISOString();
       const levPath = '/api/v5/account/set-leverage';
       const levBodyStr = JSON.stringify({
@@ -3319,11 +3421,15 @@ export async function executeRealExchangeOrder(payload) {
 
     const orderBody = {
       instId,
-      tdMode: 'cross',
+      tdMode: isOkxSpot ? 'cash' : 'cross',
       side: isBuy ? 'buy' : 'sell',
       ordType: orderPurpose === 'ENTRY_MAKER' ? 'post_only' : 'market',
-      sz: String(quantity),
-      ...(orderPurpose === 'ENTRY_MAKER' ? { px: String(price) } : { reduceOnly: true }),
+      sz: String(okxSz),
+      ...(orderPurpose === 'ENTRY_MAKER'
+        ? { px: String(okxOrderPrice) }
+        : isOkxSpot
+          ? {}
+          : { reduceOnly: true }),
     };
 
     const bodyStr = JSON.stringify(orderBody);
@@ -3360,10 +3466,12 @@ export async function executeRealExchangeOrder(payload) {
     return {
       ok: true,
       exchange: 'OKX',
+      venueMode: isOkxSpot ? 'SPOT' : 'FUTURES',
       orderId: String(res.data?.data?.[0]?.ordId || Date.now()),
       status: 'LIVE',
-      executedQty: quantity,
-      executedPrice: price,
+      executedQty: Number((okxEffectiveCoins / (normOkx.qtyScale || 1)).toFixed(8)),
+      executedContracts: isOkxSpot ? undefined : okxSz,
+      executedPrice: Number((okxOrderPrice / (normOkx.priceScale || 1)).toFixed(10)),
     };
   }
 
