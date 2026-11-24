@@ -954,6 +954,7 @@ export function App({
             currentPrice: curPrice,
             sizeUsd: pos.sizeUsd,
             leverage: pos.leverage,
+            executedQty: pos.executedQty,
           });
           const pnlPct = pnlCalc.roePct;
           const pnlUsd = pnlCalc.pnlUsd;
@@ -1095,6 +1096,10 @@ export function App({
     ).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
     let realOrderId = `PAPER-${Date.now()}`;
+    let executedQty = Number((orderSizeUsdInput / entry).toFixed(8));
+    let executedPrice = entry;
+    let resolvedVenueMode: 'FUTURES' | 'SPOT' =
+      targetPair.marketType === 'SPOT' ? 'SPOT' : 'FUTURES';
     const isReal = executionEnv !== 'PAPER_SANDBOX';
 
     if (isReal) {
@@ -1136,6 +1141,15 @@ export function App({
         return;
       }
       realOrderId = execRes.orderId || `LIVE-${Date.now()}`;
+      if (execRes.executedQty && execRes.executedQty > 0) {
+        executedQty = execRes.executedQty;
+      }
+      if (execRes.executedPrice && execRes.executedPrice > 0) {
+        executedPrice = execRes.executedPrice;
+      }
+      if (execRes.venueMode) {
+        resolvedVenueMode = execRes.venueMode;
+      }
     }
 
     const newPos: AgentPosition = stampPositionWithRls(
@@ -1145,12 +1159,14 @@ export function App({
         isRealMoney: isReal,
         symbol: targetPair.symbol,
         side,
-        marketType: targetPair.marketType,
+        marketType: resolvedVenueMode === 'SPOT' ? 'SPOT' : targetPair.marketType,
         exchange: targetPair.primaryExchange,
-        entryPrice: entry,
+        entryPrice: executedPrice,
         currentPrice: targetPair.price,
         sizeUsd: orderSizeUsdInput,
-        leverage: targetLeverage,
+        executedQty,
+        venueMode: resolvedVenueMode,
+        leverage: resolvedVenueMode === 'SPOT' ? 1 : targetLeverage,
         stopLossPrice: beLockStop,
         takeProfitPrice: tp,
         breakevenLocked: true,
@@ -1309,30 +1325,64 @@ export function App({
     const rlsOwnership = verifyPositionRlsOwnership(pos, wallets);
     if (!rlsOwnership.ok) {
       setCommandFeedback(rlsOwnership.error || '[RLS ISOLATION BLOCKED] Penutupan posisi ditolak.');
-      return;
+      return { ok: false, error: rlsOwnership.error };
     }
 
-    if (pos.isRealMoney || executionEnv !== 'PAPER_SANDBOX') {
+    let realCloseOrderId: string | undefined = undefined;
+    let realClosePrice: number | undefined = undefined;
+    // STRICT ISOLATION: Only send exchange close orders for positions actually opened with real money (never for paper positions!)
+    if (pos.isRealMoney) {
       setIsExecutingOrder(true);
       const matchedMkt = markets.find((m) => m.symbol === pos.symbol);
       const rawBase = pos.symbol.split('-')[0];
       const fallbackBinSym = /^k[A-Z]{2,}$/.test(rawBase)
         ? `1000${rawBase.slice(1)}USDT`
         : `${rawBase.toUpperCase()}USDT`;
-      await executeRealOrderOnVenue({
+      const closeQty =
+        pos.executedQty && pos.executedQty > 0
+          ? pos.executedQty
+          : pos.entryPrice > 0
+            ? Number((pos.sizeUsd / pos.entryPrice).toFixed(8))
+            : undefined;
+      const closeRes = await executeRealOrderOnVenue({
         exchange: pos.exchange,
         symbol: pos.symbol,
         binanceSymbol: matchedMkt?.binanceSymbol || fallbackBinSym,
         side: pos.side,
         orderPurpose: 'SCRATCH_EXIT',
         sizeUsd: pos.sizeUsd,
+        quantity: closeQty,
         price: pos.currentPrice,
-        marketType: pos.marketType,
+        marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
+        venueMode: pos.venueMode,
         wallets,
         useTestnet: executionEnv === 'EXCHANGE_TESTNET',
         rowOwnerScope: pos.rlsOwnerScope,
       });
       setIsExecutingOrder(false);
+
+      if (!closeRes.ok) {
+        const errMsg = closeRes.error || 'Exchange menolak order penutupan posisi.';
+        setCommandFeedback(`[REAL CLOSE FAILED] ${pos.symbol} TETAP TERBUKA di ${pos.exchange}: ${errMsg}`);
+        setBrainDecisions((prev) => [
+          {
+            id: `bd-close-err-${Date.now()}`,
+            timestamp: timeStr,
+            symbol: pos.symbol,
+            category: 'EXECUTION',
+            headline: `🚨 GAGAL MENUTUP POSISI REAL ${pos.symbol} di ${pos.exchange}`,
+            detail: `${errMsg} — Posisi dipertahankan di daftar aktif agar tetap terpantau.`,
+            score: 0,
+            tone: 'WARN',
+          },
+          ...prev,
+        ]);
+        return { ok: false, error: errMsg };
+      }
+      realCloseOrderId = closeRes.orderId;
+      if (closeRes.executedPrice && closeRes.executedPrice > 0) {
+        realClosePrice = closeRes.executedPrice;
+      }
     }
 
     const minAgentTpRatio = Math.max(50, autoTakeProfitTriggerPct);
@@ -1468,15 +1518,26 @@ export function App({
         ? `✓ Profit +$${finalPnlUsd} (${pos.symbol}) Otomatis Masuk ke ${hotWalletNameLabel} (${hotWalletDisplayAddr})! Auto-Hunter scanning (4x-8x)...`
         : `Closed ${pos.symbol} (${closedItem.exitType}): ${finalPnlPct}% — Auto-Hunter scanning replacement...`
     );
+    return { ok: true, orderId: realCloseOrderId, executedPrice: realClosePrice };
   };
 
   const handleEmergencyFlattenAll = async () => {
     setAgentAutonomousEnabled(false);
-    for (const pos of positions) {
-      await handleScratchOrClosePosition(pos, 'SCRATCH');
+    const snapshotPositions = [...positions];
+    let closedCount = 0;
+    let failedCount = 0;
+    for (const pos of snapshotPositions) {
+      const res = await handleScratchOrClosePosition(pos, 'SCRATCH');
+      if (res?.ok) {
+        closedCount++;
+      } else {
+        failedCount++;
+      }
     }
     setCommandFeedback(
-      '🚨 EMERGENCY KILL SWITCH EXECUTED: Semua posisi ditutup & Autonomous Agent dihentikan!'
+      failedCount === 0
+        ? `🚨 EMERGENCY KILL SWITCH EXECUTED: Semua ${closedCount} posisi ditutup & Autonomous Agent dihentikan!`
+        : `🚨 EMERGENCY KILL SWITCH PARTIAL: ${closedCount} posisi ditutup, ${failedCount} GAGAL ditutup di exchange — segera periksa akun Anda!`
     );
   };
 
