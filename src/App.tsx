@@ -134,6 +134,11 @@ function buildMarketPairFromDexPool(
  * Live price display with a soft flash animation on every change so the
  * terminal feels alive instead of snapping digits instantly.
  */
+function formatSignedUsd(value: number): string {
+  const n = Number.isFinite(value) ? value : 0;
+  return `${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(2)}`;
+}
+
 function LivePrice({
   value,
   format,
@@ -3350,9 +3355,15 @@ export function App({
                         ⚡ FILL SLOT #{positions.length + 1}/{maxConcurrentPositions} ({nextLowRiskCandidate.market.symbol})
                       </button>
                     )}
-                    <span className="text-[#00E676] font-extrabold mr-1">
-                      OPEN PnL: +${totalUnrealizedPnl.toFixed(2)} | REALIZED: +$
-                      {totalRealizedPnl.toFixed(2)}
+                    <span className="font-extrabold mr-1">
+                      OPEN PnL:{' '}
+                      <span className={totalUnrealizedPnl >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}>
+                        {formatSignedUsd(totalUnrealizedPnl)}
+                      </span>{' '}
+                      | REALIZED:{' '}
+                      <span className={totalRealizedPnl >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}>
+                        {formatSignedUsd(totalRealizedPnl)}
+                      </span>
                     </span>
                     <button
                       onClick={() => setPresetPositionsHeight('MIN')}
@@ -4275,8 +4286,12 @@ export function App({
                   <div className="text-[9px] font-extrabold text-[#00E676] uppercase tracking-wider">
                     4. BRANKAS PROFIT & HOT-WALLET
                   </div>
-                  <div className="text-xs font-extrabold text-[#00E676] mt-0.5">
-                    Net Settled: +${totalRealizedPnl.toFixed(2)} USD
+                  <div
+                    className={`text-xs font-extrabold mt-0.5 ${
+                      totalRealizedPnl >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'
+                    }`}
+                  >
+                    Net Settled: {formatSignedUsd(totalRealizedPnl)} USD
                   </div>
                   <div className="text-[9.5px] text-[#94A3B8] font-mono">
                     {closedTrades.length} Trade Ditutup • Direct Settle:{' '}
@@ -4681,7 +4696,7 @@ export function App({
                   📤 KELUAR EKSTERNAL: -${totalLossOutAudit.toFixed(2)}
                 </span>
                 <span className="px-2 py-0.5 bg-[#00E5FF]/15 border border-[#00E5FF] text-[#00E5FF] font-extrabold">
-                  NET: +${totalRealizedPnl.toFixed(2)} ({auditWinRate}% WIN)
+                  NET: {formatSignedUsd(totalRealizedPnl)} ({auditWinRate}% WIN)
                 </span>
               </div>
             </div>
@@ -5002,8 +5017,15 @@ export function App({
                 <div className="text-[10px] text-[#00E676] font-extrabold uppercase">
                   PORTFOLIO PNL & ACTIVE MARGIN
                 </div>
-                <div className="text-sm font-extrabold text-[#00E676] mt-1">
-                  Open: +${totalUnrealizedPnl.toFixed(2)} | Realized: +${totalRealizedPnl.toFixed(2)}
+                <div className="text-sm font-extrabold mt-1">
+                  Open:{' '}
+                  <span className={totalUnrealizedPnl >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}>
+                    {formatSignedUsd(totalUnrealizedPnl)}
+                  </span>{' '}
+                  | Realized:{' '}
+                  <span className={totalRealizedPnl >= 0 ? 'text-[#00E676]' : 'text-[#FF1744]'}>
+                    {formatSignedUsd(totalRealizedPnl)}
+                  </span>
                 </div>
                 <div className="text-[10.5px] text-[#94A3B8] mt-1">
                   Posisi Aktif: <strong className="text-white">{positions.length} Posisi</strong> ($

@@ -90,6 +90,19 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
     return () => window.clearTimeout(t);
   }, [visibility]);
 
+  // Wire Escape key so "ESC / CLOSE ✕" actually closes the modal cleanly (placed before conditional return per Rules of Hooks)
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (visibility === 'closed') return null;
 
   const updateCredentialField = (
@@ -315,6 +328,9 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
       <style>{WALLET_MODAL_CSS}</style>
       <div
         data-testid="wallet-modal-overlay"
+        onClick={(e) => {
+          if (e.target === e.currentTarget) onClose();
+        }}
         className={`fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 ${
           visibility === 'closing' ? 'wm-overlay-out' : 'wm-overlay-in'
         }`}
