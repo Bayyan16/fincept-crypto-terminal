@@ -784,10 +784,11 @@ export async function executeRealOrderOnVenue(params: {
       sizeUsd: params.sizeUsd,
       expectedAddress: unsealedCredentials.walletAddress,
     });
-    if (solSign.ok) {
-      solanaSignedTx = solSign.solanaSignedTx;
-      solanaSigner = solSign.solanaSigner;
+    if (!solSign.ok) {
+      return { ok: false, error: solSign.error || 'Tanda tangan Phantom Solana ditolak.' };
     }
+    solanaSignedTx = solSign.solanaSignedTx;
+    solanaSigner = solSign.solanaSigner;
   }
 
   try {

@@ -3253,54 +3253,78 @@ export async function executeRealExchangeOrder(payload) {
       ? 'https://api.hyperliquid-testnet.xyz/exchange'
       : 'https://api.hyperliquid.xyz/exchange';
 
-    const rawSig = String(payload.hlSignedAction?.rawSignature || payload.hlSignedAction?.signature || '');
-    const signedChainId = payload.hlSignedAction?.signedChainId || 42161;
     const signerAddr = payload.hlSignedAction?.signer || credentials?.walletAddress || '';
 
-    const res = await fetchJsonWithTimeout(hlUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload.hlSignedAction),
-    });
+    // Send only Hyperliquid L1 protocol fields (never leak internal metadata fields to /exchange)
+    const hlBody = {
+      action: payload.hlSignedAction.action,
+      nonce: payload.hlSignedAction.nonce,
+      signature: payload.hlSignedAction.signature,
+      ...(payload.hlSignedAction.vaultAddress
+        ? { vaultAddress: payload.hlSignedAction.vaultAddress }
+        : {}),
+    };
+
+    const res = await fetchJsonWithTimeout(
+      hlUrl,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(hlBody),
+      },
+      5500,
+      true
+    );
 
     if (res.ok && res.data?.status === 'ok') {
+      const statuses = res.data?.response?.data?.statuses;
+      const firstStatus = Array.isArray(statuses) ? statuses[0] : null;
+      if (firstStatus && typeof firstStatus === 'object' && firstStatus.error) {
+        return {
+          ok: false,
+          exchange: 'HYPERLIQUID',
+          error: `Hyperliquid Order Rejected: ${String(firstStatus.error)}`,
+        };
+      }
+      const resting = firstStatus?.resting;
+      const filled = firstStatus?.filled;
+      const oid = resting?.oid ?? filled?.oid;
+      const filledQty = Number(filled?.totalSz || 0);
+      const filledPx = Number(filled?.avgPx || 0);
+
       return {
         ok: true,
         exchange: 'HYPERLIQUID',
-        orderId: `HL-L1-${Date.now()}`,
-        status: 'resting',
-        executedQty: quantity,
-        executedPrice: price,
+        orderId: oid !== undefined ? String(oid) : `HL-L1-${Date.now()}`,
+        status: filled ? 'FILLED' : 'RESTING',
+        signer: signerAddr,
+        executedQty: filledQty > 0 ? filledQty : quantity,
+        executedPrice: filledPx > 0 ? filledPx : price,
       };
     }
 
-    // If the user signed cryptographically via Trust Wallet / EVM Extension on any flexible chain (Arbitrum, BSC, Base, ETH)
-    if (rawSig.startsWith('0x') && rawSig.length >= 130) {
-      return {
-        ok: true,
-        exchange: 'HYPERLIQUID',
-        orderId: `TW-SIG-${rawSig.slice(2, 10).toUpperCase()}`,
-        status: `SIGNED_EIP712_CHAIN_${signedChainId}`,
-        signer: signerAddr,
-        executedQty: quantity,
-        executedPrice: price,
-      };
-    }
+    const upstreamErr =
+      typeof res.data?.response === 'string'
+        ? res.data.response
+        : res.data?.response?.data?.statuses?.[0]?.error ||
+          (res.data?.response ? JSON.stringify(res.data.response) : '') ||
+          res.error ||
+          'Rejected by Hyperliquid L1';
 
     return {
       ok: false,
-      error: `Hyperliquid L1 Error: ${res.data?.response || res.error || 'Rejected'}`,
+      exchange: 'HYPERLIQUID',
+      error: `Hyperliquid L1 Error: ${upstreamErr}`,
     };
   }
 
   if ((exchange === 'JUPITER' || exchange === 'DEXSCREENER') && payload.solanaSignedTx) {
+    // Never fabricate CONFIRMED_SOLANA without a verified on-chain sendRawTransaction signature
     return {
-      ok: true,
+      ok: false,
       exchange,
-      orderId: `SOL-${String(payload.solanaSignedTx).slice(0, 8).toUpperCase()}`,
-      status: 'CONFIRMED_SOLANA',
-      executedQty: quantity,
-      executedPrice: price,
+      error:
+        'Eksekusi real-money Solana/Jupiter memerlukan serialized Jupiter Swap transaction yang telah di-broadcast & terkonfirmasi di Solana RPC (signMessage intent tidak mengeksekusi swap on-chain).',
     };
   }
 

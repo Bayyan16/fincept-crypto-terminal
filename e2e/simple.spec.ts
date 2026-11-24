@@ -219,7 +219,30 @@ test('5-Layer Row-Level Security (RLS) & Wallet Vault guards protect real-money 
       },
     },
   });
-  expect((await firstSignedRes.json()).ok).toBe(true);
+  const firstSignedJson = await firstSignedRes.json();
+  // Negative control (#2): dummy EIP-712 signature MUST NOT produce false-positive ok:true when Hyperliquid rejects it
+  expect(firstSignedJson.ok).toBe(false);
+  expect(firstSignedJson.rlsPolicy).toBeUndefined();
+  expect(String(firstSignedJson.error || '')).toContain('Hyperliquid L1 Error');
+
+  // Negative control (#2): unbroadcast Solana signMessage intent MUST NOT fabricate CONFIRMED_SOLANA
+  const fakeSolRes = await request.post('/api/execute/order', {
+    data: {
+      exchange: 'JUPITER',
+      symbol: 'SOL-PERP',
+      side: 'LONG',
+      orderPurpose: 'ENTRY_MAKER',
+      sizeUsd: 250,
+      price: 150,
+      bypassOracleGuard: true,
+      credentials: { walletAddress: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU' },
+      solanaSigner: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
+      solanaSignedTx: 'deadbeef'.repeat(8),
+    },
+  });
+  const fakeSolJson = await fakeSolRes.json();
+  expect(fakeSolJson.ok).toBe(false);
+  expect(fakeSolJson.status).not.toBe('CONFIRMED_SOLANA');
 
   const replaySignedRes = await request.post('/api/execute/order', {
     data: {
