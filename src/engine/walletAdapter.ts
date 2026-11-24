@@ -15,6 +15,10 @@ import {
   validateWalletConfigClientRls,
   verifyAndUnsealLoadedWallets,
 } from './rlsSecurityGuard';
+import {
+  buildHyperliquidEip712TypedData,
+  buildHyperliquidOrderAction,
+} from '../../backend/hyperliquidProtocol.mjs';
 
 declare global {
   interface Window {
@@ -518,19 +522,62 @@ export async function verifyRealAccountWithBackend(
   }
 }
 
+interface HlMetaAsset {
+  index: number;
+  name: string;
+  szDecimals: number;
+  maxLeverage: number;
+}
+
+const hlMetaCache = new Map<string, { ts: number; assets: HlMetaAsset[] }>();
+
+async function resolveHyperliquidAssetMeta(
+  symbol: string,
+  useTestnet = false
+): Promise<HlMetaAsset | null> {
+  const cacheKey = useTestnet ? 'testnet' : 'mainnet';
+  let assets = hlMetaCache.get(cacheKey)?.assets;
+  const cachedTs = hlMetaCache.get(cacheKey)?.ts || 0;
+  if (!assets || Date.now() - cachedTs > 300_000) {
+    try {
+      const res = await fetch(`/api/live/hl-meta?testnet=${useTestnet ? '1' : '0'}`);
+      const json = await res.json();
+      if (json?.ok && Array.isArray(json.assets)) {
+        const loaded: HlMetaAsset[] = json.assets;
+        assets = loaded;
+        hlMetaCache.set(cacheKey, { ts: Date.now(), assets: loaded });
+      }
+    } catch {
+      // fall through to existing cache if available
+    }
+  }
+  if (!assets || assets.length === 0) return null;
+  const rawBase = String(symbol || '').split('-')[0].split('/')[0].trim();
+  const upperBase = rawBase.toUpperCase();
+  const strippedK = rawBase.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase();
+  return (
+    assets.find((a) => a.name === rawBase) ||
+    assets.find((a) => a.name.toUpperCase() === upperBase) ||
+    assets.find((a) => a.name === `k${strippedK}`) ||
+    assets.find((a) => a.name.toUpperCase() === strippedK) ||
+    null
+  );
+}
+
 /**
- * Signs an EIP-712 Agent / Order action via connected EVM Wallet (Trust Wallet / Rabby / MetaMask).
- * CRITICAL FIX: Dynamically reads the wallet's currently active `eth_chainId` so Trust Wallet
- * NEVER rejects with `Provided chainId does not match` regardless of whether the user is on
- * Arbitrum (42161), BNB Smart Chain (56), Base (8453), Polygon (137), or Ethereum Mainnet (1)!
- * RLS GUARD: Verifies the active signer matches the configured walletAddress and binds the EIP-712
- * connectionId digest deterministically to the order parameters.
+ * Signs a spec-accurate Hyperliquid L1 EIP-712 Phantom Agent order action (chainId: 1337)
+ * via connected EVM Wallet (Trust Wallet / Rabby / MetaMask) using dynamic asset index,
+ * exact side/reduceOnly semantics for entries vs exits/stops, and keccak256(msgpack(action)).
  */
 async function signHyperliquidEip712Order(orderSpec: {
   symbol: string;
   side: 'LONG' | 'SHORT';
+  orderPurpose: 'ENTRY_MAKER' | 'SCRATCH_EXIT' | 'BREAKEVEN_STOP';
   price: number;
+  stopPrice?: number;
   sizeUsd: number;
+  quantity?: number;
+  makerOnly?: boolean;
   useTestnet?: boolean;
   expectedAddress?: string;
 }): Promise<{ ok: boolean; signedAction?: any; error?: string }> {
@@ -538,7 +585,7 @@ async function signHyperliquidEip712Order(orderSpec: {
   if (!evmProvider) {
     return {
       ok: false,
-      error: 'Ekstensi Trust Wallet / EVM diperlukan untuk menandatangani transaksi.',
+      error: 'Ekstensi Trust Wallet / EVM diperlukan untuk menandatangani transaksi Hyperliquid L1.',
     };
   }
 
@@ -557,43 +604,28 @@ async function signHyperliquidEip712Order(orderSpec: {
       };
     }
 
-    // Read the wallet's ACTUAL active chainId so EIP-712 domain.chainId ALWAYS matches!
-    const { chainId: activeChainId } = await detectActiveEvmChain();
+    const assetMeta = await resolveHyperliquidAssetMeta(orderSpec.symbol, Boolean(orderSpec.useTestnet));
+    if (!assetMeta) {
+      return {
+        ok: false,
+        error: `Instrumen Hyperliquid '${orderSpec.symbol}' tidak ditemukan pada metadata /info (asset index tidak dapat dipetakan dengan aman).`,
+      };
+    }
 
     const nonce = Date.now();
-    const d1 = computeRlsHexDigest(
-      `${orderSpec.symbol}|${orderSpec.side}|${orderSpec.price}|${orderSpec.sizeUsd}|${nonce}|${signer.toLowerCase()}|${activeChainId}`
-    );
-    const d2 = computeRlsHexDigest(`${d1}|${nonce}|fincept-hl-eip712`);
-    const d3 = computeRlsHexDigest(`${d2}|${orderSpec.symbol}|${signer}`);
-    const d4 = computeRlsHexDigest(`${d3}|${activeChainId}|${orderSpec.side}`);
-    const connectionId = `0x${(d1 + d2 + d3 + d4).slice(0, 64)}`;
+    const action = buildHyperliquidOrderAction({
+      assetIndex: assetMeta.index,
+      side: orderSpec.side,
+      orderPurpose: orderSpec.orderPurpose,
+      price: orderSpec.price,
+      stopPrice: orderSpec.stopPrice,
+      sizeUsd: orderSpec.sizeUsd,
+      quantity: orderSpec.quantity,
+      szDecimals: assetMeta.szDecimals,
+      makerOnly: orderSpec.makerOnly !== false,
+    });
 
-    const typedData = {
-      domain: {
-        name: 'Exchange',
-        version: '1',
-        chainId: activeChainId,
-        verifyingContract: '0x0000000000000000000000000000000000000000',
-      },
-      types: {
-        EIP712Domain: [
-          { name: 'name', type: 'string' },
-          { name: 'version', type: 'string' },
-          { name: 'chainId', type: 'uint256' },
-          { name: 'verifyingContract', type: 'address' },
-        ],
-        Agent: [
-          { name: 'source', type: 'string' },
-          { name: 'connectionId', type: 'bytes32' },
-        ],
-      },
-      primaryType: 'Agent',
-      message: {
-        source: orderSpec.useTestnet ? 'b' : 'a',
-        connectionId,
-      },
-    };
+    const typedData = buildHyperliquidEip712TypedData(action, nonce, Boolean(orderSpec.useTestnet));
 
     const rawSignature = await evmProvider.request({
       method: 'eth_signTypedData_v4',
@@ -604,29 +636,17 @@ async function signHyperliquidEip712Order(orderSpec: {
     const cleanSig = String(rawSignature || '').replace(/^0x/, '');
     const r = cleanSig.length >= 64 ? `0x${cleanSig.slice(0, 64)}` : '0x0';
     const s = cleanSig.length >= 128 ? `0x${cleanSig.slice(64, 128)}` : '0x0';
-    const v = cleanSig.length >= 130 ? parseInt(cleanSig.slice(128, 130), 16) : 27;
+    const vRaw = cleanSig.length >= 130 ? parseInt(cleanSig.slice(128, 130), 16) : 27;
+    const v = vRaw < 27 ? vRaw + 27 : vRaw;
 
     return {
       ok: true,
       signedAction: {
-        action: {
-          type: 'order',
-          orders: [
-            {
-              a: 0,
-              b: orderSpec.side === 'LONG',
-              p: String(orderSpec.price),
-              s: String(Number((orderSpec.sizeUsd / orderSpec.price).toFixed(4))),
-              r: false,
-              t: { limit: { tif: 'Alo' } },
-            },
-          ],
-          grouping: 'na',
-        },
+        action,
         nonce,
         signature: { r, s, v },
         rawSignature: String(rawSignature),
-        signedChainId: activeChainId,
+        signedChainId: 1337,
         signer,
       },
     };
@@ -759,11 +779,21 @@ export async function executeRealOrderOnVenue(params: {
 
   let hlSignedAction: any = undefined;
   const unsealedHlAgentKey = unsealCredentialSecret(hlAgentWallet?.credentials?.agentPrivateKey);
-  if (params.exchange === 'HYPERLIQUID' && !unsealedHlAgentKey) {
+  if (params.exchange === 'HYPERLIQUID') {
+    const hasEvmExt = typeof window !== 'undefined' && Boolean(window.trustwallet || window.ethereum);
+    if (!hasEvmExt && unsealedHlAgentKey) {
+      return {
+        ok: false,
+        error:
+          'Eksekusi Hyperliquid memerlukan ekstensi Trust/MetaMask EVM untuk tanda tangan EIP-712 L1 (signing offline dengan agentPrivateKey belum diaktifkan di browser).',
+      };
+    }
     const signRes = await signHyperliquidEip712Order({
       symbol: params.symbol,
       side: params.side,
+      orderPurpose: params.orderPurpose,
       price: params.price,
+      stopPrice: params.stopPrice,
       sizeUsd: params.sizeUsd,
       useTestnet: params.useTestnet,
       expectedAddress: unsealedCredentials.walletAddress,
