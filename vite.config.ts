@@ -1,6 +1,7 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { handleGatewayApiRoute } from './backend/exchangeGateway.mjs';
+import { MAX_JSON_BODY_BYTES, resolveCorsOrigin } from './backend/httpSecurity.mjs';
 
 export default defineConfig({
   plugins: [
@@ -13,19 +14,60 @@ export default defineConfig({
             return next();
           }
 
+          const originHeader = req.headers.origin;
+          if (originHeader && !resolveCorsOrigin(originHeader, undefined, req.headers.host)) {
+            res.setHeader('Content-Type', 'application/json');
+            res.statusCode = 403;
+            res.end(JSON.stringify({ ok: false, error: 'Cross-origin request blocked by CORS allowlist' }));
+            return;
+          }
+
           try {
             // If production gateway (8080) is running locally, share its warm single-instance cache & rate-limit budget cleanly;
             // otherwise seamlessly fall back to in-process handleGatewayApiRoute.
             const rawBody =
               req.method && req.method !== 'GET' && req.method !== 'HEAD'
-                ? await new Promise<string>((resolve) => {
-                    let s = '';
+                ? await new Promise<string>((resolve, reject) => {
+                    let totalBytes = 0;
+                    const chunks: Buffer[] = [];
+                    let aborted = false;
                     req.on('data', (c: any) => {
-                      s += c;
+                      if (aborted) return;
+                      const buf = Buffer.isBuffer(c) ? c : Buffer.from(c);
+                      totalBytes += buf.length;
+                      if (totalBytes > MAX_JSON_BODY_BYTES) {
+                        aborted = true;
+                        const err: any = new Error(`Request payload exceeds ${MAX_JSON_BODY_BYTES} bytes limit`);
+                        err.status = 413;
+                        reject(err);
+                        return;
+                      }
+                      chunks.push(buf);
                     });
-                    req.on('end', () => resolve(s));
+                    req.on('end', () => {
+                      if (!aborted) resolve(Buffer.concat(chunks).toString('utf8'));
+                    });
+                    req.on('error', reject);
                   })
                 : '';
+
+            let parsedBody: any = {};
+            if (rawBody.trim()) {
+              try {
+                parsedBody = JSON.parse(rawBody);
+                if (!parsedBody || typeof parsedBody !== 'object' || Array.isArray(parsedBody)) {
+                  res.setHeader('Content-Type', 'application/json');
+                  res.statusCode = 400;
+                  res.end(JSON.stringify({ ok: false, error: 'JSON request body must be a JSON object' }));
+                  return;
+                }
+              } catch {
+                res.setHeader('Content-Type', 'application/json');
+                res.statusCode = 400;
+                res.end(JSON.stringify({ ok: false, error: 'Malformed JSON request body' }));
+                return;
+              }
+            }
 
             try {
               const controller = new AbortController();
@@ -50,7 +92,6 @@ export default defineConfig({
             }
 
             const urlObj = new URL(req.url, 'http://localhost:5173');
-            const parsedBody = rawBody ? JSON.parse(rawBody) : {};
             const result: any = await handleGatewayApiRoute(
               urlObj.pathname,
               urlObj.searchParams,
@@ -71,7 +112,7 @@ export default defineConfig({
             return;
           } catch (err: any) {
             res.setHeader('Content-Type', 'application/json');
-            res.statusCode = 500;
+            res.statusCode = Number(err?.status) || 500;
             res.end(
               JSON.stringify({
                 ok: false,
@@ -85,7 +126,7 @@ export default defineConfig({
   ],
   server: {
     port: 5173,
-    host: true,
+    host: process.env.FINCEPT_DEV_HOST || '127.0.0.1',
     watch: {
       // Editor atomic-save tmp dirs (e.g. .index.css.<pid>.<rand>.tmpdir) can trip
       // chokidar's Windows watcher with EBUSY; ignore them so the dev server
