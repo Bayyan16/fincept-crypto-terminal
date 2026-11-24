@@ -20,6 +20,10 @@ import {
   buildHyperliquidEip712TypedData,
   buildHyperliquidOrderAction,
 } from '../../backend/hyperliquidProtocol.mjs';
+import {
+  getWalletMarketCapabilities,
+  isWalletReadyForRealExecution,
+} from '../../backend/realExecutionRouter.mjs';
 
 declare global {
   interface Window {
@@ -468,6 +472,10 @@ export async function verifyRealAccountWithBackend(
 ): Promise<{
   ok: boolean;
   balanceUsd?: number;
+  futuresEnabled?: boolean;
+  spotEnabled?: boolean;
+  futuresBalanceUsd?: number;
+  spotBalanceUsd?: number;
   addressDisplay?: string;
   openPositions?: any[];
   chainBalances?: ChainAssetBreakdown[];
@@ -506,6 +514,10 @@ export async function verifyRealAccountWithBackend(
     return {
       ok: true,
       balanceUsd: data.balanceUsd ?? 0,
+      futuresEnabled: typeof data.futuresEnabled === 'boolean' ? data.futuresEnabled : undefined,
+      spotEnabled: typeof data.spotEnabled === 'boolean' ? data.spotEnabled : undefined,
+      futuresBalanceUsd: typeof data.futuresBalanceUsd === 'number' ? data.futuresBalanceUsd : undefined,
+      spotBalanceUsd: typeof data.spotBalanceUsd === 'number' ? data.spotBalanceUsd : undefined,
       addressDisplay: data.addressDisplay,
       openPositions: data.openPositions || [],
       chainBalances: data.chainBalances || undefined,
@@ -765,6 +777,24 @@ export async function executeRealOrderOnVenue(params: {
     };
   }
 
+  const readiness = isWalletReadyForRealExecution(wallet, params.useTestnet);
+  if (!readiness.ok) {
+    if (readiness.reason === 'ENV_MISMATCH') {
+      return {
+        ok: false,
+        error: `[RLS ENV MISMATCH] ${wallet.name} terverifikasi untuk ${
+          wallet.credentials?.useTestnet ? 'TESTNET' : 'MAINNET'
+        }, tetapi mode aktif adalah ${params.useTestnet ? 'TESTNET' : 'MAINNET'}. Samakan mode atau verifikasi ulang wallet.`,
+      };
+    }
+    if (readiness.reason === 'PAPER_PLACEHOLDER_OR_MISSING_CREDS') {
+      return {
+        ok: false,
+        error: `[RLS REAL WALLET REQUIRED] ${wallet.name} belum terhubung ke kredensial/alamat real-money (masih sesi Paper). Hubungkan & verifikasi akun di menu Wallets & API.`,
+      };
+    }
+  }
+
   const sessionOwnerScope = deriveWalletRlsOwnerScope(wallet);
   if (params.rowOwnerScope && params.rowOwnerScope !== sessionOwnerScope) {
     return {
@@ -773,15 +803,28 @@ export async function executeRealOrderOnVenue(params: {
     };
   }
 
+  const isSpotRequest = params.marketType === 'SPOT' || params.venueMode === 'SPOT';
+  const walletCaps = getWalletMarketCapabilities(wallet);
+  const relevantAvailUsd = isSpotRequest
+    ? walletCaps.availableSpotUsd > 0
+      ? walletCaps.availableSpotUsd
+      : wallet.balanceUsd
+    : walletCaps.availableFuturesUsd > 0
+      ? walletCaps.availableFuturesUsd
+      : wallet.balanceUsd;
+  const maxAllowedNotionalUsd = isSpotRequest
+    ? relevantAvailUsd * 1.005 // Spot is strictly 1x cash (never 25x!)
+    : relevantAvailUsd * Math.min(25, Math.max(1, Number(params.leverage || 1)) * 1.05);
+
   if (
     params.orderPurpose === 'ENTRY_MAKER' &&
     wallet.verifiedReal &&
-    wallet.balanceUsd > 0 &&
-    params.sizeUsd > wallet.balanceUsd * 25
+    relevantAvailUsd > 0 &&
+    params.sizeUsd > maxAllowedNotionalUsd
   ) {
     return {
       ok: false,
-      error: `[RLS CAPITAL GUARD] Ukuran order ($${params.sizeUsd.toLocaleString()}) melampaui batas aman eksposur terhadap saldo terverifikasi ($${wallet.balanceUsd.toLocaleString()}).`,
+      error: `[RLS CAPITAL GUARD] Ukuran order ${isSpotRequest ? 'SPOT 1x' : `FUTURES ${Math.max(1, Number(params.leverage || 1))}x`} ($${params.sizeUsd.toLocaleString()}) melampaui batas aman eksposur terhadap saldo terverifikasi ($${relevantAvailUsd.toLocaleString()}, maks $${maxAllowedNotionalUsd.toFixed(2)}).`,
     };
   }
 

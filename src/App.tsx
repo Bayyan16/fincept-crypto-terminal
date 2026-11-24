@@ -8,10 +8,12 @@ import {
   ClosedTradeLog,
   DexScreenerPoolItem,
   DexUniverseStats,
+  ExchangeId,
   ExecutionEnvironment,
   HlpVaultSummary,
   MarketPair,
   MarketSector,
+  MarketType,
   OrderbookState,
   VerifiedNewsItem,
   WalletConnectionState,
@@ -47,6 +49,12 @@ import {
   getUtcTradingDayKey,
 } from '../backend/positionMath.mjs';
 import {
+  computeSafeAutonomousRealOrderSizeUsd,
+  computeUnifiedPortfolioEquityUsd,
+  isWalletReadyForRealExecution,
+  resolveExecutableRealVenue,
+} from '../backend/realExecutionRouter.mjs';
+import {
   auditActivePositionsAccuracy,
   buildVerifiedMacroNewsFeed,
   formatSmartPrice,
@@ -66,6 +74,7 @@ import {
   verifyRealAccountWithBackend,
 } from './engine/walletAdapter';
 import {
+  computeWalletRowIntegrityTag,
   deriveWalletRlsOwnerScope,
   stampClosedTradeWithRls,
   stampPositionWithRls,
@@ -1169,15 +1178,88 @@ export function App({
     circuitBreakerTriggered,
   ]);
 
-  // Execute Real or Paper Order across ALL synced DEX & CEX markets
+  // Synchronize live equity & Futures/Spot sub-balances from the exchange/blockchain for an owning real wallet
+  // Guards against stale async account switches (`expectedScope`) and keeps shared EVM rows (`trust` + `hyperliquid_agent`) in sync.
+  const refreshRealWalletBalance = (owning: WalletConnectionState | undefined, isTestnetEnv: boolean) => {
+    if (!owning?.credentials || !owning.verifiedReal || !owning.connected) return;
+    const expectedScope = deriveWalletRlsOwnerScope(owning);
+    const sharedEvmAddr =
+      (owning.id === 'trust' || owning.id === 'hyperliquid_agent') &&
+      owning.credentials.walletAddress
+        ? owning.credentials.walletAddress.trim().toLowerCase()
+        : '';
+    const refreshCredentials = {
+      ...owning.credentials,
+      useTestnet: isTestnetEnv,
+    };
+    void verifyRealAccountWithBackend(owning.id, refreshCredentials).then((syncRes) => {
+      if (syncRes.ok && typeof syncRes.balanceUsd === 'number') {
+        setWallets((prevWallets) => {
+          let changed = false;
+          const updated = prevWallets.map((w) => {
+            const isExactOwner =
+              w.id === owning.id &&
+              w.connected &&
+              deriveWalletRlsOwnerScope(w) === expectedScope;
+            const isPairedEvmRow =
+              Boolean(sharedEvmAddr) &&
+              w.connected &&
+              (w.id === 'trust' || w.id === 'hyperliquid_agent') &&
+              String(w.credentials?.walletAddress || '').trim().toLowerCase() === sharedEvmAddr;
+            if (isExactOwner || isPairedEvmRow) {
+              changed = true;
+              const nextRow: WalletConnectionState = {
+                ...w,
+                balanceUsd: syncRes.balanceUsd!,
+                chainBalances: syncRes.chainBalances || w.chainBalances,
+                futuresEnabled:
+                  typeof syncRes.futuresEnabled === 'boolean'
+                    ? syncRes.futuresEnabled
+                    : w.futuresEnabled,
+                spotEnabled:
+                  typeof syncRes.spotEnabled === 'boolean' ? syncRes.spotEnabled : w.spotEnabled,
+                futuresBalanceUsd:
+                  typeof syncRes.futuresBalanceUsd === 'number'
+                    ? syncRes.futuresBalanceUsd
+                    : w.futuresBalanceUsd,
+                spotBalanceUsd:
+                  typeof syncRes.spotBalanceUsd === 'number'
+                    ? syncRes.spotBalanceUsd
+                    : w.spotBalanceUsd,
+              };
+              return {
+                ...nextRow,
+                rlsOwnerScope: deriveWalletRlsOwnerScope(nextRow),
+                rlsIntegrityTag: computeWalletRowIntegrityTag(nextRow),
+              };
+            }
+            return w;
+          });
+          if (changed) saveWalletsToVault(updated);
+          return changed ? updated : prevWallets;
+        });
+      }
+    });
+  };
+
+  // Execute Real or Paper Order across ALL synced DEX & CEX markets (Futures BUY/SELL + Spot BUY/SELL)
   const handleManualAgentEntry = async (
     side: 'LONG' | 'SHORT',
     targetPairOverride?: MarketPair,
     leverageOverride?: number,
-    isExplicitUserEntry = true
+    isExplicitUserEntry = true,
+    sizeUsdOverride?: number,
+    marketTypeOverride?: MarketType,
+    exchangeOverride?: ExchangeId
   ): Promise<boolean> => {
     const targetPair = targetPairOverride || activePair;
-    const targetLeverage = leverageOverride || leverageInput;
+    const rawLeverage = leverageOverride || leverageInput;
+    const isReal = executionEnv !== 'PAPER_SANDBOX';
+    const useTestnet = executionEnv === 'EXCHANGE_TESTNET';
+    const effectiveSizeUsd =
+      typeof sizeUsdOverride === 'number' && Number.isFinite(sizeUsdOverride) && sizeUsdOverride >= 10
+        ? Number(sizeUsdOverride.toFixed(2))
+        : orderSizeUsdInput;
 
     if (circuitBreakerTriggered) {
       setCommandFeedback(
@@ -1200,16 +1282,17 @@ export function App({
       return false;
     }
 
-    const livePositions = positionsRef.current;
-    const alreadyOpenSameSymbol = livePositions.some((p) => p.symbol === targetPair.symbol);
+    // Isolate Paper vs Real position slot counting so seeded Paper positions never starve Real-Money slots
+    const liveModePositions = positionsRef.current.filter((p) => Boolean(p.isRealMoney) === isReal);
+    const alreadyOpenSameSymbol = liveModePositions.some((p) => p.symbol === targetPair.symbol);
     const maxManualSlots = Math.max(maxConcurrentPositions, 8);
-    if (!isExplicitUserEntry && !alreadyOpenSameSymbol && livePositions.length >= maxConcurrentPositions) {
+    if (!isExplicitUserEntry && !alreadyOpenSameSymbol && liveModePositions.length >= maxConcurrentPositions) {
       setCommandFeedback(
         `[MAX ${maxConcurrentPositions} LOW-RISK SLOTS FULL] Tutup / Take Profit salah satu posisi terlebih dahulu untuk menjaga batas risiko <= ${maxConcurrentPositions} posisi.`
       );
       return false;
     }
-    if (isExplicitUserEntry && !alreadyOpenSameSymbol && livePositions.length >= maxManualSlots) {
+    if (isExplicitUserEntry && !alreadyOpenSameSymbol && liveModePositions.length >= maxManualSlots) {
       setCommandFeedback(
         `[MAX ${maxManualSlots} POSISI AKTIF TERCAPAI] Tutup salah satu posisi terlebih dahulu sebelum menambah posisi baru.`
       );
@@ -1222,6 +1305,41 @@ export function App({
       );
       return false;
     }
+
+    // Resolve actual executable real-money venue & Futures/Spot marketType against connected wallets
+    const preferredMarketType: 'PERP' | 'SPOT' | null =
+      marketTypeOverride === 'SPOT' || rawLeverage === 1
+        ? 'SPOT'
+        : marketTypeOverride === 'PERP'
+          ? 'PERP'
+          : targetPair.marketType === 'SPOT'
+            ? 'SPOT'
+            : null;
+
+    let resolvedExchange: ExchangeId = exchangeOverride || targetPair.primaryExchange;
+    let resolvedMarketType: MarketType =
+      preferredMarketType === 'SPOT' ? 'SPOT' : targetPair.marketType;
+    let resolvedWallet: WalletConnectionState | undefined = undefined;
+
+    if (isReal) {
+      const venueResolution = resolveExecutableRealVenue({
+        market: targetPair,
+        side,
+        wallets,
+        useTestnet,
+        preferredMarketType,
+        preferredExchange: exchangeOverride || null,
+      });
+      if (!venueResolution.ok) {
+        setCommandFeedback(`[REAL ORDER BLOCKED] ${venueResolution.error}`);
+        return false;
+      }
+      resolvedExchange = venueResolution.exchange;
+      resolvedMarketType = venueResolution.marketType;
+      resolvedWallet = venueResolution.wallet;
+    }
+
+    const targetLeverage = resolvedMarketType === 'SPOT' ? 1 : Math.max(1, rawLeverage);
 
     // Prevent stale cross-coin orderbook quotes when switching symbols rapidly (must be within +/- 5% of targetPair.price)
     const isSameAsActive = targetPair.symbol === activePair.symbol;
@@ -1236,54 +1354,40 @@ export function App({
       Math.abs(rawBookPx - targetPair.price) / Math.max(0.0000001, targetPair.price) <= 0.05;
     const entry = formatSmartPrice(isBookPxValidForPair ? rawBookPx! : targetPair.price);
 
-    const slPriceMoveRatio = Math.max(
-      0.004,
-      Math.abs(maxMicroLossScratchPct || 0.95) / (100 * Math.max(1, targetLeverage))
-    );
-    const initialProtectiveStop = formatSmartPrice(
-      side === 'LONG' ? entry * (1 - slPriceMoveRatio) : entry * (1 + slPriceMoveRatio)
-    );
-    const minTpPriceMoveRatio = Math.max(0.5, autoTakeProfitTriggerPct) / (100 * Math.max(1, targetLeverage));
-    const tp = formatSmartPrice(
-      side === 'LONG'
-        ? entry * (1 + minTpPriceMoveRatio * 1.6)
-        : Math.max(entry * 0.25, entry * (1 - minTpPriceMoveRatio * 1.6))
-    );
-
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(
       now.getMinutes()
     ).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
     let realOrderId = `PAPER-${Date.now()}`;
-    let executedQty = Number((orderSizeUsdInput / entry).toFixed(8));
+    let executedQty = Number((effectiveSizeUsd / entry).toFixed(8));
     let executedPrice = entry;
     let resolvedVenueMode: 'FUTURES' | 'SPOT' =
-      targetPair.marketType === 'SPOT' ? 'SPOT' : 'FUTURES';
-    const isReal = executionEnv !== 'PAPER_SANDBOX';
+      resolvedMarketType === 'SPOT' ? 'SPOT' : 'FUTURES';
 
     if (isReal) {
       entryInFlightSymbolsRef.current.add(targetPair.symbol);
       setIsExecutingOrder(true);
       setCommandFeedback(
-        `Signing & transmitting ${executionEnv} ${side} order ($${orderSizeUsdInput}) to ${targetPair.primaryExchange}...`
+        `Signing & transmitting ${executionEnv} ${resolvedVenueMode} ${side} order ($${effectiveSizeUsd}) to ${resolvedExchange}...`
       );
       let execRes: Awaited<ReturnType<typeof executeRealOrderOnVenue>>;
       try {
         execRes = await executeRealOrderOnVenue({
-          exchange: targetPair.primaryExchange,
+          exchange: resolvedExchange,
           symbol: targetPair.symbol,
           binanceSymbol: targetPair.binanceSymbol,
           side,
           orderPurpose: 'ENTRY_MAKER',
-          sizeUsd: orderSizeUsdInput,
+          sizeUsd: effectiveSizeUsd,
           price: entry,
-          leverage: targetPair.marketType === 'SPOT' ? 1 : targetLeverage,
+          leverage: targetLeverage,
           makerOnly: makerOnlyMode,
-          marketType: targetPair.marketType,
+          marketType: resolvedMarketType,
+          venueMode: resolvedVenueMode,
           refMarkPrice: targetPair.price,
           wallets,
-          useTestnet: executionEnv === 'EXCHANGE_TESTNET',
+          useTestnet,
         });
       } finally {
         entryInFlightSymbolsRef.current.delete(targetPair.symbol);
@@ -1298,7 +1402,7 @@ export function App({
             timestamp: timeStr,
             symbol: targetPair.symbol,
             category: 'EXECUTION',
-            headline: `Order Real-Money Ditolak pada ${targetPair.primaryExchange}`,
+            headline: `Order Real-Money Ditolak pada ${resolvedExchange}`,
             detail: execRes.error || 'Periksa kredensial API Key / Wallet Anda.',
             score: 0,
             tone: 'WARN',
@@ -1317,7 +1421,26 @@ export function App({
       if (execRes.venueMode) {
         resolvedVenueMode = execRes.venueMode;
       }
+      refreshRealWalletBalance(resolvedWallet, useTestnet);
     }
+
+    const finalLeverage = resolvedVenueMode === 'SPOT' ? 1 : targetLeverage;
+    const slPriceMoveRatio = Math.max(
+      0.004,
+      Math.abs(maxMicroLossScratchPct || 0.95) / (100 * Math.max(1, finalLeverage))
+    );
+    const initialProtectiveStop = formatSmartPrice(
+      side === 'LONG'
+        ? executedPrice * (1 - slPriceMoveRatio)
+        : executedPrice * (1 + slPriceMoveRatio)
+    );
+    const minTpPriceMoveRatio =
+      Math.max(0.5, autoTakeProfitTriggerPct) / (100 * Math.max(1, finalLeverage));
+    const tp = formatSmartPrice(
+      side === 'LONG'
+        ? executedPrice * (1 + minTpPriceMoveRatio * 1.6)
+        : Math.max(executedPrice * 0.25, executedPrice * (1 - minTpPriceMoveRatio * 1.6))
+    );
 
     const newPos: AgentPosition = stampPositionWithRls(
       {
@@ -1327,13 +1450,13 @@ export function App({
         symbol: targetPair.symbol,
         side,
         marketType: resolvedVenueMode === 'SPOT' ? 'SPOT' : targetPair.marketType,
-        exchange: targetPair.primaryExchange,
+        exchange: resolvedExchange,
         entryPrice: executedPrice,
         currentPrice: targetPair.price,
-        sizeUsd: orderSizeUsdInput,
+        sizeUsd: effectiveSizeUsd,
         executedQty,
         venueMode: resolvedVenueMode,
-        leverage: resolvedVenueMode === 'SPOT' ? 1 : targetLeverage,
+        leverage: finalLeverage,
         stopLossPrice: initialProtectiveStop,
         takeProfitPrice: tp,
         breakevenLocked: false,
@@ -1343,54 +1466,145 @@ export function App({
         peakPnlPct: 0,
         openedAt: timeStr,
         statusReason: `${
-          isReal ? `[${executionEnv} #${realOrderId}]` : '[PAPER]'
+          isReal ? `[${executionEnv} ${resolvedVenueMode} #${realOrderId}]` : '[PAPER]'
         } ${makerOnlyMode ? 'Maker Post-Only' : 'Market'} @ $${executedPrice.toLocaleString()} | Protective SL @ $${initialProtectiveStop.toLocaleString()} (Auto-BE @ +${autoBreakevenTriggerPct}%)`,
       },
       wallets
     );
 
-    setPositions((prev) =>
-      [newPos, ...prev.filter((p) => p.symbol !== targetPair.symbol)].slice(
-        0,
-        isExplicitUserEntry ? maxManualSlots : maxConcurrentPositions
-      )
-    );
+    const maxModeSlots = isExplicitUserEntry ? maxManualSlots : maxConcurrentPositions;
+    setPositions((prev) => {
+      const sameMode = prev.filter(
+        (p) => Boolean(p.isRealMoney) === isReal && p.symbol !== targetPair.symbol
+      );
+      const otherMode = prev.filter((p) => Boolean(p.isRealMoney) !== isReal);
+      return [newPos, ...sameMode.slice(0, Math.max(0, maxModeSlots - 1)), ...otherMode];
+    });
     setBrainDecisions((prev) => [
       {
         id: `bd-${Date.now()}`,
         timestamp: timeStr,
         symbol: targetPair.symbol,
         category: 'EXECUTION',
-        headline: `${isReal ? '🔥 REAL ORDER' : 'PAPER ORDER'} ${side} ${
+        headline: `${isReal ? `🔥 REAL ${resolvedVenueMode}` : 'PAPER ORDER'} ${side} ${
           targetPair.symbol
-        } ($${orderSizeUsdInput.toLocaleString()} @ ${targetLeverage}x) via ${
-          targetPair.primaryExchange
-        }`,
-        detail: `Order ID: ${realOrderId} | Entry: $${entry.toLocaleString()} (Post-Only Maker). Auto-Breakeven Lock @ +${autoBreakevenTriggerPct}%.`,
+        } ($${effectiveSizeUsd.toLocaleString()} @ ${finalLeverage}x) via ${resolvedExchange}`,
+        detail: `Order ID: ${realOrderId} | Entry: $${executedPrice.toLocaleString()} (${
+          makerOnlyMode ? 'Post-Only Maker' : 'Market'
+        }). Protective SL @ $${initialProtectiveStop.toLocaleString()} | Auto-BE @ +${autoBreakevenTriggerPct}%.`,
         score: forumConsensus.consensusScore,
         tone: side === 'LONG' ? 'BULLISH' : 'BEARISH',
       },
       ...prev,
     ]);
     setCommandFeedback(
-      `✓ Executed ${isReal ? executionEnv : 'PAPER'} ${side} ${
+      `✓ Executed ${isReal ? `${executionEnv} ${resolvedVenueMode}` : 'PAPER'} ${side} ${
         targetPair.symbol
-      } (#${realOrderId}) @ $${entry.toLocaleString()}`
+      } (#${realOrderId}) via ${resolvedExchange} @ $${executedPrice.toLocaleString()}`
     );
     return true;
   };
 
   /**
-   * SKILL 5 EXECUTION: Opens a Low-Risk Autonomous Replacement Position when positions.length < maxConcurrentPositions (3).
+   * SKILL 5 EXECUTION: Opens a Low-Risk Autonomous Replacement Position when mode slots < maxConcurrentPositions (3).
    * Preserves full Autonomous Agent Brain execution for BOTH BUY/SELL and Futures/Spot across Paper, Testnet, and Mainnet.
    */
   const executeAutonomousLowRiskSlot = async (): Promise<boolean> => {
     if (autonomousEntryInFlightRef.current) return false;
-    const livePositions = positionsRef.current;
-    if (circuitBreakerTriggered || livePositions.length >= maxConcurrentPositions) return false;
+    const isRealEnv = executionEnv !== 'PAPER_SANDBOX';
+    const useTestnet = executionEnv === 'EXCHANGE_TESTNET';
+    const modePositions = positionsRef.current.filter((p) => Boolean(p.isRealMoney) === isRealEnv);
+    if (circuitBreakerTriggered || modePositions.length >= maxConcurrentPositions) return false;
+
+    // In EXCHANGE_TESTNET / REAL_MAINNET, select the highest-conviction brain candidate that has
+    // an actually connected, env-matched real wallet supporting the signal's BUY/SELL + Futures/Spot mode,
+    // and cap autonomous sizing safely within verified real balance.
+    if (isRealEnv) {
+      const allCandidates = scanAllMarketMultiAgentCandidates(
+        marketsRef.current,
+        modePositions,
+        lastClosedSymbol,
+        minLiquidityScoreGate,
+        orderSizeUsdInput,
+        verifiedNewsRef.current,
+        candlesMapRef.current
+      );
+      const preferredMarketType: 'SPOT' | null = leverageInput === 1 ? 'SPOT' : null;
+      const orderedCandidates = [
+        ...allCandidates.filter((c) => (c.alignedAgentsCount ?? 4) >= 3),
+        ...allCandidates.filter((c) => (c.alignedAgentsCount ?? 4) < 3),
+      ];
+
+      let chosen: {
+        candidate: (typeof orderedCandidates)[number];
+        exchange: ExchangeId;
+        marketType: 'PERP' | 'SPOT';
+        leverage: number;
+        sizeUsd: number;
+      } | null = null;
+      let lastSkipReason: string | null = null;
+
+      for (const cand of orderedCandidates) {
+        if (entryInFlightSymbolsRef.current.has(cand.market.symbol)) continue;
+        const venueRes = resolveExecutableRealVenue({
+          market: cand.market,
+          side: cand.side,
+          wallets,
+          useTestnet,
+          preferredMarketType,
+        });
+        if (!venueRes.ok) {
+          lastSkipReason = venueRes.error;
+          continue;
+        }
+        const effLev = venueRes.marketType === 'SPOT' ? 1 : cand.recommendedLeverage;
+        const safeSizing = computeSafeAutonomousRealOrderSizeUsd({
+          requestedSizeUsd: cand.recommendedSizeUsd,
+          availableUsd: venueRes.availableUsd,
+          verifiedReal: venueRes.wallet.verifiedReal,
+          marketType: venueRes.marketType,
+          leverage: effLev,
+        });
+        if (!safeSizing.ok) {
+          lastSkipReason = safeSizing.error || null;
+          continue;
+        }
+        chosen = {
+          candidate: cand,
+          exchange: venueRes.exchange,
+          marketType: venueRes.marketType,
+          leverage: effLev,
+          sizeUsd: safeSizing.sizeUsd,
+        };
+        break;
+      }
+
+      if (!chosen) {
+        if (lastSkipReason) {
+          setCommandFeedback(`[AUTO-HUNTER STANDBY] ${lastSkipReason}`);
+        }
+        return false;
+      }
+
+      autonomousEntryInFlightRef.current = true;
+      try {
+        return await handleManualAgentEntry(
+          chosen.candidate.side,
+          chosen.candidate.market,
+          chosen.leverage,
+          false,
+          chosen.sizeUsd,
+          chosen.marketType,
+          chosen.exchange
+        );
+      } finally {
+        autonomousEntryInFlightRef.current = false;
+      }
+    }
+
     const candidate = selectBestLowRiskHunterCandidate(
       marketsRef.current,
-      livePositions,
+      modePositions,
       lastClosedSymbol,
       minLiquidityScoreGate,
       orderSizeUsdInput,
@@ -1399,28 +1613,12 @@ export function App({
     );
     if (!candidate || entryInFlightSymbolsRef.current.has(candidate.market.symbol)) return false;
 
-    // In EXCHANGE_TESTNET / REAL_MAINNET, route every brain-approved autonomous entry (BUY/SELL, Futures/Spot)
-    // through the verified real-money execution pipeline with 5-Layer RLS, setLeverage, executedQty & Circuit Breaker.
-    if (executionEnv !== 'PAPER_SANDBOX') {
-      autonomousEntryInFlightRef.current = true;
-      try {
-        return await handleManualAgentEntry(
-          candidate.side,
-          candidate.market,
-          candidate.market.marketType === 'SPOT' ? 1 : candidate.recommendedLeverage,
-          false
-        );
-      } finally {
-        autonomousEntryInFlightRef.current = false;
-      }
-    }
-
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(
       now.getMinutes()
     ).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
-    const slotNumber = livePositions.length + 1;
+    const slotNumber = modePositions.length + 1;
     const autoOrderId = `AUTO-LOWRISK-${Date.now().toString().slice(-5)}`;
 
     const autoPos: AgentPosition = {
@@ -1429,14 +1627,14 @@ export function App({
       isRealMoney: false,
       symbol: candidate.market.symbol,
       side: candidate.side,
-      marketType: candidate.market.marketType,
+      marketType: leverageInput === 1 ? 'SPOT' : candidate.market.marketType,
       exchange: candidate.market.primaryExchange,
       entryPrice: candidate.entryPrice,
       currentPrice: candidate.market.price,
       sizeUsd: candidate.recommendedSizeUsd,
       executedQty: Number((candidate.recommendedSizeUsd / Math.max(1e-9, candidate.entryPrice)).toFixed(8)),
-      venueMode: candidate.market.marketType === 'SPOT' ? 'SPOT' : 'FUTURES',
-      leverage: candidate.market.marketType === 'SPOT' ? 1 : candidate.recommendedLeverage,
+      venueMode: leverageInput === 1 || candidate.market.marketType === 'SPOT' ? 'SPOT' : 'FUTURES',
+      leverage: leverageInput === 1 || candidate.market.marketType === 'SPOT' ? 1 : candidate.recommendedLeverage,
       stopLossPrice: candidate.initialBeGuardPrice,
       takeProfitPrice: candidate.takeProfitPrice,
       breakevenLocked: false,
@@ -1449,7 +1647,8 @@ export function App({
     };
 
     setPositions((prev) => {
-      if (prev.length >= maxConcurrentPositions || prev.some((p) => p.symbol === autoPos.symbol)) {
+      const paperPrev = prev.filter((p) => !p.isRealMoney);
+      if (paperPrev.length >= maxConcurrentPositions || paperPrev.some((p) => p.symbol === autoPos.symbol)) {
         return prev;
       }
       return [...prev, autoPos];
@@ -1478,10 +1677,24 @@ export function App({
   const executeAutonomousLowRiskSlotRef = useRef(executeAutonomousLowRiskSlot);
   executeAutonomousLowRiskSlotRef.current = executeAutonomousLowRiskSlot;
 
-  // Continuous Autonomous Post-TP Hunter Loop: Whenever positions.length < maxConcurrentPositions (3) & Auto-Agent is ON
-  // Uses refs for live markets so 1.8s-2.5s market ticks NEVER reset the 3-second countdown, and rearms cleanly after unsuccessful attempts.
+  const isRealExecutionEnv = executionEnv !== 'PAPER_SANDBOX';
+  const activeModePositionsCount = positions.filter(
+    (p) => Boolean(p.isRealMoney) === isRealExecutionEnv
+  ).length;
+  const readyRealVenuesKey = wallets
+    .filter((w) => isWalletReadyForRealExecution(w, executionEnv === 'EXCHANGE_TESTNET').ok)
+    .map((w) => `${w.id}:${w.verifiedReal ? '1' : '0'}:${w.credentials?.useTestnet ? 'T' : 'M'}`)
+    .join('|');
+
+  // Continuous Autonomous Post-TP Hunter Loop: Whenever mode slots < maxConcurrentPositions (3) & Auto-Agent is ON.
+  // Isolated per executionEnv (Paper vs Real) & auto-arms immediately when a real wallet is verified.
   useEffect(() => {
-    if (!agentAutonomousEnabled || circuitBreakerTriggered || positions.length >= maxConcurrentPositions) {
+    if (
+      !agentAutonomousEnabled ||
+      circuitBreakerTriggered ||
+      activeModePositionsCount >= maxConcurrentPositions ||
+      (isRealExecutionEnv && !readyRealVenuesKey)
+    ) {
       setHunterCountdownSec(null);
       return;
     }
@@ -1517,10 +1730,13 @@ export function App({
   }, [
     agentAutonomousEnabled,
     circuitBreakerTriggered,
-    positions.length,
+    activeModePositionsCount,
     maxConcurrentPositions,
     lastClosedSymbol,
     hunterRetryTick,
+    executionEnv,
+    isRealExecutionEnv,
+    readyRealVenuesKey,
   ]);
 
   const handleScratchOrClosePosition = async (
@@ -1660,35 +1876,7 @@ export function App({
             ((pos.exchange === 'JUPITER' || pos.exchange === 'DEXSCREENER') && w.id === 'phantom'))
       );
       if (owning?.credentials) {
-        const expectedScope = deriveWalletRlsOwnerScope(owning);
-        const refreshCredentials = {
-          ...owning.credentials,
-          useTestnet: executionEnv === 'EXCHANGE_TESTNET',
-        };
-        void verifyRealAccountWithBackend(owning.id, refreshCredentials).then((syncRes) => {
-          if (syncRes.ok && typeof syncRes.balanceUsd === 'number') {
-            setWallets((prevWallets) => {
-              let changed = false;
-              const updated = prevWallets.map((w) => {
-                if (
-                  w.id === owning.id &&
-                  w.connected &&
-                  deriveWalletRlsOwnerScope(w) === expectedScope
-                ) {
-                  changed = true;
-                  return {
-                    ...w,
-                    balanceUsd: syncRes.balanceUsd!,
-                    chainBalances: syncRes.chainBalances || w.chainBalances,
-                  };
-                }
-                return w;
-              });
-              if (changed) saveWalletsToVault(updated);
-              return changed ? updated : prevWallets;
-            });
-          }
-        });
+        refreshRealWalletBalance(owning, executionEnv === 'EXCHANGE_TESTNET');
       }
     } else if (isSettledToHotWallet && settled.allowLocalBalanceMutation) {
       setWallets((prevWallets) => {
@@ -1975,15 +2163,16 @@ export function App({
     setIsSyncingProfile(true);
     const extRes = await connectBrowserExtensionWallet(id);
     if (extRes.ok && extRes.fullAddress) {
+      const effectiveTestnet = executionEnv === 'EXCHANGE_TESTNET';
       const verifyRes = await verifyRealAccountWithBackend(id, {
         walletAddress: extRes.fullAddress,
-        useTestnet: executionEnv === 'EXCHANGE_TESTNET',
+        useTestnet: effectiveTestnet,
       });
       setIsSyncingProfile(false);
       setWallets((prev) => {
         const next = prev.map((w) => {
           if (w.id === id || (id === 'trust' && w.id === 'hyperliquid_agent')) {
-            return {
+            const updatedRow: WalletConnectionState = {
               ...w,
               connected: true,
               verifiedReal: verifyRes.ok,
@@ -1996,10 +2185,17 @@ export function App({
                 verifyRes.ok && typeof verifyRes.balanceUsd === 'number'
                   ? verifyRes.balanceUsd
                   : w.balanceUsd,
+              rlsPolicyStatus: 'ENFORCED',
               credentials: {
                 ...(w.credentials || {}),
                 walletAddress: extRes.fullAddress,
+                useTestnet: effectiveTestnet,
               },
+            };
+            return {
+              ...updatedRow,
+              rlsOwnerScope: deriveWalletRlsOwnerScope(updatedRow),
+              rlsIntegrityTag: computeWalletRowIntegrityTag(updatedRow),
             };
           }
           return w;
@@ -2182,9 +2378,7 @@ export function App({
   const totalRealizedPnl = closedTrades.reduce((acc, c) => acc + c.realizedPnlUsd, 0);
   const connectedWalletsCount = wallets.filter((w) => w.connected).length;
   const verifiedRealCount = wallets.filter((w) => w.verifiedReal).length;
-  const totalPortfolioEquityUsd = wallets
-    .filter((w) => w.connected)
-    .reduce((acc, w) => acc + w.balanceUsd, 0);
+  const totalPortfolioEquityUsd = computeUnifiedPortfolioEquityUsd({ wallets, executionEnv });
   const trustWalletState = wallets.find((w) => w.id === 'trust') || wallets[0];
   const phantomWalletState = wallets.find((w) => w.id === 'phantom');
   const activeProfileAddress =
@@ -2618,9 +2812,9 @@ export function App({
               onChange={(e) => setLeverageInput(Number(e.target.value))}
               className="bg-[#040609] text-[#00E5FF] font-extrabold focus:outline-none"
             >
-              {[2, 3, 4, 5, 6, 7, 8, 10, 20].map((lv) => (
+              {[1, 2, 3, 4, 5, 6, 7, 8, 10, 20].map((lv) => (
                 <option key={lv} value={lv}>
-                  {lv}x
+                  {lv === 1 ? '1x SPOT' : `${lv}x`}
                 </option>
               ))}
             </select>
@@ -5295,6 +5489,7 @@ export function App({
         onClose={() => setIsWalletModalOpen(false)}
         wallets={wallets}
         onUpdateWallets={setWallets}
+        executionEnv={executionEnv}
       />
     </div>
   );

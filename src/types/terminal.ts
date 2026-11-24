@@ -281,6 +281,10 @@ export interface WalletConnectionState {
   activeChainId?: number;
   activeChainName?: string;
   chainBalances?: ChainAssetBreakdown[];
+  futuresEnabled?: boolean;
+  spotEnabled?: boolean;
+  futuresBalanceUsd?: number;
+  spotBalanceUsd?: number;
   credentials?: WalletCredentials;
   rlsOwnerScope?: string;
   rlsIntegrityTag?: string;

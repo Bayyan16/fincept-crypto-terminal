@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { WalletConnectionState, WalletCredentials } from '../types/terminal';
+import { ExecutionEnvironment, WalletConnectionState, WalletCredentials } from '../types/terminal';
 import {
   connectBrowserExtensionWallet,
   FLEXIBLE_EVM_NETWORKS,
@@ -18,6 +18,7 @@ interface WalletConnectModalProps {
   onClose: () => void;
   wallets: WalletConnectionState[];
   onUpdateWallets: React.Dispatch<React.SetStateAction<WalletConnectionState[]>>;
+  executionEnv?: ExecutionEnvironment;
 }
 
 /**
@@ -59,6 +60,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
   onClose,
   wallets,
   onUpdateWallets,
+  executionEnv = 'PAPER_SANDBOX',
 }) => {
   const [expandedId, setExpandedId] = useState<WalletConnectionState['id'] | null>('hyperliquid_agent');
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
@@ -133,9 +135,11 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
     const extRes = await connectBrowserExtensionWallet(w.id);
 
     if (extRes.ok && extRes.fullAddress) {
+      const effectiveTestnet = executionEnv === 'EXCHANGE_TESTNET';
       const nextCreds: WalletCredentials = {
         ...(w.credentials || {}),
         walletAddress: extRes.fullAddress,
+        useTestnet: effectiveTestnet,
       };
       const verifyRes = await verifyRealAccountWithBackend(w.id, nextCreds);
       setVerifyingId(null);
@@ -144,7 +148,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
         const isEvm = w.id === 'trust' || w.id === 'hyperliquid_agent';
         const next = prev.map((item) => {
           if (item.id === w.id || (isEvm && (item.id === 'trust' || item.id === 'hyperliquid_agent'))) {
-            return {
+            const updatedRow: WalletConnectionState = {
               ...item,
               connected: true,
               verifiedReal: verifyRes.ok,
@@ -157,10 +161,17 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                 verifyRes.ok && typeof verifyRes.balanceUsd === 'number'
                   ? verifyRes.balanceUsd
                   : item.balanceUsd,
+              rlsPolicyStatus: 'ENFORCED',
               credentials: {
                 ...(item.credentials || {}),
                 walletAddress: extRes.fullAddress,
+                useTestnet: effectiveTestnet,
               },
+            };
+            return {
+              ...updatedRow,
+              rlsOwnerScope: deriveWalletRlsOwnerScope(updatedRow),
+              rlsIntegrityTag: computeWalletRowIntegrityTag(updatedRow),
             };
           }
           return item;
@@ -257,25 +268,44 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
         : Boolean(creds.useTestnet);
 
     onUpdateWallets((prev) => {
+      const isEvmPair = w.id === 'trust' || w.id === 'hyperliquid_agent';
+      const verifiedAddrLower = String(creds.walletAddress || '').trim().toLowerCase();
       const next = prev.map((item) => {
-        if (item.id !== w.id) return item;
+        const sharesEvmWallet =
+          isEvmPair &&
+          (item.id === 'trust' || item.id === 'hyperliquid_agent') &&
+          verifiedAddrLower.length === 42 &&
+          (item.id === w.id ||
+            String(item.credentials?.walletAddress || '').trim().toLowerCase() === verifiedAddrLower ||
+            !item.verifiedReal);
+        if (item.id !== w.id && !sharesEvmWallet) return item;
         const updatedRow: WalletConnectionState = {
           ...item,
           connected: true,
           verifiedReal: true,
           autoSignEnabled: true,
           chainBalances: res.chainBalances || item.chainBalances,
+          futuresEnabled:
+            typeof res.futuresEnabled === 'boolean' ? res.futuresEnabled : item.futuresEnabled,
+          spotEnabled: typeof res.spotEnabled === 'boolean' ? res.spotEnabled : item.spotEnabled,
+          futuresBalanceUsd:
+            typeof res.futuresBalanceUsd === 'number'
+              ? res.futuresBalanceUsd
+              : item.futuresBalanceUsd,
+          spotBalanceUsd:
+            typeof res.spotBalanceUsd === 'number' ? res.spotBalanceUsd : item.spotBalanceUsd,
           addressOrKeyId: res.addressDisplay || item.addressOrKeyId,
           balanceUsd: res.balanceUsd ?? item.balanceUsd,
           rlsPolicyStatus: 'ENFORCED',
           credentials: {
             ...(item.credentials || {}),
+            ...(isEvmPair && creds.walletAddress ? { walletAddress: creds.walletAddress } : {}),
             useTestnet: effectiveTestnet,
           },
         };
         return {
           ...updatedRow,
-          rlsOwnerScope: res.rlsOwnerId || deriveWalletRlsOwnerScope(updatedRow),
+          rlsOwnerScope: deriveWalletRlsOwnerScope(updatedRow),
           rlsIntegrityTag: computeWalletRowIntegrityTag(updatedRow),
         };
       });

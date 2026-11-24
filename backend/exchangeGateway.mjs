@@ -2955,6 +2955,8 @@ export async function verifyAndFetchAccountBalance(payload) {
       rlsPolicy: 'ENFORCED',
       rlsOwnerId: rlsCheck.rlsOwnerId,
       balanceUsd: totalUsd,
+      futuresEnabled: futuresOk,
+      spotEnabled: spotOk,
       futuresBalanceUsd: Number(futuresUsd.toFixed(2)),
       spotBalanceUsd: Number(spotUsd.toFixed(2)),
       resolvedUseTestnet: autoCorrectedUseTestnet,
@@ -3380,19 +3382,28 @@ export async function executeRealExchangeOrder(payload) {
         error: 'Bybit API Key & Secret belum dimasukkan di menu Wallets & API.',
       };
     }
+    const isBybitSpot = marketType === 'SPOT' || payload.venueMode === 'SPOT';
+    if (isBybitSpot && orderPurpose === 'ENTRY_MAKER' && side === 'SHORT') {
+      return {
+        ok: false,
+        error:
+          'Bybit Spot tidak mendukung pembukaan posisi SHORT (gunakan Bybit Futures/Linear atau arah BUY/LONG pada Spot).',
+      };
+    }
+    const effectiveBybitMarketType = isBybitSpot ? 'SPOT' : 'PERP';
     const baseUrl = useTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
     const normBybit = normalizeExchangeSymbol({
       exchange: 'BYBIT',
       symbol,
       binanceSymbol,
-      marketType: marketType || 'PERP',
+      marketType: effectiveBybitMarketType,
     });
     const bybitSymbol = normBybit.exchangeSymbol;
     const bybitSpec = await fetchExchangeInstrumentSpec({
       exchange: 'BYBIT',
       exchangeSymbol: bybitSymbol,
       useTestnet: Boolean(useTestnet),
-      marketType: marketType || 'PERP',
+      marketType: effectiveBybitMarketType,
       fetchJson: fetchJsonWithTimeout,
     });
     const bybitPrice = bybitSpec?.tickSize
@@ -3409,7 +3420,7 @@ export async function executeRealExchangeOrder(payload) {
     }
     const recvWindow = '5000';
 
-    if (orderPurpose === 'ENTRY_MAKER' && marketType !== 'SPOT' && Number(leverage) >= 1) {
+    if (orderPurpose === 'ENTRY_MAKER' && !isBybitSpot && Number(leverage) >= 1) {
       const levTs = String(Date.now());
       const levBodyStr = JSON.stringify({
         category: 'linear',
@@ -3453,7 +3464,6 @@ export async function executeRealExchangeOrder(payload) {
     const bybitStopPrice = bybitSpec?.tickSize
       ? alignPriceToTickSize(Number(stopPrice || price) * normBybit.priceScale, bybitSpec.tickSize)
       : Number(stopPrice || price) * normBybit.priceScale;
-    const isBybitSpot = marketType === 'SPOT' || payload.venueMode === 'SPOT';
     const orderBody =
       orderPurpose === 'ENTRY_MAKER'
         ? {
@@ -3475,9 +3485,10 @@ export async function executeRealExchangeOrder(payload) {
               qty: String(bybitQty),
               triggerPrice: String(bybitStopPrice),
               triggerDirection: side === 'LONG' ? 2 : 1,
-              triggerBy: 'MarkPrice',
-              stopOrderType: 'StopLoss',
-              ...(isBybitSpot ? {} : { reduceOnly: true }),
+              triggerBy: isBybitSpot ? 'LastPrice' : 'MarkPrice',
+              ...(isBybitSpot
+                ? { orderFilter: 'StopOrder' }
+                : { stopOrderType: 'StopLoss', reduceOnly: true }),
             }
           : {
               category: isBybitSpot ? 'spot' : 'linear',
@@ -3522,7 +3533,7 @@ export async function executeRealExchangeOrder(payload) {
     return {
       ok: true,
       exchange: 'BYBIT',
-      venueMode: marketType === 'SPOT' ? 'SPOT' : 'FUTURES',
+      venueMode: isBybitSpot ? 'SPOT' : 'FUTURES',
       orderId: String(res.data?.result?.orderId || Date.now()),
       status: 'LIVE',
       executedQty: Number((bybitQty / (normBybit.qtyScale || 1)).toFixed(8)),
@@ -3539,19 +3550,27 @@ export async function executeRealExchangeOrder(payload) {
       };
     }
     const requestPath = '/api/v5/trade/order';
-    const isOkxSpot = marketType === 'SPOT';
+    const isOkxSpot = marketType === 'SPOT' || payload.venueMode === 'SPOT';
+    if (isOkxSpot && orderPurpose === 'ENTRY_MAKER' && side === 'SHORT') {
+      return {
+        ok: false,
+        error:
+          'OKX Spot tidak mendukung pembukaan posisi SHORT (gunakan OKX SWAP/Futures atau arah BUY/LONG pada Spot).',
+      };
+    }
+    const effectiveOkxMarketType = isOkxSpot ? 'SPOT' : 'PERP';
     const normOkx = normalizeExchangeSymbol({
       exchange: 'OKX',
       symbol,
       binanceSymbol,
-      marketType: marketType || 'PERP',
+      marketType: effectiveOkxMarketType,
     });
     const instId = normOkx.exchangeSymbol;
     const okxSpec = await fetchExchangeInstrumentSpec({
       exchange: 'OKX',
       exchangeSymbol: instId,
       useTestnet: Boolean(useTestnet),
-      marketType: marketType || 'PERP',
+      marketType: effectiveOkxMarketType,
       fetchJson: fetchJsonWithTimeout,
     });
 
@@ -3634,7 +3653,7 @@ export async function executeRealExchangeOrder(payload) {
             sz: String(okxSz),
             slTriggerPx: String(okxStopPrice),
             slOrdPx: '-1',
-            slTriggerPxType: 'mark',
+            slTriggerPxType: isOkxSpot ? 'last' : 'mark',
             ...(isOkxSpot ? {} : { reduceOnly: true }),
           }
         : {
