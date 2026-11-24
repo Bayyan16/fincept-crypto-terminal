@@ -1492,30 +1492,10 @@ export function runWalkForwardAccuracyBacktest(
         ).toFixed(2)
       );
 
-      if (outcome === 'WIN_TAKE_PROFIT' || (outcome === 'WIN_TRAIL_PROFIT' && realizedPnlPct > 0)) {
-        // Uncapped Agent Swing Exit Policy: Minimum +50% floor, scaling uncapped with wave MFE & TA conviction
-        const agentDecidedRatioPct = Number(
-          Math.max(
-            52.5,
-            50 + Math.max(0, taAtEntry.taScore - 74) * 3.2 + maxFavorablePct * 8.5
-          ).toFixed(2)
-        );
-        realizedPnlPct = Math.max(realizedPnlPct, agentDecidedRatioPct);
-        maxFavorablePct = Math.max(maxFavorablePct, Number((realizedPnlPct * 1.06).toFixed(2)));
-        finalExitPrice = formatSmartPrice(
-          side === 'LONG'
-            ? entryPrice * (1 + realizedPnlPct / (100 * leverage))
-            : Math.max(entryPrice * 0.25, entryPrice * (1 - realizedPnlPct / (100 * leverage)))
-        );
-      } else if (outcome === 'PROTECTED_BREAKEVEN' && realizedPnlPct < 0.3) {
-        realizedPnlPct = 0.3; // +0.06% * 5x Breakeven+Fee offset locked
-      } else if (outcome === 'WIN_TRAIL_PROFIT' && realizedPnlPct < 0 && maxFavorablePct >= 0.4) {
-        outcome = 'PROTECTED_BREAKEVEN';
-        realizedPnlPct = 0.3;
-        finalExitPrice = formatSmartPrice(
-          side === 'LONG' ? entryPrice * 1.0006 : entryPrice * 0.9994
-        );
-      } else if (outcome === 'WIN_TRAIL_PROFIT' && realizedPnlPct < 0) {
+      // Zero Lookahead Bias: report strictly honest historical bar-based exit price & PnL (never rewrite exit prices post-hoc)
+      if (outcome === 'WIN_TRAIL_PROFIT' && realizedPnlPct < 0) {
+        outcome = 'LOSS_STOP';
+      } else if (outcome === 'PROTECTED_BREAKEVEN' && realizedPnlPct < 0) {
         outcome = 'LOSS_STOP';
       }
 
