@@ -26,6 +26,22 @@ import {
 
 export { queryDexUniverse, searchDexUniverseLive, fetchSpecificPoolTrades, resolveTokenIcon };
 
+const VALID_HEX_BIGINT_RE = /^0x[0-9a-fA-F]+$/;
+
+/**
+ * Safely converts an EVM RPC hex quantity/data string to BigInt without throwing on '0x' or malformed values.
+ */
+export function safeHexToBigInt(value, fallback = 0n) {
+  if (typeof value === 'bigint') return value;
+  const s = String(value ?? '').trim();
+  if (!VALID_HEX_BIGINT_RE.test(s)) return fallback;
+  try {
+    return BigInt(s);
+  } catch {
+    return fallback;
+  }
+}
+
 /**
  * FINCEPT REAL-MONEY & ON-CHAIN MULTI-DEX / MULTI-CEX GATEWAY V6.0
  * Real-Time Data Ingestion & Execution Engine for:
@@ -1392,7 +1408,7 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
     const parsed = [];
     for (const tx of blockObj.transactions) {
       if (!tx || !tx.hash || !tx.from) continue;
-      const wei = tx.value && tx.value !== '0x0' ? BigInt(tx.value) : 0n;
+      const wei = safeHexToBigInt(tx.value, 0n);
       const nativeCoins = Number(wei / 10n ** 12n) / 1e6;
       const input = (tx.input || '0x').toLowerCase();
       const selector = input.slice(0, 10);
@@ -1409,7 +1425,7 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
         methodName = 'ERC20 Transfer';
         const tokenMeta = KNOWN_STABLES[tx.to.toLowerCase()];
         const toAddr = `0x${input.slice(34, 74)}`;
-        const rawAmt = BigInt(`0x${input.slice(74, 138)}`);
+        const rawAmt = safeHexToBigInt(`0x${input.slice(74, 138)}`, 0n);
         if (tokenMeta) {
           const divisor = 10n ** BigInt(Math.max(0, tokenMeta.decimals - 4));
           const tokenAmt = Number(rawAmt / divisor) / 1e4;
@@ -1430,8 +1446,8 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
 
       if (usdVal < 150) continue; // Only meaningful real value transfers
 
-      const gasPriceWei = BigInt(tx.gasPrice || baseFeeHex || '0x0');
-      const gasLimitNum = tx.gas ? Number(BigInt(tx.gas)) : 21000;
+      const gasPriceWei = safeHexToBigInt(tx.gasPrice || baseFeeHex, 0n);
+      const gasLimitNum = tx.gas ? Number(safeHexToBigInt(tx.gas, 21000n)) : 21000;
       const gasFeeNative = Number((gasPriceWei * BigInt(gasLimitNum)) / 10n ** 10n) / 1e8;
       const gasFeeUsd = Number((gasFeeNative * cfg.nativePriceUsd).toFixed(4));
       const gasPriceGwei = Number((Number(gasPriceWei) / 1e9).toFixed(4));
@@ -1532,7 +1548,7 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
     for (const lg of arbUsdcLogs) {
       if (!lg?.transactionHash || !lg?.topics || lg.topics.length < 3 || !lg.data) continue;
       if (existingArbHashes.has(lg.transactionHash)) continue;
-      const usdcVal = Number(BigInt(lg.data) / 100n) / 10_000;
+      const usdcVal = Number(safeHexToBigInt(lg.data, 0n) / 100n) / 10_000;
       if (!Number.isFinite(usdcVal) || usdcVal < 5_000 || usdcVal > 500_000_000) continue;
       const fromAddr = `0x${lg.topics[1].slice(26).toLowerCase()}`;
       const toAddr = `0x${lg.topics[2].slice(26).toLowerCase()}`;
@@ -2485,15 +2501,12 @@ async function queryEvmChainPortfolio({
     ]);
 
     const natWeiHex = natRes.data?.result;
-    const natBalance =
-      natWeiHex && natWeiHex !== '0x' ? Number(BigInt(natWeiHex)) / 1e18 : 0;
+    const natBalance = Number(safeHexToBigInt(natWeiHex, 0n)) / 1e18;
     const natUsd = natBalance * nativePriceUsd;
 
     const ercHex = ercRes.data?.result;
     const stableBalance =
-      ercHex && ercHex !== '0x' && ercHex.length > 2
-        ? Number(BigInt(ercHex)) / Math.pow(10, stableDecimals)
-        : 0;
+      Number(safeHexToBigInt(ercHex, 0n)) / Math.pow(10, stableDecimals);
 
     return {
       chainName,
