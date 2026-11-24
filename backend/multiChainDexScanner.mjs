@@ -8,6 +8,8 @@
  *   5. Ethereum Mainnet (ethereum) — Uniswap V2/V3/V4, Curve, SushiSwap
  */
 
+import { BoundedMap } from './boundedMap.mjs';
+
 export const TARGET_CHAIN_META = {
   solana: {
     id: 'solana',
@@ -119,9 +121,9 @@ async function fetchGtJson(url, timeoutMs = 4500) {
 }
 
 // Persistent Backend Multi-Chain Token & Pool Universe Cache + Token Icon Hints
-const universePoolMap = new Map();
-const tokenImageHintMap = new Map();
-const iconCacheMap = new Map();
+const universePoolMap = new BoundedMap(2000);
+const tokenImageHintMap = new BoundedMap(1500);
+const iconCacheMap = new BoundedMap(800);
 let lastDsUniverseRefreshMs = 0;
 let inFlightUniverseRefresh = null;
 const gtChainLastFetchMs = new Map();
@@ -182,7 +184,7 @@ let lastHlPerpCount = 0;
 const cachedSwapsByChain = new Map();
 const lastChainSwapFetchMs = new Map();
 let swapChainRotationCursor = 0;
-const cachedPoolTradesByKey = new Map();
+const cachedPoolTradesByKey = new BoundedMap(200);
 
 let liveHyperEvmBlock = 0;
 let liveRobinhoodBlock = 0;
@@ -1003,7 +1005,7 @@ export async function fetchSpecificPoolTrades({ chain = 'solana', poolAddress = 
   return { ok: true, chainId: cid, chain: meta.label, poolAddress: addr, trades };
 }
 
-const cachedOhlcvByKey = new Map();
+const cachedOhlcvByKey = new BoundedMap(200);
 
 function buildOhlcvFromRealSwaps(trades = [], interval = '15m') {
   const valid = trades

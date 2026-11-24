@@ -6,10 +6,8 @@ Connects to:
 3. CEX Public/Private Orderbook & Execution Endpoints (Binance, Bybit, OKX)
 """
 
-import asyncio
 import json
 import math
-import time
 import urllib.request
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional
@@ -92,6 +90,18 @@ class AutonomousWhaleAgentEngine:
         best_bid = float(bids[0][0])
         best_ask = float(asks[0][0])
         mid = (best_bid + best_ask) / 2.0
+        if mid <= 0.0:
+            return MicrostructureSnapshot(
+                symbol=symbol,
+                mid_price=0.0,
+                spread_bps=99.0,
+                weighted_obi=0.0,
+                depth_half_pct_usd=0.0,
+                liquidity_score=0,
+                passed_liquidity_gate=False,
+                whale_bias="NEUTRAL",
+                recommended_action="BLOCKED_INVALID_PRICE",
+            )
         spread_bps = round(((best_ask - best_bid) / mid) * 10000, 2)
 
         obi = self.compute_weighted_obi(bids, asks)

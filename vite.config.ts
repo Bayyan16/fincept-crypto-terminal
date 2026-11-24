@@ -71,7 +71,7 @@ export default defineConfig({
 
             try {
               const controller = new AbortController();
-              const timer = setTimeout(() => controller.abort(), 9000);
+              const timer = setTimeout(() => controller.abort(), 20000);
               const proxyRes = await fetch(`http://127.0.0.1:8080${req.url}`, {
                 method: req.method || 'GET',
                 headers: { 'Content-Type': 'application/json' },
@@ -87,7 +87,18 @@ export default defineConfig({
               const buf = Buffer.from(await proxyRes.arrayBuffer());
               res.end(buf);
               return;
-            } catch {
+            } catch (proxyErr: any) {
+              // Only fall back to in-process gateway when :8080 is unreachable (not when an order/request timed out mid-flight!)
+              const errCode = proxyErr?.cause?.code || proxyErr?.code || '';
+              if (proxyErr?.name === 'AbortError') {
+                res.setHeader('Content-Type', 'application/json');
+                res.statusCode = 504;
+                res.end(JSON.stringify({ ok: false, error: 'Upstream gateway timeout (port 8080)' }));
+                return;
+              }
+              if (errCode && !['ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET'].includes(errCode)) {
+                throw proxyErr;
+              }
               // 8080 not running -> execute in-process gateway cleanly
             }
 
