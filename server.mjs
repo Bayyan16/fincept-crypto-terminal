@@ -3,11 +3,19 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { handleGatewayApiRoute } from './backend/exchangeGateway.mjs';
+import {
+  HttpRequestError,
+  MAX_JSON_BODY_BYTES,
+  readBoundedJsonBody,
+  resolveCorsOrigin,
+  resolveSafeStaticFile,
+} from './backend/httpSecurity.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const DIST_DIR = path.join(__dirname, 'dist');
+const DIST_DIR = path.resolve(__dirname, 'dist');
 const PORT = Number(process.env.PORT || 8080);
+const HOST = process.env.HOST || '127.0.0.1';
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -20,30 +28,22 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon',
 };
 
-function readJsonBody(req) {
-  return new Promise((resolve, reject) => {
-    let data = '';
-    req.on('data', (chunk) => {
-      data += chunk;
-    });
-    req.on('end', () => {
-      try {
-        resolve(data ? JSON.parse(data) : {});
-      } catch (e) {
-        reject(e);
-      }
-    });
-    req.on('error', reject);
-  });
-}
-
 const server = http.createServer(async (req, res) => {
-  // Enable CORS so Frontend can also be hosted on a separate domain/CDN if desired
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  const originHeader = req.headers.origin;
+  const allowedOrigin = resolveCorsOrigin(originHeader, undefined, req.headers.host);
+  res.setHeader('Vary', 'Origin');
+  if (allowedOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
 
   if (req.method === 'OPTIONS') {
+    if (originHeader && !allowedOrigin) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: 'Origin not allowed by CORS policy' }));
+      return;
+    }
     res.writeHead(204);
     res.end();
     return;
@@ -53,12 +53,17 @@ const server = http.createServer(async (req, res) => {
 
   // 1. Online Backend API Routes (/api/*)
   if (urlObj.pathname.startsWith('/api/')) {
+    if (originHeader && !allowedOrigin) {
+      res.writeHead(403, { 'Content-Type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, error: 'Cross-origin request blocked by CORS allowlist' }));
+      return;
+    }
     try {
       const result = await handleGatewayApiRoute(
         urlObj.pathname,
         urlObj.searchParams,
         req.method,
-        () => readJsonBody(req),
+        () => readBoundedJsonBody(req, MAX_JSON_BODY_BYTES),
         'PROD_GATEWAY'
       );
       if (result.contentType) {
@@ -73,8 +78,9 @@ const server = http.createServer(async (req, res) => {
       res.end(JSON.stringify(result.payload));
       return;
     } catch (err) {
+      const status = err instanceof HttpRequestError ? err.status : 500;
       res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.writeHead(500);
+      res.writeHead(status);
       res.end(
         JSON.stringify({
           ok: false,
@@ -85,8 +91,14 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
-  // 2. Serve Compiled Frontend Static Files (dist/) for Online Cloud Deployment
-  let filePath = path.join(DIST_DIR, urlObj.pathname === '/' ? 'index.html' : urlObj.pathname);
+  // 2. Serve Compiled Frontend Static Files (dist/) with canonical path traversal containment
+  const safePath = resolveSafeStaticFile(DIST_DIR, urlObj.pathname);
+  if (!safePath.ok) {
+    res.writeHead(safePath.status, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end(safePath.error);
+    return;
+  }
+  let filePath = safePath.filePath;
   if (!fs.existsSync(filePath) || fs.statSync(filePath).isDirectory()) {
     filePath = path.join(DIST_DIR, 'index.html');
   }
@@ -94,16 +106,23 @@ const server = http.createServer(async (req, res) => {
   if (fs.existsSync(filePath)) {
     const ext = path.extname(filePath).toLowerCase();
     res.setHeader('Content-Type', MIME_TYPES[ext] || 'application/octet-stream');
-    fs.createReadStream(filePath).pipe(res);
+    const stream = fs.createReadStream(filePath);
+    stream.on('error', () => {
+      if (!res.headersSent) {
+        res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      }
+      res.end('Error reading static asset.');
+    });
+    stream.pipe(res);
   } else {
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
+    res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Frontend build not found. Run "npm run build" first.');
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, HOST, () => {
   console.log(
-    `[Fincept Online Cloud Server] Running on http://0.0.0.0:${PORT} (Serving Frontend + On-Chain/CEX API Gateway)`
+    `[Fincept Online Cloud Server] Running on http://${HOST}:${PORT} (Serving Frontend + On-Chain/CEX API Gateway)`
   );
 });
 
