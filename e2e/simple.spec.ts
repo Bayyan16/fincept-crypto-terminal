@@ -168,13 +168,20 @@ test('5-Layer Row-Level Security (RLS) & Wallet Vault guards protect real-money 
       side: 'LONG',
       orderPurpose: 'ENTRY_MAKER',
       sizeUsd: 250,
-      price: 70000, // Wrong-symbol fat-finger price vs ~$2200 refMarkPrice
+      price: 70000, // Wrong-symbol fat-finger price vs live ETH price
       refMarkPrice: 2200,
+      bypassOracleGuard: true, // Negative control (#12): client MUST NOT be able to bypass Layer 4!
     },
   });
   const oracleJson = await oracleDeviationRes.json();
   expect(oracleJson.ok).toBe(false);
   expect(oracleJson.rlsPolicy).toBe('RLS_ORACLE_PRICE_DEVIATION_GUARD');
+
+  // Resolve live ETH & SOL mark prices so Layer 4 legitimately passes before testing signer/replay guards
+  const snapRes = await request.get('/api/live/snapshot');
+  const snapJson = await snapRes.json();
+  const liveEthPx = Number(snapJson?.hlAssets?.ETH?.price || 2200);
+  const liveSolPx = Number(snapJson?.hlAssets?.SOL?.price || 150);
 
   // Signer mismatch & anti-replay guard on Hyperliquid EIP-712
   const validSig = '0x' + 'a1'.repeat(64) + '1b';
@@ -185,13 +192,12 @@ test('5-Layer Row-Level Security (RLS) & Wallet Vault guards protect real-money 
       side: 'LONG',
       orderPurpose: 'ENTRY_MAKER',
       sizeUsd: 250,
-      price: 2200,
-      bypassOracleGuard: true,
+      price: liveEthPx,
       credentials: { walletAddress: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303' },
       hlSignedAction: {
         nonce: Date.now(),
         rawSignature: validSig,
-        signedChainId: 42161,
+        signedChainId: 1337,
         signer: '0x71C0000000000000000000000000000000009A4E',
       },
     },
@@ -208,13 +214,12 @@ test('5-Layer Row-Level Security (RLS) & Wallet Vault guards protect real-money 
       side: 'LONG',
       orderPurpose: 'ENTRY_MAKER',
       sizeUsd: 250,
-      price: 2200,
-      bypassOracleGuard: true,
+      price: liveEthPx,
       credentials: { walletAddress: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303' },
       hlSignedAction: {
         nonce: replayNonce,
         rawSignature: validSig,
-        signedChainId: 42161,
+        signedChainId: 1337,
         signer: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303',
       },
     },
@@ -233,8 +238,7 @@ test('5-Layer Row-Level Security (RLS) & Wallet Vault guards protect real-money 
       side: 'LONG',
       orderPurpose: 'ENTRY_MAKER',
       sizeUsd: 250,
-      price: 150,
-      bypassOracleGuard: true,
+      price: liveSolPx,
       credentials: { walletAddress: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU' },
       solanaSigner: '7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU',
       solanaSignedTx: 'deadbeef'.repeat(8),
@@ -251,13 +255,12 @@ test('5-Layer Row-Level Security (RLS) & Wallet Vault guards protect real-money 
       side: 'LONG',
       orderPurpose: 'ENTRY_MAKER',
       sizeUsd: 250,
-      price: 2200,
-      bypassOracleGuard: true,
+      price: liveEthPx,
       credentials: { walletAddress: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303' },
       hlSignedAction: {
         nonce: replayNonce,
         rawSignature: validSig,
-        signedChainId: 42161,
+        signedChainId: 1337,
         signer: '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303',
       },
     },
