@@ -189,6 +189,7 @@ export function App({
   const candleReqSeqRef = useRef<number>(0);
   const activePriceRef = useRef<number>(INITIAL_MARKETS[0].price);
   const hasLiveSnapshotRef = useRef<boolean>(false);
+  const initialStopSubmittedIdsRef = useRef<Set<string>>(new Set());
   const beStopSubmittedIdsRef = useRef<Set<string>>(new Set());
   const closingPositionIdsRef = useRef<Set<string>>(new Set());
   const entryInFlightSymbolsRef = useRef<Set<string>>(new Set());
@@ -760,11 +761,11 @@ export function App({
           return next;
         });
 
-        // Anchor initial sample positions to real live Mainnet prices once on boot (Uncapped Runner >= +50% ROI)
+        // Anchor initial paper demo positions cleanly to live Mainnet prices on boot (0% honest start, valid protective SL)
         if (!anchoredInitialPositions) {
           anchoredInitialPositions = true;
           setPositions((prevPos) =>
-            prevPos.map((p, idx) => {
+            prevPos.map((p) => {
               const coin = p.symbol.split('-')[0];
               const hlData = snap.hlAssets?.[coin];
               if (!hlData || !hlData.price) return p;
@@ -772,36 +773,20 @@ export function App({
               const decimals = livePx > 100 ? 2 : livePx > 1 ? 3 : 4;
               const liveSide: 'LONG' | 'SHORT' =
                 (hlData.change24h ?? 0) >= 0 ? 'LONG' : 'SHORT';
-              // Anchor swing entry so active position is at +58.4% to +74.0% profit (passed Min +50% floor, riding uncapped toward Agent dynamic exit)
-              const activeRoiDecimal = 0.584 + idx * 0.078;
-              const priceMoveRatio = activeRoiDecimal / Math.max(1, p.leverage);
-              const entryPx = Number(
-                (liveSide === 'LONG'
-                  ? livePx / (1 + priceMoveRatio)
-                  : livePx / (1 - priceMoveRatio)
-                ).toFixed(decimals)
-              );
+              const entryPx = Number(livePx.toFixed(decimals));
+              const slMoveRatio = 0.012 / Math.max(1, p.leverage);
               const stopPx = Number(
                 (liveSide === 'LONG'
-                  ? entryPx * (1 + priceMoveRatio * 0.65)
-                  : entryPx * (1 - priceMoveRatio * 0.65)
+                  ? entryPx * (1 - slMoveRatio)
+                  : entryPx * (1 + slMoveRatio)
                 ).toFixed(decimals)
               );
               const tpPx = Number(
                 (liveSide === 'LONG'
-                  ? entryPx * (1 + 1.35 / Math.max(1, p.leverage))
-                  : Math.max(livePx * 0.3, entryPx * (1 - 1.35 / Math.max(1, p.leverage)))
+                  ? entryPx * (1 + 0.5 / Math.max(1, p.leverage))
+                  : Math.max(livePx * 0.3, entryPx * (1 - 0.5 / Math.max(1, p.leverage)))
                 ).toFixed(decimals)
               );
-              const pnlCalc = computePositionPnl({
-                side: liveSide,
-                entryPrice: entryPx,
-                currentPrice: livePx,
-                sizeUsd: p.sizeUsd,
-                leverage: p.leverage,
-              });
-              const pnlPct = pnlCalc.roePct;
-              const pnlUsd = pnlCalc.pnlUsd;
               return {
                 ...p,
                 side: liveSide,
@@ -809,10 +794,11 @@ export function App({
                 currentPrice: livePx,
                 stopLossPrice: stopPx,
                 takeProfitPrice: tpPx,
-                unrealizedPnlPct: pnlPct,
-                unrealizedPnlUsd: pnlUsd,
-                peakPnlPct: Math.max(pnlPct, Number((pnlPct + 1.2).toFixed(2))),
-                statusReason: `UNCAPPED RUNNER (+${pnlPct}% >= Min +50% TP) | Target Dinamis Agent: +135% / ∞ (@ $${tpPx.toLocaleString()})`,
+                breakevenLocked: false,
+                unrealizedPnlPct: 0,
+                unrealizedPnlUsd: 0,
+                peakPnlPct: 0,
+                statusReason: `[PAPER DEMO] Anchored Live @ $${entryPx.toLocaleString()} | Protective SL: $${stopPx.toLocaleString()} | Target: $${tpPx.toLocaleString()}`,
               };
             })
           );
@@ -951,9 +937,21 @@ export function App({
     };
   }, [activePair.symbol, activePair.hlCoin, activePair.binanceSymbol]);
 
-  const dispatchRealBreakevenStop = async (pos: AgentPosition, bePrice: number) => {
-    if (!pos.isRealMoney || pos.stopOrderId || beStopSubmittedIdsRef.current.has(pos.id)) return;
-    beStopSubmittedIdsRef.current.add(pos.id);
+  const dispatchRealProtectiveStop = async (
+    pos: AgentPosition,
+    targetStopPrice: number,
+    stage: 'INITIAL' | 'BREAKEVEN'
+  ) => {
+    const trackerRef =
+      stage === 'INITIAL' ? initialStopSubmittedIdsRef : beStopSubmittedIdsRef;
+    const alreadyHasOrder =
+      stage === 'INITIAL'
+        ? Boolean(pos.initialStopOrderId || pos.stopOrderId)
+        : Boolean(pos.stopOrderId);
+    if (!pos.isRealMoney || alreadyHasOrder || trackerRef.current.has(pos.id)) return;
+    if (!Number.isFinite(targetStopPrice) || targetStopPrice <= 0) return;
+
+    trackerRef.current.add(pos.id);
     const matchedMkt = markets.find((m) => m.symbol === pos.symbol);
     const rawBase = pos.symbol.split('-')[0];
     const fallbackBinSym = /^k[A-Z]{2,}$/.test(rawBase)
@@ -968,7 +966,7 @@ export function App({
       sizeUsd: pos.sizeUsd,
       quantity: pos.executedQty,
       price: pos.currentPrice,
-      stopPrice: bePrice,
+      stopPrice: targetStopPrice,
       marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
       venueMode: pos.venueMode,
       wallets,
@@ -978,17 +976,23 @@ export function App({
     if (stopRes.ok && stopRes.orderId) {
       setPositions((prev) =>
         prev.map((p) =>
-          p.id === pos.id ? { ...p, stopOrderId: stopRes.orderId, breakevenLocked: true } : p
+          p.id === pos.id
+            ? stage === 'INITIAL'
+              ? { ...p, initialStopOrderId: stopRes.orderId }
+              : { ...p, stopOrderId: stopRes.orderId, breakevenLocked: true }
+            : p
         )
       );
       setCommandFeedback(
-        `✓ Exchange Stop-Loss (BREAKEVEN_STOP #${stopRes.orderId}) aktif di ${pos.exchange} @ $${bePrice}`
+        stage === 'INITIAL'
+          ? `✓ Initial Protective Stop-Loss (#${stopRes.orderId}) aktif di ${pos.exchange} @ $${targetStopPrice}`
+          : `✓ Exchange Stop-Loss upgraded (BREAKEVEN_STOP #${stopRes.orderId}) di ${pos.exchange} @ $${targetStopPrice}`
       );
     } else {
       // Allow retry later if exchange transiently rejected stop placement
-      setTimeout(() => beStopSubmittedIdsRef.current.delete(pos.id), 15_000);
+      setTimeout(() => trackerRef.current.delete(pos.id), 15_000);
       setCommandFeedback(
-        `[BREAKEVEN STOP FAILED] ${pos.symbol} di ${pos.exchange}: ${stopRes.error || 'Rejected'}`
+        `[${stage === 'INITIAL' ? 'INITIAL STOP' : 'BREAKEVEN STOP'} FAILED] ${pos.symbol} di ${pos.exchange}: ${stopRes.error || 'Rejected'}`
       );
     }
   };
@@ -1073,6 +1077,19 @@ export function App({
     for (const pos of positions) {
       if (closingPositionIdsRef.current.has(pos.id)) continue;
 
+      // 1) Immediately submit initial protective exchange stop-loss on entry (independent of breakevenLocked)
+      if (
+        pos.isRealMoney &&
+        !pos.breakevenLocked &&
+        pos.stopLossPrice > 0 &&
+        !pos.initialStopOrderId &&
+        !pos.stopOrderId &&
+        !initialStopSubmittedIdsRef.current.has(pos.id)
+      ) {
+        void dispatchRealProtectiveStop(pos, pos.stopLossPrice, 'INITIAL');
+      }
+
+      // 2) Upgrade exchange stop-loss to Breakeven+Fee once autoBreakevenTriggerPct activates
       if (
         pos.isRealMoney &&
         pos.breakevenLocked &&
@@ -1085,7 +1102,7 @@ export function App({
             : formatSmartPrice(
                 pos.side === 'LONG' ? pos.entryPrice * 1.0004 : pos.entryPrice * 0.9996
               );
-        void dispatchRealBreakevenStop(pos, bePrice);
+        void dispatchRealProtectiveStop(pos, bePrice, 'BREAKEVEN');
       }
 
       if (agentAutonomousEnabled && !dispatchedAutoClose) {
@@ -1204,8 +1221,12 @@ export function App({
       Math.abs(rawBookPx - targetPair.price) / Math.max(0.0000001, targetPair.price) <= 0.05;
     const entry = formatSmartPrice(isBookPxValidForPair ? rawBookPx! : targetPair.price);
 
-    const beLockStop = formatSmartPrice(
-      side === 'LONG' ? entry * 1.0003 : entry * 0.9997
+    const slPriceMoveRatio = Math.max(
+      0.004,
+      Math.abs(maxMicroLossScratchPct || 0.95) / (100 * Math.max(1, targetLeverage))
+    );
+    const initialProtectiveStop = formatSmartPrice(
+      side === 'LONG' ? entry * (1 - slPriceMoveRatio) : entry * (1 + slPriceMoveRatio)
     );
     const minTpPriceMoveRatio = Math.max(0.5, autoTakeProfitTriggerPct) / (100 * Math.max(1, targetLeverage));
     const tp = formatSmartPrice(
@@ -1298,17 +1319,17 @@ export function App({
         executedQty,
         venueMode: resolvedVenueMode,
         leverage: resolvedVenueMode === 'SPOT' ? 1 : targetLeverage,
-        stopLossPrice: beLockStop,
+        stopLossPrice: initialProtectiveStop,
         takeProfitPrice: tp,
-        breakevenLocked: true,
+        breakevenLocked: false,
         executionMode: makerOnlyMode ? 'POST_ONLY_MAKER' : 'TWAP_LOW_IMPACT',
-        unrealizedPnlUsd: 0.15,
-        unrealizedPnlPct: 0.03,
-        peakPnlPct: 0.03,
+        unrealizedPnlUsd: 0,
+        unrealizedPnlPct: 0,
+        peakPnlPct: 0,
         openedAt: timeStr,
         statusReason: `${
           isReal ? `[${executionEnv} #${realOrderId}]` : '[PAPER]'
-        } Maker Post-Only @ $${entry.toLocaleString()} | BREAKEVEN+FEE LOCKED (4-Agent Forum Verified)`,
+        } ${makerOnlyMode ? 'Maker Post-Only' : 'Market'} @ $${executedPrice.toLocaleString()} | Protective SL @ $${initialProtectiveStop.toLocaleString()} (Auto-BE @ +${autoBreakevenTriggerPct}%)`,
       },
       wallets
     );

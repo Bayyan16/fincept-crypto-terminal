@@ -179,6 +179,7 @@ export interface AgentPosition {
   sizeUsd: number;
   executedQty?: number;
   venueMode?: 'FUTURES' | 'SPOT';
+  initialStopOrderId?: string;
   stopOrderId?: string;
   leverage: number;
   stopLossPrice: number;
