@@ -3005,9 +3005,16 @@ export async function executeRealExchangeOrder(payload) {
     orderPurpose,
     price,
     stopPrice,
+    leverage,
+    marketType,
     credentials,
     useTestnet,
   } = payload;
+
+  const targetLeverage =
+    marketType === 'SPOT'
+      ? 1
+      : Math.max(1, Math.min(125, Math.round(Number(leverage || 0) || 0)));
 
   const isBuy =
     (orderPurpose === 'ENTRY_MAKER' && side === 'LONG') ||
@@ -3026,9 +3033,43 @@ export async function executeRealExchangeOrder(payload) {
     const baseUrl = useTestnet
       ? 'https://testnet.binancefuture.com'
       : 'https://fapi.binance.com';
+    const resolvedBinSymbol = binanceSymbol || symbol.replace('-PERP', 'USDT');
+
+    // Sync target leverage on Binance Futures before ENTRY_MAKER (ignore -2015 Spot-only keys which fall through)
+    if (orderPurpose === 'ENTRY_MAKER' && marketType !== 'SPOT' && Number(leverage) >= 1) {
+      const levTs = await getSyncedBinanceTimestamp(baseUrl, true);
+      const levParams = new URLSearchParams({
+        symbol: resolvedBinSymbol,
+        leverage: String(targetLeverage),
+        recvWindow: '10000',
+        timestamp: String(levTs),
+      });
+      const levQuery = levParams.toString();
+      const levSig = crypto
+        .createHmac('sha256', apiSecret.trim())
+        .update(levQuery)
+        .digest('hex');
+      const levRes = await fetchJsonWithTimeout(
+        `${baseUrl}/fapi/v1/leverage?${levQuery}&signature=${levSig}`,
+        {
+          method: 'POST',
+          headers: { 'X-MBX-APIKEY': apiKey.trim() },
+        },
+        4500,
+        true
+      );
+      if ((!levRes.ok || levRes.data?.code) && levRes.data?.code !== -2015) {
+        return {
+          ok: false,
+          error: `Binance Leverage Sync Failed (${targetLeverage}x): ${
+            levRes.data?.msg || levRes.error || 'Unknown error'
+          }`,
+        };
+      }
+    }
 
     const params = new URLSearchParams();
-    params.set('symbol', binanceSymbol || symbol.replace('-PERP', 'USDT'));
+    params.set('symbol', resolvedBinSymbol);
     params.set('side', isBuy ? 'BUY' : 'SELL');
     params.set('quantity', String(quantity));
 
@@ -3136,12 +3177,53 @@ export async function executeRealExchangeOrder(payload) {
       };
     }
     const baseUrl = useTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
-    const timestamp = String(Date.now());
+    const bybitSymbol = binanceSymbol || symbol.replace('-PERP', 'USDT');
     const recvWindow = '5000';
+
+    if (orderPurpose === 'ENTRY_MAKER' && marketType !== 'SPOT' && Number(leverage) >= 1) {
+      const levTs = String(Date.now());
+      const levBodyStr = JSON.stringify({
+        category: 'linear',
+        symbol: bybitSymbol,
+        buyLeverage: String(targetLeverage),
+        sellLeverage: String(targetLeverage),
+      });
+      const levSig = crypto
+        .createHmac('sha256', apiSecret.trim())
+        .update(levTs + apiKey.trim() + recvWindow + levBodyStr)
+        .digest('hex');
+      const levRes = await fetchJsonWithTimeout(
+        `${baseUrl}/v5/position/set-leverage`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-BAPI-API-KEY': apiKey.trim(),
+            'X-BAPI-TIMESTAMP': levTs,
+            'X-BAPI-RECV-WINDOW': recvWindow,
+            'X-BAPI-SIGN': levSig,
+          },
+          body: levBodyStr,
+        },
+        4500,
+        true
+      );
+      const retCode = levRes.data?.retCode;
+      if (!levRes.ok || (retCode !== 0 && retCode !== 110043)) {
+        return {
+          ok: false,
+          error: `Bybit Leverage Sync Failed (${targetLeverage}x): ${
+            levRes.data?.retMsg || levRes.error || 'Unknown error'
+          }`,
+        };
+      }
+    }
+
+    const timestamp = String(Date.now());
 
     const orderBody = {
       category: 'linear',
-      symbol: binanceSymbol || symbol.replace('-PERP', 'USDT'),
+      symbol: bybitSymbol,
       side: isBuy ? 'Buy' : 'Sell',
       orderType: orderPurpose === 'ENTRY_MAKER' ? 'Limit' : 'Market',
       qty: String(quantity),
@@ -3194,9 +3276,46 @@ export async function executeRealExchangeOrder(payload) {
         error: 'OKX API Key, Secret & Passphrase belum dimasukkan di menu Wallets & API.',
       };
     }
-    const timestamp = new Date().toISOString();
     const requestPath = '/api/v5/trade/order';
     const instId = `${symbol.split('-')[0]}-USDT-SWAP`;
+
+    if (orderPurpose === 'ENTRY_MAKER' && marketType !== 'SPOT' && Number(leverage) >= 1) {
+      const levTs = new Date().toISOString();
+      const levPath = '/api/v5/account/set-leverage';
+      const levBodyStr = JSON.stringify({
+        instId,
+        lever: String(targetLeverage),
+        mgnMode: 'cross',
+      });
+      const levSig = crypto
+        .createHmac('sha256', apiSecret.trim())
+        .update(`${levTs}POST${levPath}${levBodyStr}`)
+        .digest('base64');
+      const levHeaders = {
+        'Content-Type': 'application/json',
+        'OK-ACCESS-KEY': apiKey.trim(),
+        'OK-ACCESS-SIGN': levSig,
+        'OK-ACCESS-TIMESTAMP': levTs,
+        'OK-ACCESS-PASSPHRASE': passphrase.trim(),
+      };
+      if (useTestnet) levHeaders['x-simulated-trading'] = '1';
+      const levRes = await fetchJsonWithTimeout(
+        `https://www.okx.com${levPath}`,
+        { method: 'POST', headers: levHeaders, body: levBodyStr },
+        4500,
+        true
+      );
+      if (!levRes.ok || levRes.data?.code !== '0') {
+        return {
+          ok: false,
+          error: `OKX Leverage Sync Failed (${targetLeverage}x): ${
+            levRes.data?.msg || levRes.error || 'Unknown error'
+          }`,
+        };
+      }
+    }
+
+    const timestamp = new Date().toISOString();
 
     const orderBody = {
       instId,

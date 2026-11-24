@@ -1519,7 +1519,8 @@ export function runWalkForwardAccuracyBacktest(
         outcome = 'LOSS_STOP';
       }
 
-      const realizedPnlUsd = Number(((orderSizeUsd * realizedPnlPct) / 100).toFixed(2));
+      const initialMarginUsd = orderSizeUsd / Math.max(1, leverage);
+      const realizedPnlUsd = Number(((initialMarginUsd * realizedPnlPct) / 100).toFixed(2));
       const isAccurate = realizedPnlPct >= 0;
 
       outcomes.push({

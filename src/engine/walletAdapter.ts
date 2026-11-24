@@ -1,6 +1,7 @@
 import {
   ChainAssetBreakdown,
   ExchangeId,
+  MarketType,
   WalletConnectionState,
   WalletCredentials,
 } from '../types/terminal';
@@ -728,11 +729,22 @@ export async function executeRealOrderOnVenue(params: {
   sizeUsd: number;
   price: number;
   stopPrice?: number;
+  leverage?: number;
+  marketType?: MarketType;
   wallets: WalletConnectionState[];
   useTestnet: boolean;
   rowOwnerScope?: string;
   refMarkPrice?: number;
-}): Promise<{ ok: boolean; orderId?: string; status?: string; rlsOwnerId?: string; error?: string }> {
+}): Promise<{
+  ok: boolean;
+  orderId?: string;
+  status?: string;
+  venueMode?: 'FUTURES' | 'SPOT';
+  executedQty?: number;
+  executedPrice?: number;
+  rlsOwnerId?: string;
+  error?: string;
+}> {
   const hlAgentWallet = params.wallets.find((w) => w.id === 'hyperliquid_agent');
   const wallet = resolveOwningWalletForExchange(params.exchange, params.wallets);
 
@@ -834,6 +846,8 @@ export async function executeRealOrderOnVenue(params: {
         sizeUsd: params.sizeUsd,
         price: params.price,
         stopPrice: params.stopPrice,
+        leverage: params.leverage,
+        marketType: params.marketType,
         refMarkPrice: params.refMarkPrice,
         credentials: unsealedCredentials,
         useTestnet: params.useTestnet,
