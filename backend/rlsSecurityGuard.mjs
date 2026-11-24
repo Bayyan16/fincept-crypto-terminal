@@ -359,7 +359,7 @@ export function computeSafeOrderQuantity(sizeUsd, price) {
     p >= 10000 ? 4 : p >= 100 ? 3 : p >= 1 ? 2 : p >= 0.01 ? 1 : 0;
   const factor = 10 ** decimals;
   // Floor-biased rounding prevents rounding UP to a notional larger than the user's requested sizeUsd
-  const quantity = Number((Math.round(qtyRaw * factor) / factor).toFixed(decimals));
+  const quantity = Number((Math.floor((qtyRaw + 1e-12) * factor) / factor).toFixed(decimals));
   const effectiveNotionalUsd = Number((quantity * p).toFixed(2));
 
   if (quantity <= 0) {

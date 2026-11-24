@@ -1314,14 +1314,20 @@ export function App({
 
     if (pos.isRealMoney || executionEnv !== 'PAPER_SANDBOX') {
       setIsExecutingOrder(true);
+      const matchedMkt = markets.find((m) => m.symbol === pos.symbol);
+      const rawBase = pos.symbol.split('-')[0];
+      const fallbackBinSym = /^k[A-Z]{2,}$/.test(rawBase)
+        ? `1000${rawBase.slice(1)}USDT`
+        : `${rawBase.toUpperCase()}USDT`;
       await executeRealOrderOnVenue({
         exchange: pos.exchange,
         symbol: pos.symbol,
-        binanceSymbol: `${pos.symbol.split('-')[0]}USDT`,
+        binanceSymbol: matchedMkt?.binanceSymbol || fallbackBinSym,
         side: pos.side,
         orderPurpose: 'SCRATCH_EXIT',
         sizeUsd: pos.sizeUsd,
         price: pos.currentPrice,
+        marketType: pos.marketType,
         wallets,
         useTestnet: executionEnv === 'EXCHANGE_TESTNET',
         rowOwnerScope: pos.rlsOwnerScope,
