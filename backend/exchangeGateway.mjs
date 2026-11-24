@@ -3605,6 +3605,39 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
     return { status: 200, payload: result };
   }
 
+  if (pathname === '/api/live/hl-meta' && method === 'GET') {
+    const useTestnet = searchParams.get('testnet') === '1' || searchParams.get('testnet') === 'true';
+    const hlUrl = useTestnet
+      ? 'https://api.hyperliquid-testnet.xyz/info'
+      : 'https://api.hyperliquid.xyz/info';
+    const metaRes = await fetchJsonWithTimeout(
+      hlUrl,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'meta' }),
+      },
+      4500,
+      true
+    );
+    const universe = Array.isArray(metaRes?.data?.universe) ? metaRes.data.universe : [];
+    const assets = universe.map((u, idx) => ({
+      index: idx,
+      name: String(u?.name || ''),
+      szDecimals: Number.isFinite(Number(u?.szDecimals)) ? Number(u.szDecimals) : 4,
+      maxLeverage: Number.isFinite(Number(u?.maxLeverage)) ? Number(u.maxLeverage) : 20,
+    }));
+    return {
+      status: 200,
+      payload: {
+        ok: assets.length > 0,
+        testnet: useTestnet,
+        assets,
+        error: assets.length > 0 ? undefined : metaRes?.error || 'Failed to load Hyperliquid meta',
+      },
+    };
+  }
+
   if (pathname === '/api/security/rls-status' && method === 'GET') {
     return { status: 200, payload: getRlsSecuritySummary() };
   }

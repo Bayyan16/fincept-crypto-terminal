@@ -15,6 +15,7 @@ export const ALLOWED_EVM_CHAIN_IDS = new Set([
   1, // Ethereum Mainnet
   56, // BNB Smart Chain
   137, // Polygon POS
+  1337, // Hyperliquid L1 Phantom Agent EIP-712 Domain
   8453, // Base Mainnet
   42161, // Arbitrum One
   998, // Hyperliquid L1 / HyperEVM
