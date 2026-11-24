@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useId, useMemo, useRef, useState } from 'react';
 import {
   ChordFlowLink,
   HlpVaultSummary,
@@ -126,6 +126,10 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
   onSelectNodeFilter,
   onSelectSymbol,
 }) => {
+  const whaleSvgUid = useId().replace(/:/g, '');
+  const radarGlowId = `radarGlow-${whaleSvgUid}`;
+  const solarCoreId = `solarCore-${whaleSvgUid}`;
+  const solarPlanetId = `solarPlanet-${whaleSvgUid}`;
   const [selectedNode, setSelectedNode] = useState<string | null>(null);
   const [hoveredNode, setHoveredNode] = useState<string | null>(null);
   const [flowFilter, setFlowFilter] = useState<'ALL' | 'BULLISH' | 'BEARISH'>('ALL');
@@ -655,7 +659,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
             <span className="text-[11px] font-extrabold tracking-wider text-[#F8FAFC] uppercase">
               WHALE PIPELINE VIZ — {activeSymbol}
             </span>
-            <span className="text-[9px] px-1.5 py-0.2 bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/40 font-bold">
+            <span className="text-[9px] px-1.5 py-[1px] bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/40 font-bold">
               DRAG NODE • ORBIT • ZOOM
             </span>
           </div>
@@ -702,7 +706,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
             <button
               onClick={() => switchLayoutMode('RADIAL')}
               data-testid="viz-layout-radial"
-              className={`fc-btn px-1.5 py-0.2 border font-bold ${layoutMode === 'RADIAL'
+              className={`fc-btn px-1.5 py-[1px] border font-bold ${layoutMode === 'RADIAL'
                   ? 'bg-[#162235] text-[#00E5FF] border-[#00E5FF]'
                   : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736] hover:text-white hover:border-[#00E5FF]/50'
                 }`}
@@ -712,7 +716,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
             <button
               onClick={() => switchLayoutMode('PIPELINE')}
               data-testid="viz-layout-pipeline"
-              className={`fc-btn px-1.5 py-0.2 border font-bold ${layoutMode === 'PIPELINE'
+              className={`fc-btn px-1.5 py-[1px] border font-bold ${layoutMode === 'PIPELINE'
                   ? 'bg-[#162235] text-[#00E5FF] border-[#00E5FF]'
                   : 'bg-[#0A0E16] text-[#94A3B8] border-[#1E2736] hover:text-white hover:border-[#00E5FF]/50'
                 }`}
@@ -739,7 +743,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
           <div className="flex items-center gap-1">
             <button
               onClick={() => setZoom((z) => Number(Math.max(0.45, z - 0.15).toFixed(2)))}
-              className="fc-btn px-1.5 py-0.2 bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
+              className="fc-btn px-1.5 py-[1px] bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
               title="Zoom Out"
             >
               🔍-
@@ -758,14 +762,14 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
             </span>
             <button
               onClick={() => setZoom((z) => Number(Math.min(3.0, z + 0.15).toFixed(2)))}
-              className="fc-btn px-1.5 py-0.2 bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
+              className="fc-btn px-1.5 py-[1px] bg-[#0E1420] hover:bg-[#1E293B] text-white border border-[#263349] font-extrabold"
               title="Zoom In"
             >
               🔍+
             </button>
             <button
               onClick={handleResetView}
-              className="fc-btn px-1.5 py-0.2 bg-[#172133] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/50 font-bold"
+              className="fc-btn px-1.5 py-[1px] bg-[#172133] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/50 font-bold"
               title="Reset Posisi Node & Zoom"
             >
               RESET
@@ -801,17 +805,17 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
         >
           <svg ref={svgRef} viewBox="0 0 560 410" style={{ touchAction: 'none' }} className="w-full h-full touch-drag-surface">
             <defs>
-              <radialGradient id="radarGlow" cx="50%" cy="50%" r="50%">
+              <radialGradient id={radarGlowId} cx="50%" cy="50%" r="50%">
                 <stop offset="0%" stopColor="#F4AC65" stopOpacity="0.28" />
                 <stop offset="55%" stopColor="#1C7187" stopOpacity="0.14" />
                 <stop offset="100%" stopColor="#040609" stopOpacity="0" />
               </radialGradient>
-              <radialGradient id="solarCore" fx="35%" fy="28%">
+              <radialGradient id={solarCoreId} fx="35%" fy="28%">
                 <stop offset="0%" stopColor="#FFF1AD" />
                 <stop offset="45%" stopColor="#F0A34A" />
                 <stop offset="100%" stopColor="#773016" />
               </radialGradient>
-              <radialGradient id="solarPlanet" fx="32%" fy="28%">
+              <radialGradient id={solarPlanetId} fx="32%" fy="28%">
                 <stop offset="0%" stopColor="#70B8CE" />
                 <stop offset="48%" stopColor="#295A70" />
                 <stop offset="100%" stopColor="#0C181F" />
@@ -833,7 +837,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                       transform={`rotate(${angle} ${cx} ${cy})`} fill="none" stroke="#41849A" strokeOpacity=".38" />
                   ))}
                   <g transform={`translate(${cx} ${cy}) rotate(-26)`}>
-                    <circle r={globeRadius} fill="url(#radarGlow)" stroke="#83BFCD" strokeOpacity=".65" />
+                    <circle r={globeRadius} fill={`url(#${radarGlowId})`} stroke="#83BFCD" strokeOpacity=".65" />
                     {orbitalWireframe.map((path, index) => (
                       <path key={index} d={path} fill="none" stroke={index % 3 === 0 ? '#DCAD75' : '#73B4C7'}
                         strokeWidth=".65" strokeOpacity={index % 3 === 0 ? .58 : .39} />
@@ -1034,7 +1038,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                           cx={coord.x}
                           cy={coord.y}
                           r={boxW * 0.68}
-                          fill="url(#radarGlow)"
+                          fill={`url(#${radarGlowId})`}
                           stroke="#F4AC65"
                           strokeOpacity="0.45"
                           strokeDasharray="2 5"
@@ -1044,7 +1048,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                       {layoutMode === 'RADIAL' ? (
                         <g>
                           <circle cx={coord.x} cy={coord.y} r={isHub ? 29 : 13}
-                            fill={isHub ? 'url(#solarCore)' : 'url(#solarPlanet)'}
+                            fill={isHub ? `url(#${solarCoreId})` : `url(#${solarPlanetId})`}
                             stroke={borderColor} strokeWidth={isSelected ? 2 : 1}
                             className={isHub ? 'whale-orbital-hub' : 'whale-orbital-node'} />
                           {!isHub && <ellipse cx={coord.x} cy={coord.y} rx="17" ry="4"
@@ -1259,7 +1263,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                     <button
                       key={cf.id}
                       onClick={() => setChainFilter(cf.id)}
-                      className={`fc-btn px-1.5 py-0.2 font-bold border ${chainFilter === cf.id
+                      className={`fc-btn px-1.5 py-[1px] font-bold border ${chainFilter === cf.id
                           ? 'bg-[#17253A] text-[#00E5FF] border-[#00E5FF]'
                           : 'bg-[#06090F] text-[#94A3B8] border-[#1A2436] hover:text-white'
                         }`}
@@ -1277,7 +1281,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                     SELL: ${(streamMetrics.bearishUsd / 1e6).toFixed(2)}M ({streamMetrics.bearishCount})
                   </span>
                   <span
-                    className={`px-1.5 py-0.2 font-extrabold border ${streamMetrics.bullishSharePct >= 52
+                    className={`px-1.5 py-[1px] font-extrabold border ${streamMetrics.bullishSharePct >= 52
                         ? 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]/50'
                         : 'bg-[#FF1744]/15 text-[#FF1744] border-[#FF1744]/50'
                       }`}
@@ -1301,13 +1305,13 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                     </span>
                     <div className="flex items-center gap-1.5">
                       {copiedText && (
-                        <span className="px-1.5 py-0.2 bg-[#00E676] text-black font-extrabold text-[9px]">
+                        <span className="px-1.5 py-[1px] bg-[#00E676] text-black font-extrabold text-[9px]">
                           ✓ {copiedText} DISALIN!
                         </span>
                       )}
                       <button
                         onClick={() => setInspectedTx(null)}
-                        className="fc-btn px-1.5 py-0.2 bg-[#1E293B] text-white font-bold hover:bg-[#FF1744]"
+                        className="fc-btn px-1.5 py-[1px] bg-[#1E293B] text-white font-bold hover:bg-[#FF1744]"
                       >
                         TUTUP ✕
                       </button>
@@ -1357,7 +1361,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                           onClick={() =>
                             handleCopyText('TX HASH', inspectedTx.fullTxHash || inspectedTx.txHash)
                           }
-                          className="fc-btn px-1.5 py-0.2 bg-[#162032] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/40 font-bold"
+                          className="fc-btn px-1.5 py-[1px] bg-[#162032] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/40 font-bold"
                         >
                           COPY HASH
                         </button>
@@ -1366,7 +1370,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                             href={inspectedTx.explorerTxUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="fc-btn px-1.5 py-0.2 bg-[#00E676]/20 hover:bg-[#00E676] hover:text-black text-[#00E676] border border-[#00E676] font-bold"
+                            className="fc-btn px-1.5 py-[1px] bg-[#00E676]/20 hover:bg-[#00E676] hover:text-black text-[#00E676] border border-[#00E676] font-bold"
                           >
                             EXPLORER ↗
                           </a>
@@ -1390,7 +1394,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                       <div className="flex items-center gap-1 shrink-0">
                         <button
                           onClick={() => handleCopyText('WALLET', inspectedTx.walletAddress)}
-                          className="fc-btn px-1.5 py-0.2 bg-[#162032] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/40 font-bold"
+                          className="fc-btn px-1.5 py-[1px] bg-[#162032] hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C]/40 font-bold"
                         >
                           COPY WALLET
                         </button>
@@ -1399,7 +1403,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                             href={inspectedTx.explorerWalletUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="fc-btn px-1.5 py-0.2 bg-[#FF9F1C]/20 hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C] font-bold"
+                            className="fc-btn px-1.5 py-[1px] bg-[#FF9F1C]/20 hover:bg-[#FF9F1C] hover:text-black text-[#FF9F1C] border border-[#FF9F1C] font-bold"
                           >
                             TRACK WALLET ↗
                           </a>
@@ -1525,7 +1529,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                           {/* Col 6: AI Confidence & Impact */}
                           <div className="col-span-1 text-right">
                             <span
-                              className={`px-1 py-0.2 text-[8.5px] font-extrabold ${w.direction === 'BULLISH'
+                              className={`px-1 py-[1px] text-[8.5px] font-extrabold ${w.direction === 'BULLISH'
                                   ? 'bg-[#00E676]/20 text-[#00E676]'
                                   : 'bg-[#FF1744]/20 text-[#FF1744]'
                                 }`}
@@ -1602,7 +1606,7 @@ export const WhaleChordViz: React.FC<WhaleChordVizProps> = ({
                           </div>
                           <div className="col-span-2">
                             <span
-                              className={`px-1.5 py-0.2 text-[8.5px] font-extrabold ${wp.side === 'LONG'
+                              className={`px-1.5 py-[1px] text-[8.5px] font-extrabold ${wp.side === 'LONG'
                                   ? 'bg-[#00E676] text-black'
                                   : 'bg-[#FF1744] text-white'
                                 }`}

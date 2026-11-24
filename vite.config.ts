@@ -135,6 +135,30 @@ export default defineConfig({
       },
     },
   ],
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes('node_modules')) {
+            if (id.includes('lucide-react')) return 'vendor-icons';
+            return 'vendor-react';
+          }
+          if (id.includes('CandlestickOrderflowChart')) return 'chunk-chart';
+          if (
+            id.includes('WhaleChordViz') ||
+            id.includes('AgentWarRoom3DViz') ||
+            id.includes('VaultSettlementCourier3DViz')
+          ) {
+            return 'chunk-viz-3d';
+          }
+          if (id.includes('MultiAgentForumPanel') || id.includes('multiAgentForum')) {
+            return 'chunk-forum';
+          }
+          return undefined;
+        },
+      },
+    },
+  },
   server: {
     port: 5173,
     host: process.env.FINCEPT_DEV_HOST || '127.0.0.1',

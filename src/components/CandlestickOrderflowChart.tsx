@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { AgentPosition, CandlePoint, MarketPair, OrderbookState } from '../types/terminal';
 import {
@@ -327,6 +327,10 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
   priceGuardStatus = 'VERIFIED_SYNCED',
   priceDeviationPct = 0,
 }) => {
+  const chartSvgUid = useId().replace(/:/g, '');
+  const priceClipId = `fincept-tv-price-clip-${chartSvgUid}`;
+  const volClipId = `fincept-tv-vol-clip-${chartSvgUid}`;
+  const areaGradId = `fincept-tv-area-grad-${chartSvgUid}`;
   // Overlay visibility toggles
   const [showWhaleZones, setShowWhaleZones] = useState(true);
   const [showBotLevels, setShowBotLevels] = useState(true);
@@ -1762,12 +1766,12 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
         <div className="flex items-center gap-1.5">
           <span
             data-testid="chart-price-guard-badge"
-            className="px-1.5 py-0.2 bg-[#0D1E18] border border-[#34D399]/40 text-[#34D399] font-semibold"
+            className="px-1.5 py-[1px] bg-[#0D1E18] border border-[#34D399]/40 text-[#34D399] font-semibold"
             title={`On-Chain Price Integrity Guard: ${priceGuardStatus} (Δ${priceDeviationPct.toFixed(2)}%)`}
           >
             ● ON-CHAIN SYNCED
           </span>
-          <span className="px-1.5 py-0.2 bg-[#131D2E] border border-[#56B6F7]/40 text-[#56B6F7] font-semibold">
+          <span className="px-1.5 py-[1px] bg-[#131D2E] border border-[#56B6F7]/40 text-[#56B6F7] font-semibold">
             TA {taSnapshot.taScore}/100
           </span>
         </div>
@@ -2325,10 +2329,10 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             </div>
 
             <div className="hidden sm:flex flex-wrap items-center gap-1.5 text-[9px] font-mono">
-              <span className="px-1.5 py-0.2 bg-[#EF5350]/15 border border-[#EF5350]/45 text-[#EF5350] font-semibold">
+              <span className="px-1.5 py-[1px] bg-[#EF5350]/15 border border-[#EF5350]/45 text-[#EF5350] font-semibold">
                 SELL {formatChartPrice(bestBidPx)}
               </span>
-              <span className="px-1.5 py-0.2 bg-[#2962FF]/15 border border-[#56B6F7]/45 text-[#56B6F7] font-semibold">
+              <span className="px-1.5 py-[1px] bg-[#2962FF]/15 border border-[#56B6F7]/45 text-[#56B6F7] font-semibold">
                 BUY {formatChartPrice(bestAskPx)}
               </span>
               {showEma && latestEma20 && (
@@ -2402,13 +2406,13 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             onDoubleClick={handleResetView}
           >
             <defs>
-              <clipPath id="fincept-tv-price-clip">
+              <clipPath id={priceClipId}>
                 <rect x={padLeft} y={padTop} width={plotW} height={pricePaneH} />
               </clipPath>
-              <clipPath id="fincept-tv-vol-clip">
+              <clipPath id={volClipId}>
                 <rect x={padLeft} y={volTopY} width={plotW} height={volPaneH} />
               </clipPath>
-              <linearGradient id="fincept-tv-area-grad" x1="0" y1="0" x2="0" y2="1">
+              <linearGradient id={areaGradId} x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stopColor="#26A69A" stopOpacity="0.32" />
                 <stop offset="100%" stopColor="#26A69A" stopOpacity="0.01" />
               </linearGradient>
@@ -2508,7 +2512,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             ))}
 
             {/* DEDICATED LOWER VOLUME HISTOGRAM PANE */}
-            <g clipPath="url(#fincept-tv-vol-clip)">
+            <g clipPath={`url(#${volClipId})`}>
               {visibleCandles.map((c, i) => {
                 const xCenter = localIndexToX(i);
                 const isUp = c.close >= c.open;
@@ -2528,7 +2532,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
             </g>
 
             {/* MAIN PRICE PLOT AREA */}
-            <g clipPath="url(#fincept-tv-price-clip)">
+            <g clipPath={`url(#${priceClipId})`}>
               {/* Orderbook Whale Walls */}
               {(() => {
                 const wallsTooClose = Boolean(
@@ -2673,7 +2677,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
               {chartStyle === 'AREA' ? (
                 visibleCandles.length > 1 && (
                   <g>
-                    <polygon points={areaFillPoints} fill="url(#fincept-tv-area-grad)" />
+                    <polygon points={areaFillPoints} fill={`url(#${areaGradId})`} />
                     <polyline
                       fill="none"
                       stroke="#26A69A"
