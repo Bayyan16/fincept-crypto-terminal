@@ -175,6 +175,8 @@ export function App({
   onEditionChange?: (simple: boolean) => void;
 } = {}) {
   const [markets, setMarkets] = useState<MarketPair[]>(INITIAL_MARKETS);
+  const marketsRef = useRef<MarketPair[]>(INITIAL_MARKETS);
+  marketsRef.current = markets;
   const [selectedSymbol, setSelectedSymbol] = useState<string>('BTC-PERP');
   const [chartTimeframe, setChartTimeframe] = useState<ChartInterval>('15m');
   const [isLoadingCandles, setIsLoadingCandles] = useState<boolean>(false);
@@ -189,6 +191,9 @@ export function App({
   const hasLiveSnapshotRef = useRef<boolean>(false);
   const beStopSubmittedIdsRef = useRef<Set<string>>(new Set());
   const closingPositionIdsRef = useRef<Set<string>>(new Set());
+  const entryInFlightSymbolsRef = useRef<Set<string>>(new Set());
+  const autonomousEntryInFlightRef = useRef<boolean>(false);
+  const [hunterRetryTick, setHunterRetryTick] = useState<number>(0);
   const positionsRef = useRef<AgentPosition[]>(INITIAL_AGENT_POSITIONS);
 
   const [activeTopTab, setActiveTopTab] = useState<
@@ -200,10 +205,14 @@ export function App({
   const [isSyncingProfile, setIsSyncingProfile] = useState<boolean>(false);
 
   const [candlesMap, setCandlesMap] = useState<Record<string, CandlePoint[]>>({});
+  const candlesMapRef = useRef<Record<string, CandlePoint[]>>({});
+  candlesMapRef.current = candlesMap;
   const [orderbook, setOrderbook] = useState<OrderbookState>(() =>
     buildAggregatedOrderbook(INITIAL_MARKETS[0])
   );
   const [whaleTxs, setWhaleTxs] = useState<WhaleTransaction[]>(INITIAL_WHALE_TRANSACTIONS);
+  const whaleTxsRef = useRef<WhaleTransaction[]>(INITIAL_WHALE_TRANSACTIONS);
+  whaleTxsRef.current = whaleTxs;
   const [whalePositions, setWhalePositions] = useState<WhalePositionItem[]>([]);
   const [hlpVaultSummary, setHlpVaultSummary] = useState<HlpVaultSummary | null>(null);
   const [liveBlocks, setLiveBlocks] = useState<{
@@ -247,6 +256,8 @@ export function App({
     INITIAL_BRAIN_DECISIONS
   );
   const [verifiedNews, setVerifiedNews] = useState<VerifiedNewsItem[]>(INITIAL_VERIFIED_NEWS);
+  const verifiedNewsRef = useRef<VerifiedNewsItem[]>(INITIAL_VERIFIED_NEWS);
+  verifiedNewsRef.current = verifiedNews;
   const [watchlistSectorFilter, setWatchlistSectorFilter] = useState<
     'CORE_14' | 'ALL' | MarketSector | 'TOP_GAINERS'
   >('CORE_14');
@@ -707,22 +718,20 @@ export function App({
           dexscreener: snap.realDexPools?.length ? 'LIVE' : 'SIM_STREAM',
         });
 
-        setMarkets((prev) => {
-          const nextMarkets = mergeDynamicAllCryptoMarkets(
-            prev,
-            snap.hlAssets!,
-            snap.realDexPools,
-            snap.realOnChainTrades
-          );
-          setVerifiedNews(
-            buildVerifiedMacroNewsFeed(
-              nextMarkets,
-              snap.realOnChainTrades || whaleTxs,
-              snap.verifiedMacroNews
-            )
-          );
-          return nextMarkets;
-        });
+        const nextMarkets = mergeDynamicAllCryptoMarkets(
+          marketsRef.current,
+          snap.hlAssets!,
+          snap.realDexPools,
+          snap.realOnChainTrades
+        );
+        setMarkets(nextMarkets);
+        setVerifiedNews(
+          buildVerifiedMacroNewsFeed(
+            nextMarkets,
+            snap.realOnChainTrades || whaleTxsRef.current,
+            snap.verifiedMacroNews
+          )
+        );
 
         // Update the latest candle's close/high/low smoothly with live markPx ONLY if already anchored
         setCandlesMap((prev) => {
@@ -1134,7 +1143,7 @@ export function App({
     targetPairOverride?: MarketPair,
     leverageOverride?: number,
     isExplicitUserEntry = true
-  ) => {
+  ): Promise<boolean> => {
     const targetPair = targetPairOverride || activePair;
     const targetLeverage = leverageOverride || leverageInput;
 
@@ -1142,36 +1151,44 @@ export function App({
       setCommandFeedback(
         '[CIRCUIT BREAKER ACTIVE] Daily drawdown limit reached. Reset Risk Guard before opening new positions.'
       );
-      return;
+      return false;
     }
 
     if (!targetPair || !Number.isFinite(targetPair.price) || targetPair.price <= 0) {
       setCommandFeedback(
         `[WAITING PRICE] Harga live untuk ${targetPair?.symbol || 'market'} belum tersedia.`
       );
-      return;
+      return false;
     }
 
-    const alreadyOpenSameSymbol = positions.some((p) => p.symbol === targetPair.symbol);
+    if (entryInFlightSymbolsRef.current.has(targetPair.symbol)) {
+      setCommandFeedback(
+        `[IN-FLIGHT LOCK] Order ${targetPair.symbol} sedang diproses di ${targetPair.primaryExchange}. Menunggu konfirmasi untuk mencegah duplikasi.`
+      );
+      return false;
+    }
+
+    const livePositions = positionsRef.current;
+    const alreadyOpenSameSymbol = livePositions.some((p) => p.symbol === targetPair.symbol);
     const maxManualSlots = Math.max(maxConcurrentPositions, 8);
-    if (!isExplicitUserEntry && !alreadyOpenSameSymbol && positions.length >= maxConcurrentPositions) {
+    if (!isExplicitUserEntry && !alreadyOpenSameSymbol && livePositions.length >= maxConcurrentPositions) {
       setCommandFeedback(
         `[MAX ${maxConcurrentPositions} LOW-RISK SLOTS FULL] Tutup / Take Profit salah satu posisi terlebih dahulu untuk menjaga batas risiko <= ${maxConcurrentPositions} posisi.`
       );
-      return;
+      return false;
     }
-    if (isExplicitUserEntry && !alreadyOpenSameSymbol && positions.length >= maxManualSlots) {
+    if (isExplicitUserEntry && !alreadyOpenSameSymbol && livePositions.length >= maxManualSlots) {
       setCommandFeedback(
         `[MAX ${maxManualSlots} POSISI AKTIF TERCAPAI] Tutup salah satu posisi terlebih dahulu sebelum menambah posisi baru.`
       );
-      return;
+      return false;
     }
 
     if (!isExplicitUserEntry && targetPair.liquidityScore < minLiquidityScoreGate) {
       setCommandFeedback(
         `[BLOCKED] ${targetPair.symbol} Liquidity Score (${targetPair.liquidityScore}) < Gate (${minLiquidityScoreGate})`
       );
-      return;
+      return false;
     }
 
     // Prevent stale cross-coin orderbook quotes when switching symbols rapidly (must be within +/- 5% of targetPair.price)
@@ -1210,26 +1227,32 @@ export function App({
     const isReal = executionEnv !== 'PAPER_SANDBOX';
 
     if (isReal) {
+      entryInFlightSymbolsRef.current.add(targetPair.symbol);
       setIsExecutingOrder(true);
       setCommandFeedback(
         `Signing & transmitting ${executionEnv} ${side} order ($${orderSizeUsdInput}) to ${targetPair.primaryExchange}...`
       );
-      const execRes = await executeRealOrderOnVenue({
-        exchange: targetPair.primaryExchange,
-        symbol: targetPair.symbol,
-        binanceSymbol: targetPair.binanceSymbol,
-        side,
-        orderPurpose: 'ENTRY_MAKER',
-        sizeUsd: orderSizeUsdInput,
-        price: entry,
-        leverage: targetPair.marketType === 'SPOT' ? 1 : targetLeverage,
-        makerOnly: makerOnlyMode,
-        marketType: targetPair.marketType,
-        refMarkPrice: targetPair.price,
-        wallets,
-        useTestnet: executionEnv === 'EXCHANGE_TESTNET',
-      });
-      setIsExecutingOrder(false);
+      let execRes: Awaited<ReturnType<typeof executeRealOrderOnVenue>>;
+      try {
+        execRes = await executeRealOrderOnVenue({
+          exchange: targetPair.primaryExchange,
+          symbol: targetPair.symbol,
+          binanceSymbol: targetPair.binanceSymbol,
+          side,
+          orderPurpose: 'ENTRY_MAKER',
+          sizeUsd: orderSizeUsdInput,
+          price: entry,
+          leverage: targetPair.marketType === 'SPOT' ? 1 : targetLeverage,
+          makerOnly: makerOnlyMode,
+          marketType: targetPair.marketType,
+          refMarkPrice: targetPair.price,
+          wallets,
+          useTestnet: executionEnv === 'EXCHANGE_TESTNET',
+        });
+      } finally {
+        entryInFlightSymbolsRef.current.delete(targetPair.symbol);
+        setIsExecutingOrder(false);
+      }
 
       if (!execRes.ok) {
         setCommandFeedback(`[REAL ORDER REJECTED] ${execRes.error}`);
@@ -1246,7 +1269,7 @@ export function App({
           },
           ...prev,
         ]);
-        return;
+        return false;
       }
       realOrderId = execRes.orderId || `LIVE-${Date.now()}`;
       if (execRes.executedQty && execRes.executedQty > 0) {
@@ -1318,30 +1341,50 @@ export function App({
         targetPair.symbol
       } (#${realOrderId}) @ $${entry.toLocaleString()}`
     );
+    return true;
   };
 
   /**
-   * SKILL 5 EXECUTION: Opens a Low-Risk Autonomous Replacement Position when positions.length < maxConcurrentPositions (3)
+   * SKILL 5 EXECUTION: Opens a Low-Risk Autonomous Replacement Position when positions.length < maxConcurrentPositions (3).
+   * Preserves full Autonomous Agent Brain execution for BOTH BUY/SELL and Futures/Spot across Paper, Testnet, and Mainnet.
    */
-  const executeAutonomousLowRiskSlot = () => {
-    if (circuitBreakerTriggered || positions.length >= maxConcurrentPositions) return;
+  const executeAutonomousLowRiskSlot = async (): Promise<boolean> => {
+    if (autonomousEntryInFlightRef.current) return false;
+    const livePositions = positionsRef.current;
+    if (circuitBreakerTriggered || livePositions.length >= maxConcurrentPositions) return false;
     const candidate = selectBestLowRiskHunterCandidate(
-      markets,
-      positions,
+      marketsRef.current,
+      livePositions,
       lastClosedSymbol,
       minLiquidityScoreGate,
       orderSizeUsdInput,
-      verifiedNews,
-      candlesMap
+      verifiedNewsRef.current,
+      candlesMapRef.current
     );
-    if (!candidate) return;
+    if (!candidate || entryInFlightSymbolsRef.current.has(candidate.market.symbol)) return false;
+
+    // In EXCHANGE_TESTNET / REAL_MAINNET, route every brain-approved autonomous entry (BUY/SELL, Futures/Spot)
+    // through the verified real-money execution pipeline with 5-Layer RLS, setLeverage, executedQty & Circuit Breaker.
+    if (executionEnv !== 'PAPER_SANDBOX') {
+      autonomousEntryInFlightRef.current = true;
+      try {
+        return await handleManualAgentEntry(
+          candidate.side,
+          candidate.market,
+          candidate.market.marketType === 'SPOT' ? 1 : candidate.recommendedLeverage,
+          false
+        );
+      } finally {
+        autonomousEntryInFlightRef.current = false;
+      }
+    }
 
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(
       now.getMinutes()
     ).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
-    const slotNumber = positions.length + 1;
+    const slotNumber = livePositions.length + 1;
     const autoOrderId = `AUTO-LOWRISK-${Date.now().toString().slice(-5)}`;
 
     const autoPos: AgentPosition = {
@@ -1355,16 +1398,18 @@ export function App({
       entryPrice: candidate.entryPrice,
       currentPrice: candidate.market.price,
       sizeUsd: candidate.recommendedSizeUsd,
-      leverage: candidate.recommendedLeverage,
+      executedQty: Number((candidate.recommendedSizeUsd / Math.max(1e-9, candidate.entryPrice)).toFixed(8)),
+      venueMode: candidate.market.marketType === 'SPOT' ? 'SPOT' : 'FUTURES',
+      leverage: candidate.market.marketType === 'SPOT' ? 1 : candidate.recommendedLeverage,
       stopLossPrice: candidate.initialBeGuardPrice,
       takeProfitPrice: candidate.takeProfitPrice,
-      breakevenLocked: true,
-      executionMode: 'POST_ONLY_MAKER',
-      unrealizedPnlUsd: Number((candidate.recommendedSizeUsd * 0.0008).toFixed(2)),
-      unrealizedPnlPct: 0.08,
-      peakPnlPct: 0.08,
+      breakevenLocked: false,
+      executionMode: makerOnlyMode ? 'POST_ONLY_MAKER' : 'TWAP_LOW_IMPACT',
+      unrealizedPnlUsd: 0,
+      unrealizedPnlPct: 0,
+      peakPnlPct: 0,
       openedAt: timeStr,
-      statusReason: `AUTO-HUNTER SLOT #${slotNumber}/${maxConcurrentPositions} | Low-Risk ${candidate.lowRiskScore}/100 | BREAKEVEN+FEE LOCKED (@ $${candidate.initialBeGuardPrice})`,
+      statusReason: `AUTO-HUNTER SLOT #${slotNumber}/${maxConcurrentPositions} | Low-Risk ${candidate.lowRiskScore}/100 | Stop Guard (@ $${candidate.initialBeGuardPrice})`,
     };
 
     setPositions((prev) => {
@@ -1381,7 +1426,7 @@ export function App({
         symbol: candidate.market.symbol,
         category: 'SKILL_RISK_GUARD',
         headline: `🤖 AUTO-HUNTER MEMBUKA POSISI BARU (SLOT #${slotNumber}/${maxConcurrentPositions}): ${candidate.side} ${candidate.market.symbol} @ $${candidate.entryPrice.toLocaleString()} (${candidate.recommendedLeverage}x Low-Risk)`,
-        detail: `Pasca Take Profit, Agent memindai seluruh market & memilih ${candidate.market.symbol} di ${candidate.market.primaryExchange} karena memiliki profil risiko terendah (${candidate.analysisSummary}). Stop Guard langsung dikunci di Breakeven+Fee ($${candidate.initialBeGuardPrice}).`,
+        detail: `Pasca Take Profit, Agent memindai seluruh market & memilih ${candidate.market.symbol} di ${candidate.market.primaryExchange} karena memiliki profil risiko terendah (${candidate.analysisSummary}). Stop Guard awal dipasang pada $${candidate.initialBeGuardPrice}.`,
         score: candidate.lowRiskScore,
         tone: candidate.side === 'LONG' ? 'BULLISH' : 'BEARISH',
       },
@@ -1391,35 +1436,55 @@ export function App({
     setCommandFeedback(
       `🤖 Auto-Hunter mengisi Slot #${slotNumber}/${maxConcurrentPositions}: ${candidate.side} ${candidate.market.symbol} (${candidate.recommendedLeverage}x Low-Risk Score ${candidate.lowRiskScore}/100)`
     );
+    return true;
   };
 
+  const executeAutonomousLowRiskSlotRef = useRef(executeAutonomousLowRiskSlot);
+  executeAutonomousLowRiskSlotRef.current = executeAutonomousLowRiskSlot;
+
   // Continuous Autonomous Post-TP Hunter Loop: Whenever positions.length < maxConcurrentPositions (3) & Auto-Agent is ON
+  // Uses refs for live markets so 1.8s-2.5s market ticks NEVER reset the 3-second countdown, and rearms cleanly after unsuccessful attempts.
   useEffect(() => {
     if (!agentAutonomousEnabled || circuitBreakerTriggered || positions.length >= maxConcurrentPositions) {
       setHunterCountdownSec(null);
       return;
     }
 
-    setHunterCountdownSec(3);
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let remaining = 3;
+    setHunterCountdownSec(remaining);
     const interval = setInterval(() => {
-      setHunterCountdownSec((prev) => {
-        if (prev === null) return 3;
-        if (prev <= 1) {
-          executeAutonomousLowRiskSlot();
-          return null;
-        }
-        return prev - 1;
-      });
+      remaining -= 1;
+      if (remaining <= 0) {
+        clearInterval(interval);
+        setHunterCountdownSec(null);
+        void executeAutonomousLowRiskSlotRef.current().then((opened) => {
+          if (!opened && !cancelled) {
+            retryTimer = setTimeout(() => {
+              if (!cancelled) {
+                setHunterRetryTick((t) => t + 1);
+              }
+            }, 5000);
+          }
+        });
+      } else {
+        setHunterCountdownSec(remaining);
+      }
     }, 1000);
 
-    return () => clearInterval(interval);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [
     agentAutonomousEnabled,
     circuitBreakerTriggered,
     positions.length,
     maxConcurrentPositions,
     lastClosedSymbol,
-    markets,
+    hunterRetryTick,
   ]);
 
   const handleScratchOrClosePosition = async (
