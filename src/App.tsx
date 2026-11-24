@@ -39,6 +39,7 @@ import {
   scanAllMarketMultiAgentCandidates,
   selectBestLowRiskHunterCandidate,
 } from './engine/agentSkills';
+import { computePositionPnl } from '../backend/positionMath.mjs';
 import {
   auditActivePositionsAccuracy,
   buildVerifiedMacroNewsFeed,
@@ -772,14 +773,15 @@ export function App({
                   : Math.max(livePx * 0.3, entryPx * (1 - 1.35 / Math.max(1, p.leverage)))
                 ).toFixed(decimals)
               );
-              const rawPct =
-                (liveSide === 'LONG'
-                  ? (livePx - entryPx) / entryPx
-                  : (entryPx - livePx) / entryPx) *
-                100 *
-                p.leverage;
-              const pnlPct = Number(rawPct.toFixed(2));
-              const pnlUsd = Number(((p.sizeUsd * pnlPct) / 100).toFixed(2));
+              const pnlCalc = computePositionPnl({
+                side: liveSide,
+                entryPrice: entryPx,
+                currentPrice: livePx,
+                sizeUsd: p.sizeUsd,
+                leverage: p.leverage,
+              });
+              const pnlPct = pnlCalc.roePct;
+              const pnlUsd = pnlCalc.pnlUsd;
               return {
                 ...p,
                 side: liveSide,
@@ -946,12 +948,15 @@ export function App({
         prevPos.map((pos) => {
           const mkt = markets.find((m) => m.symbol === pos.symbol);
           const curPrice = mkt ? mkt.price : pos.currentPrice;
-          const rawPct =
-            pos.side === 'LONG'
-              ? ((curPrice - pos.entryPrice) / pos.entryPrice) * 100 * pos.leverage
-              : ((pos.entryPrice - curPrice) / pos.entryPrice) * 100 * pos.leverage;
-          const pnlPct = Number(rawPct.toFixed(2));
-          const pnlUsd = Number(((pos.sizeUsd * pnlPct) / 100).toFixed(2));
+          const pnlCalc = computePositionPnl({
+            side: pos.side,
+            entryPrice: pos.entryPrice,
+            currentPrice: curPrice,
+            sizeUsd: pos.sizeUsd,
+            leverage: pos.leverage,
+          });
+          const pnlPct = pnlCalc.roePct;
+          const pnlUsd = pnlCalc.pnlUsd;
           const peak = Math.max(pos.peakPnlPct, pnlPct);
 
           const shouldLockBe = pos.breakevenLocked || pnlPct >= autoBreakevenTriggerPct;
@@ -1105,6 +1110,8 @@ export function App({
         orderPurpose: 'ENTRY_MAKER',
         sizeUsd: orderSizeUsdInput,
         price: entry,
+        leverage: targetPair.marketType === 'SPOT' ? 1 : targetLeverage,
+        marketType: targetPair.marketType,
         refMarkPrice: targetPair.price,
         wallets,
         useTestnet: executionEnv === 'EXCHANGE_TESTNET',
@@ -1329,7 +1336,8 @@ export function App({
         : mode === 'PROFIT_LOCK'
           ? Number(Math.max(minAgentTpRatio, pos.unrealizedPnlPct).toFixed(2))
           : pos.unrealizedPnlPct;
-    const finalPnlUsd = Number(((pos.sizeUsd * finalPnlPct) / 100).toFixed(2));
+    const initialMarginUsd = pos.sizeUsd / Math.max(1, pos.leverage);
+    const finalPnlUsd = Number(((initialMarginUsd * finalPnlPct) / 100).toFixed(2));
     const effectiveExitPrice =
       mode === 'PROFIT_LOCK'
         ? formatSmartPrice(
