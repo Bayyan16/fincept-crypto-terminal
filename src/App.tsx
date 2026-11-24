@@ -180,6 +180,7 @@ export function App({
   const candleReqSeqRef = useRef<number>(0);
   const activePriceRef = useRef<number>(INITIAL_MARKETS[0].price);
   const hasLiveSnapshotRef = useRef<boolean>(false);
+  const beStopSubmittedIdsRef = useRef<Set<string>>(new Set());
 
   const [activeTopTab, setActiveTopTab] = useState<
     'TERMINAL_DESK' | 'DEX_SCREENER' | 'AGENT_SKILLS' | 'PORTFOLIO_LOG' | 'PORTFOLIO_PROFILE'
@@ -931,6 +932,48 @@ export function App({
     };
   }, [activePair.symbol, activePair.hlCoin, activePair.binanceSymbol]);
 
+  const dispatchRealBreakevenStop = async (pos: AgentPosition, bePrice: number) => {
+    if (!pos.isRealMoney || pos.stopOrderId || beStopSubmittedIdsRef.current.has(pos.id)) return;
+    beStopSubmittedIdsRef.current.add(pos.id);
+    const matchedMkt = markets.find((m) => m.symbol === pos.symbol);
+    const rawBase = pos.symbol.split('-')[0];
+    const fallbackBinSym = /^k[A-Z]{2,}$/.test(rawBase)
+      ? `1000${rawBase.slice(1)}USDT`
+      : `${rawBase.toUpperCase()}USDT`;
+    const stopRes = await executeRealOrderOnVenue({
+      exchange: pos.exchange,
+      symbol: pos.symbol,
+      binanceSymbol: matchedMkt?.binanceSymbol || fallbackBinSym,
+      side: pos.side,
+      orderPurpose: 'BREAKEVEN_STOP',
+      sizeUsd: pos.sizeUsd,
+      quantity: pos.executedQty,
+      price: pos.currentPrice,
+      stopPrice: bePrice,
+      marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
+      venueMode: pos.venueMode,
+      wallets,
+      useTestnet: executionEnv === 'EXCHANGE_TESTNET',
+      rowOwnerScope: pos.rlsOwnerScope,
+    });
+    if (stopRes.ok && stopRes.orderId) {
+      setPositions((prev) =>
+        prev.map((p) =>
+          p.id === pos.id ? { ...p, stopOrderId: stopRes.orderId, breakevenLocked: true } : p
+        )
+      );
+      setCommandFeedback(
+        `✓ Exchange Stop-Loss (BREAKEVEN_STOP #${stopRes.orderId}) aktif di ${pos.exchange} @ $${bePrice}`
+      );
+    } else {
+      // Allow retry later if exchange transiently rejected stop placement
+      setTimeout(() => beStopSubmittedIdsRef.current.delete(pos.id), 15_000);
+      setCommandFeedback(
+        `[BREAKEVEN STOP FAILED] ${pos.symbol} di ${pos.exchange}: ${stopRes.error || 'Rejected'}`
+      );
+    }
+  };
+
   // 4. Clock, Mark-to-Market & Deep Position Intelligence Loop (1000ms — Evaluates Orderbook + On-Chain Whales + Sentiment)
   useEffect(() => {
     const timer = setInterval(() => {
@@ -1020,6 +1063,26 @@ export function App({
     autoTakeProfitTriggerPct,
     agentAutonomousEnabled,
   ]);
+
+  // Dispatch real exchange BREAKEVEN_STOP from committed positions state (React 18 auto-batching safe)
+  useEffect(() => {
+    for (const pos of positions) {
+      if (
+        pos.isRealMoney &&
+        pos.breakevenLocked &&
+        !pos.stopOrderId &&
+        !beStopSubmittedIdsRef.current.has(pos.id)
+      ) {
+        const bePrice =
+          pos.stopLossPrice && pos.stopLossPrice > 0
+            ? pos.stopLossPrice
+            : formatSmartPrice(
+                pos.side === 'LONG' ? pos.entryPrice * 1.0004 : pos.entryPrice * 0.9996
+              );
+        void dispatchRealBreakevenStop(pos, bePrice);
+      }
+    }
+  }, [positions, wallets, executionEnv, markets]);
 
   // Execute Real or Paper Order across ALL synced DEX & CEX markets
   const handleManualAgentEntry = async (
