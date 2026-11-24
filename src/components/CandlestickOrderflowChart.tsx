@@ -532,12 +532,15 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
   const maxPanOffset = Math.max(0, totalBars - Math.min(12, clampedVisibleCount));
   const clampedPanOffset = Math.max(minPanOffset, Math.min(maxPanOffset, panOffset));
 
-  // Auto-apply pending TradingView history range preset (1D..ALL)
+  // Auto-apply pending TradingView history range preset (1D..ALL) ONLY after target timeframe candles finish loading
   useEffect(() => {
-    if (!pendingRange || totalBars === 0) return;
+    if (!pendingRange || totalBars === 0 || isLoadingCandles) return;
     const preset = RANGE_PRESETS.find((r) => r.id === pendingRange);
     if (!preset) {
       setPendingRange(null);
+      return;
+    }
+    if (preset.targetTf !== timeframe) {
       return;
     }
     if (preset.spanMs === 'ALL') {
@@ -561,7 +564,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     setPricePanRatio(0);
     setPriceScaleFactor(1);
     setPendingRange(null);
-  }, [pendingRange, totalBars, candles]);
+  }, [pendingRange, totalBars, candles, timeframe, isLoadingCandles]);
 
   // Smooth default framing when changing timeframes directly
   const prevTfRef = useRef<ChartInterval>(timeframe);
@@ -626,6 +629,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
   const handleBarZoom = useCallback(
     (deltaBars: number, anchorRatio = 0.85) => {
       setActiveRange(null);
+      setPendingRange(null);
       setVisibleCount((prev) => {
         const cur = Math.max(minBars, Math.min(maxBars, prev));
         const next = Math.max(minBars, Math.min(maxBars, cur + deltaBars));
@@ -1144,6 +1148,11 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
       draftPoints.length,
       pair.symbol,
       stepMs,
+      candles,
+      magnetEnabled,
+      isLog,
+      minSpace,
+      spaceRange,
     ]
   );
 
@@ -1282,6 +1291,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
     setPricePanRatio(0);
     setPriceScaleFactor(1);
     setActiveRange(null);
+    setPendingRange(null);
   };
 
   // Price Y-axis grid ticks
@@ -1432,6 +1442,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
               aria-pressed={timeframe === tf.id}
               onClick={() => {
                 setActiveRange(null);
+                setPendingRange(null);
                 onTimeframeChange(tf.id);
               }}
               className={`px-1.5 py-0.5 font-semibold transition-colors ${
@@ -1583,6 +1594,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                 value={clampedVisibleCount}
                 onChange={(e) => {
                   setActiveRange(null);
+                  setPendingRange(null);
                   setVisibleCount(Number(e.target.value));
                 }}
                 data-testid="chart-bars-slider"
@@ -1689,6 +1701,7 @@ export const CandlestickOrderflowChart: React.FC<CandlestickOrderflowChartProps>
                   data-testid={`chart-tf-option-${item.id}`}
                   onClick={() => {
                     setActiveRange(null);
+                    setPendingRange(null);
                     onTimeframeChange(item.id);
                     setTfMenuOpen(false);
                   }}

@@ -438,9 +438,19 @@ export function App({
         positions,
         lastClosedSymbol,
         minLiquidityScoreGate,
-        orderSizeUsdInput
+        orderSizeUsdInput,
+        verifiedNews,
+        candlesMap
       ),
-    [markets, positions, lastClosedSymbol, minLiquidityScoreGate, orderSizeUsdInput]
+    [
+      markets,
+      positions,
+      lastClosedSymbol,
+      minLiquidityScoreGate,
+      orderSizeUsdInput,
+      verifiedNews,
+      candlesMap,
+    ]
   );
 
   activePriceRef.current = activePair.price;
