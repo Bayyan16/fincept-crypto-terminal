@@ -188,6 +188,8 @@ export function App({
   const activePriceRef = useRef<number>(INITIAL_MARKETS[0].price);
   const hasLiveSnapshotRef = useRef<boolean>(false);
   const beStopSubmittedIdsRef = useRef<Set<string>>(new Set());
+  const closingPositionIdsRef = useRef<Set<string>>(new Set());
+  const positionsRef = useRef<AgentPosition[]>(INITIAL_AGENT_POSITIONS);
 
   const [activeTopTab, setActiveTopTab] = useState<
     'TERMINAL_DESK' | 'DEX_SCREENER' | 'AGENT_SKILLS' | 'PORTFOLIO_LOG' | 'PORTFOLIO_PROFILE'
@@ -239,6 +241,7 @@ export function App({
   const [dexPools, setDexPools] = useState<DexScreenerPoolItem[]>(INITIAL_DEXSCREENER_POOLS);
   const [jupiterRoutes, setJupiterRoutes] = useState<Record<string, any>>({});
   const [positions, setPositions] = useState<AgentPosition[]>(INITIAL_AGENT_POSITIONS);
+  positionsRef.current = positions;
   const [closedTrades, setClosedTrades] = useState<ClosedTradeLog[]>(INITIAL_CLOSED_TRADES);
   const [brainDecisions, setBrainDecisions] = useState<AgentBrainDecision[]>(
     INITIAL_BRAIN_DECISIONS
@@ -981,7 +984,7 @@ export function App({
     }
   };
 
-  // 4. Clock, Mark-to-Market & Deep Position Intelligence Loop (1000ms — Evaluates Orderbook + On-Chain Whales + Sentiment)
+  // 4. Clock, Mark-to-Market & Deep Position Intelligence Loop (1000ms — Pure Functional State Update)
   useEffect(() => {
     const timer = setInterval(() => {
       const now = new Date();
@@ -992,8 +995,7 @@ export function App({
         )}:${String(now.getSeconds()).padStart(2, '0')} LIVE`
       );
 
-      let autoActionTarget: { pos: AgentPosition; mode: 'SCRATCH' | 'PROFIT_LOCK' } | null = null;
-
+      // Pure functional updater preserves any queued async additions, removals, or stopOrderId updates
       setPositions((prevPos) =>
         prevPos.map((pos) => {
           const mkt = markets.find((m) => m.symbol === pos.symbol);
@@ -1033,18 +1035,6 @@ export function App({
             maxMicroLossScratchPct
           );
 
-          const openedTs = Number((pos.id.match(/(\d{13})/) || [])[1] || 0);
-          const posAgeMs = openedTs > 0 ? Date.now() - openedTs : 60_000;
-          const allowAutoCut = posAgeMs >= 15_000 || pnlPct <= -1.5;
-
-          if (agentAutonomousEnabled && !autoActionTarget) {
-            if (deepEval.decision === 'AUTO_TAKE_PROFIT_NOW') {
-              autoActionTarget = { pos: updatedBase, mode: 'PROFIT_LOCK' };
-            } else if (deepEval.decision === 'AUTO_CUT_INVALIDATED' && allowAutoCut) {
-              autoActionTarget = { pos: updatedBase, mode: 'SCRATCH' };
-            }
-          }
-
           return {
             ...updatedBase,
             aiHoldDecision: deepEval.decision,
@@ -1056,11 +1046,6 @@ export function App({
           };
         })
       );
-
-      if (autoActionTarget) {
-        const target = autoActionTarget as { pos: AgentPosition; mode: 'SCRATCH' | 'PROFIT_LOCK' };
-        handleScratchOrClosePosition(target.pos, target.mode);
-      }
     }, 1000);
 
     return () => clearInterval(timer);
@@ -1070,12 +1055,15 @@ export function App({
     autoBreakevenTriggerPct,
     autoTakeProfitTriggerPct,
     maxMicroLossScratchPct,
-    agentAutonomousEnabled,
   ]);
 
-  // Dispatch real exchange BREAKEVEN_STOP from committed positions state (React 18 auto-batching safe)
+  // 4A. Committed-State Automated Execution Dispatcher (BREAKEVEN_STOP + Auto-TP/Scratch Exits)
+  // React 18 batching-safe & guarded by in-flight locks (`beStopSubmittedIdsRef` & `closingPositionIdsRef`)
   useEffect(() => {
+    let dispatchedAutoClose = false;
     for (const pos of positions) {
+      if (closingPositionIdsRef.current.has(pos.id)) continue;
+
       if (
         pos.isRealMoney &&
         pos.breakevenLocked &&
@@ -1090,8 +1078,22 @@ export function App({
               );
         void dispatchRealBreakevenStop(pos, bePrice);
       }
+
+      if (agentAutonomousEnabled && !dispatchedAutoClose) {
+        const openedTs = Number((pos.id.match(/(\d{13})/) || [])[1] || 0);
+        const posAgeMs = openedTs > 0 ? Date.now() - openedTs : 60_000;
+        const allowAutoCut = posAgeMs >= 15_000 || pos.unrealizedPnlPct <= -1.5;
+
+        if (pos.aiHoldDecision === 'AUTO_TAKE_PROFIT_NOW') {
+          dispatchedAutoClose = true;
+          void handleScratchOrClosePosition(pos, 'PROFIT_LOCK');
+        } else if (pos.aiHoldDecision === 'AUTO_CUT_INVALIDATED' && allowAutoCut) {
+          dispatchedAutoClose = true;
+          void handleScratchOrClosePosition(pos, 'SCRATCH');
+        }
+      }
     }
-  }, [positions, wallets, executionEnv, markets]);
+  }, [positions, agentAutonomousEnabled, wallets, executionEnv, markets]);
 
   // 4B. Live Daily Drawdown Circuit Breaker Monitor
   // Halts new manual & autonomous entries when daily net loss exceeds maxDailyDrawdownUsd,
@@ -1421,6 +1423,21 @@ export function App({
   ]);
 
   const handleScratchOrClosePosition = async (
+    pos: AgentPosition,
+    mode: 'SCRATCH' | 'PROFIT_LOCK'
+  ) => {
+    if (closingPositionIdsRef.current.has(pos.id)) {
+      return { ok: false, error: 'Penutupan posisi sedang diproses.' };
+    }
+    closingPositionIdsRef.current.add(pos.id);
+    try {
+      return await executeClosePositionInner(pos, mode);
+    } finally {
+      closingPositionIdsRef.current.delete(pos.id);
+    }
+  };
+
+  const executeClosePositionInner = async (
     pos: AgentPosition,
     mode: 'SCRATCH' | 'PROFIT_LOCK'
   ) => {
