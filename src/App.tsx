@@ -40,6 +40,7 @@ import {
   selectBestLowRiskHunterCandidate,
 } from './engine/agentSkills';
 import {
+  computeClosedTradeSettlement,
   computeDailyRealizedPnlUsd,
   computePositionPnl,
   evaluateDailyDrawdownCircuitBreaker,
@@ -65,6 +66,7 @@ import {
   verifyRealAccountWithBackend,
 } from './engine/walletAdapter';
 import {
+  deriveWalletRlsOwnerScope,
   stampClosedTradeWithRls,
   stampPositionWithRls,
   verifyPositionRlsOwnership,
@@ -1490,28 +1492,21 @@ export function App({
       }
     }
 
-    const minAgentTpRatio = Math.max(50, autoTakeProfitTriggerPct);
-    const finalPnlPct =
-      mode === 'SCRATCH' && pos.unrealizedPnlPct < 0
-        ? Math.max(-0.03, pos.unrealizedPnlPct)
-        : mode === 'PROFIT_LOCK'
-          ? Number(Math.max(minAgentTpRatio, pos.unrealizedPnlPct).toFixed(2))
-          : pos.unrealizedPnlPct;
-    const initialMarginUsd = pos.sizeUsd / Math.max(1, pos.leverage);
-    const finalPnlUsd = Number(((initialMarginUsd * finalPnlPct) / 100).toFixed(2));
-    const effectiveExitPrice =
-      mode === 'PROFIT_LOCK'
-        ? formatSmartPrice(
-            pos.side === 'LONG'
-              ? pos.entryPrice * (1 + finalPnlPct / (100 * Math.max(1, pos.leverage)))
-              : Math.max(
-                  pos.entryPrice * 0.2,
-                  pos.entryPrice * (1 - finalPnlPct / (100 * Math.max(1, pos.leverage)))
-                )
-          )
-        : pos.currentPrice;
+    const effectiveExitPrice = formatSmartPrice(realClosePrice || pos.currentPrice);
+    const settled = computeClosedTradeSettlement({
+      side: pos.side,
+      entryPrice: pos.entryPrice,
+      exitPrice: effectiveExitPrice,
+      sizeUsd: pos.sizeUsd,
+      leverage: pos.leverage,
+      executedQty: pos.executedQty,
+      isRealMoney: Boolean(pos.isRealMoney),
+      exchangeOrderId: realCloseOrderId,
+    });
+    const finalPnlPct = settled.realizedPnlPct;
+    const finalPnlUsd = settled.realizedPnlUsd;
 
-    // Direct-to-Hot-Wallet Auto-Settlement Engine (Zero Manual Withdrawal Required!)
+    // Direct-to-Hot-Wallet Settlement Metadata (Zero Fake TxHash & Zero Corruption of Verified Real Wallet Balances)
     const isSolanaVenue =
       pos.exchange === 'JUPITER' ||
       pos.exchange === 'DEXSCREENER' ||
@@ -1529,16 +1524,58 @@ export function App({
     const hotWalletNameLabel = isSolanaVenue
       ? 'Phantom Hot Wallet (Solana USDC)'
       : `Trust Hot Wallet (${targetHotWallet?.activeChainName || 'Arbitrum L2 USDC'})`;
-    const settlementTxHash = `0x${Math.random().toString(16).slice(2, 6)}...${Math.random()
-      .toString(16)
-      .slice(2, 6)}`;
+    const settlementTxHash = settled.settlementTxHash;
 
     const isSettledToHotWallet = autoDirectHotWalletSettle && finalPnlUsd > 0;
 
-    if (isSettledToHotWallet) {
+    if (pos.isRealMoney) {
+      // Never mutate verified real wallet balance locally; refresh actual equity from the exchange/blockchain
+      const owning = wallets.find(
+        (w) =>
+          w.verifiedReal &&
+          w.connected &&
+          w.credentials &&
+          ((pos.exchange === 'BINANCE' && w.id === 'binance_api') ||
+            (pos.exchange === 'BYBIT' && w.id === 'bybit_api') ||
+            (pos.exchange === 'OKX' && w.id === 'okx_api') ||
+            (pos.exchange === 'HYPERLIQUID' && (w.id === 'trust' || w.id === 'hyperliquid_agent')) ||
+            ((pos.exchange === 'JUPITER' || pos.exchange === 'DEXSCREENER') && w.id === 'phantom'))
+      );
+      if (owning?.credentials) {
+        const expectedScope = deriveWalletRlsOwnerScope(owning);
+        const refreshCredentials = {
+          ...owning.credentials,
+          useTestnet: executionEnv === 'EXCHANGE_TESTNET',
+        };
+        void verifyRealAccountWithBackend(owning.id, refreshCredentials).then((syncRes) => {
+          if (syncRes.ok && typeof syncRes.balanceUsd === 'number') {
+            setWallets((prevWallets) => {
+              let changed = false;
+              const updated = prevWallets.map((w) => {
+                if (
+                  w.id === owning.id &&
+                  w.connected &&
+                  deriveWalletRlsOwnerScope(w) === expectedScope
+                ) {
+                  changed = true;
+                  return {
+                    ...w,
+                    balanceUsd: syncRes.balanceUsd!,
+                    chainBalances: syncRes.chainBalances || w.chainBalances,
+                  };
+                }
+                return w;
+              });
+              if (changed) saveWalletsToVault(updated);
+              return changed ? updated : prevWallets;
+            });
+          }
+        });
+      }
+    } else if (isSettledToHotWallet && settled.allowLocalBalanceMutation) {
       setWallets((prevWallets) => {
         const updated = prevWallets.map((w) => {
-          if (w.id === targetHotWalletId) {
+          if (w.id === targetHotWalletId && !w.verifiedReal) {
             const nextBal = Number((w.balanceUsd + finalPnlUsd).toFixed(2));
             const nextChains = w.chainBalances
               ? w.chainBalances.map((cb, idx) =>

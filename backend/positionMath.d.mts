@@ -33,3 +33,19 @@ export function evaluateDailyDrawdownCircuitBreaker(params: {
   netPnlUsd: number;
   limitUsd: number;
 };
+export function computeClosedTradeSettlement(params: {
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  exitPrice: number;
+  sizeUsd: number;
+  leverage?: number;
+  executedQty?: number;
+  isRealMoney?: boolean;
+  exchangeOrderId?: string;
+}): {
+  exitPrice: number;
+  realizedPnlPct: number;
+  realizedPnlUsd: number;
+  settlementTxHash: string | undefined;
+  allowLocalBalanceMutation: boolean;
+};

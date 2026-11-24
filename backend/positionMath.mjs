@@ -107,3 +107,35 @@ export function evaluateDailyDrawdownCircuitBreaker({
     limitUsd: limit,
   };
 }
+
+/**
+ * Computes honest closed-trade settlement PnL without synthetic loss clamping (-0.03%)
+ * or artificial profit flooring (+50%), and protects verified real wallets from local mutation.
+ */
+export function computeClosedTradeSettlement({
+  side,
+  entryPrice,
+  exitPrice,
+  sizeUsd,
+  leverage = 1,
+  executedQty,
+  isRealMoney = false,
+  exchangeOrderId,
+}) {
+  const pnl = computePositionPnl({
+    side,
+    entryPrice,
+    currentPrice: exitPrice,
+    sizeUsd,
+    leverage,
+    executedQty,
+  });
+  return {
+    exitPrice: Number(exitPrice),
+    realizedPnlPct: pnl.roePct,
+    realizedPnlUsd: pnl.pnlUsd,
+    // Never fabricate a random on-chain txHash; reference real exchange orderId only when present
+    settlementTxHash: isRealMoney ? (exchangeOrderId ? `EXCH-${exchangeOrderId}` : undefined) : undefined,
+    allowLocalBalanceMutation: !isRealMoney,
+  };
+}
