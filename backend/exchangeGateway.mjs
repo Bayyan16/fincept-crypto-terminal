@@ -2961,7 +2961,9 @@ export async function verifyAndFetchAccountBalance(payload) {
     // Authoritative Binance Futures Equity & Free Margin (NEVER over-count locked margin or non-marginable coins!)
     let futuresEquityUsd = 0;
     let futuresAvailableUsd = 0;
+    let futuresAllAssetsUsd = 0;
     const futuresAssetParts = [];
+    const futuresNonUsdtParts = [];
     let multiAssetsMargin = false;
     if (fAccOk) {
       multiAssetsMargin = Boolean(fAccRes.data.multiAssetsMargin);
@@ -2974,8 +2976,13 @@ export async function verifyAndFetchAccountBalance(payload) {
           const wb = parseFloat(a?.walletBalance || '0');
           if (wb > 0.000001) {
             const sym = String(a.asset || '').toUpperCase();
+            const px = resolveAssetUsdPx(sym);
+            if (px > 0) futuresAllAssetsUsd += wb * px;
             const fmt = wb >= 10 ? wb.toLocaleString(undefined, { maximumFractionDigits: 2 }) : Number(wb.toFixed(5));
             futuresAssetParts.push(`${fmt} ${sym}${a.marginAvailable === false ? ' (fee/non-margin)' : ''}`);
+            if (!multiAssetsMargin && sym !== 'USDT') {
+              futuresNonUsdtParts.push(`${fmt} ${sym}`);
+            }
           }
         }
       }
@@ -2989,6 +2996,7 @@ export async function verifyAndFetchAccountBalance(payload) {
         const isMarginable = a?.marginAvailable !== false;
         if (walletBal > 0.000001) {
           const sym = String(a?.asset || '').toUpperCase();
+          if (mult > 0) futuresAllAssetsUsd += walletBal * mult;
           const fmt = walletBal >= 10 ? walletBal.toLocaleString(undefined, { maximumFractionDigits: 2 }) : Number(walletBal.toFixed(5));
           futuresAssetParts.push(`${fmt} ${sym}${!isMarginable ? ' (non-margin)' : ''}`);
         }
@@ -3001,22 +3009,26 @@ export async function verifyAndFetchAccountBalance(payload) {
       }
     }
 
-    // Authoritative Binance Spot Total (free + locked) & Free Cash (for new Spot orders)
+    // Authoritative Binance Spot Total (free + locked across all coins) & Spendable USDT Buy Power (for *USDT Spot pairs)
     let spotTotalUsd = 0;
-    let spotFreeUsd = 0;
+    let spotFreeAllUsd = 0;
+    let spotFreeUsdtUsd = 0;
     const spotAssetParts = [];
     if (spotOk) {
       for (const b of sRes.data.balances) {
+        const sym = String(b?.asset || '').toUpperCase();
         const freeAmt = parseFloat(b?.free || '0');
         const lockedAmt = parseFloat(b?.locked || '0');
         const totalAmt = freeAmt + lockedAmt;
-        const mult = resolveAssetUsdPx(b?.asset);
+        const mult = resolveAssetUsdPx(sym);
         if (totalAmt > 0 && mult > 0) {
           const usdVal = totalAmt * mult;
           spotTotalUsd += usdVal;
-          spotFreeUsd += freeAmt * mult;
+          spotFreeAllUsd += freeAmt * mult;
+          if (sym === 'USDT' && freeAmt > 0) {
+            spotFreeUsdtUsd += freeAmt;
+          }
           if (usdVal >= 1) {
-            const sym = String(b?.asset || '').toUpperCase();
             const fmt = totalAmt >= 10 ? totalAmt.toLocaleString(undefined, { maximumFractionDigits: 2 }) : Number(totalAmt.toFixed(5));
             spotAssetParts.push(`${fmt} ${sym}`);
           }
@@ -3027,7 +3039,8 @@ export async function verifyAndFetchAccountBalance(payload) {
     const futuresEqRounded = Number(futuresEquityUsd.toFixed(2));
     const futuresAvailRounded = Number(futuresAvailableUsd.toFixed(2));
     const spotTotalRounded = Number(spotTotalUsd.toFixed(2));
-    const spotFreeRounded = Number(spotFreeUsd.toFixed(2));
+    const spotFreeUsdtRounded = Number(spotFreeUsdtUsd.toFixed(2));
+    const spotFreeAllRounded = Number(spotFreeAllUsd.toFixed(2));
     const totalUsd = Number((futuresEqRounded + spotTotalRounded).toFixed(2));
 
     const scopeMode =
@@ -3039,13 +3052,17 @@ export async function verifyAndFetchAccountBalance(payload) {
       : 'Mainnet';
     const futuresSummaryText =
       futuresAssetParts.length > 0
-        ? `Aset: ${futuresAssetParts.slice(0, 5).join(' + ')} | Free Margin: $${futuresAvailRounded.toLocaleString()} (${
+        ? `Free Margin *USDT: $${futuresAvailRounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} (${
             multiAssetsMargin ? 'Multi-Asset' : 'Single-Asset'
-          })`
+          }) • Aset: ${futuresAssetParts.slice(0, 5).join(' + ')}${
+            futuresNonUsdtParts.length > 0
+              ? ` (non-USDT tidak terpakai margin *USDT)`
+              : ''
+          }`
         : 'Aktif — Eksekusi Perpetual Futures Maker Post-Only & Stop Guard';
     const spotSummaryText =
       spotAssetParts.length > 0
-        ? `Aset (${resolvedSpotHost}): ${spotAssetParts.slice(0, 5).join(' + ')} | Free: $${spotFreeRounded.toLocaleString()}`
+        ? `Free USDT (Buy Power *USDT): $${spotFreeUsdtRounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} • Aset (${resolvedSpotHost}): ${spotAssetParts.slice(0, 5).join(' + ')}`
         : `Aktif (${resolvedSpotHost}) — Likuiditas Spot & Collateral`;
 
     const chainBalances = [
@@ -3054,7 +3071,7 @@ export async function verifyAndFetchAccountBalance(payload) {
         chainId: 'binance-futures',
         nativeSymbol: 'USDT',
         nativeBalance: 0,
-        stableSymbol: `Free Margin: $${futuresAvailRounded.toLocaleString()}`,
+        stableSymbol: `Free Margin: $${futuresAvailRounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
         stableBalanceUsd: futuresAvailRounded,
         totalChainUsd: futuresEqRounded,
         recommendedFor: futuresOk ? futuresSummaryText : 'Belum diaktifkan pada API Key ini',
@@ -3064,8 +3081,8 @@ export async function verifyAndFetchAccountBalance(payload) {
         chainId: 'binance-spot',
         nativeSymbol: 'USDT/USDC',
         nativeBalance: 0,
-        stableSymbol: `Free Spot: $${spotFreeRounded.toLocaleString()}`,
-        stableBalanceUsd: spotFreeRounded,
+        stableSymbol: `Free USDT: $${spotFreeUsdtRounded.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+        stableBalanceUsd: spotFreeUsdtRounded,
         totalChainUsd: spotTotalRounded,
         recommendedFor: spotOk
           ? spotSummaryText
@@ -3084,7 +3101,9 @@ export async function verifyAndFetchAccountBalance(payload) {
       spotEnabled: spotOk,
       futuresBalanceUsd: futuresAvailRounded,
       futuresEquityUsd: futuresEqRounded,
-      spotBalanceUsd: spotFreeRounded,
+      futuresAllAssetsUsd: Number(futuresAllAssetsUsd.toFixed(2)),
+      spotBalanceUsd: spotFreeUsdtRounded,
+      spotFreeTotalUsd: spotFreeAllRounded,
       spotEquityUsd: spotTotalRounded,
       resolvedUseTestnet: autoCorrectedUseTestnet,
       resolvedSpotHost,

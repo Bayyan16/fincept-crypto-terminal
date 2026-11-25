@@ -535,13 +535,15 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                     </div>
                     <div className="text-right">
                       <div className="text-xs font-extrabold text-[#00E676]">
-                        ${w.balanceUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                        ${w.balanceUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                       </div>
                       <div className="text-[9.5px] text-[#64748B]">
                         {w.verifiedReal
-                          ? w.credentials?.useTestnet
-                            ? 'Testnet/Demo Equity'
-                            : 'Live Mainnet Equity'
+                          ? w.futuresEnabled && w.spotEnabled
+                            ? 'Futures+Spot Total'
+                            : w.credentials?.useTestnet
+                              ? 'Testnet/Demo Equity'
+                              : 'Live Mainnet Equity'
                           : w.connected
                             ? 'Paper Equity'
                             : 'Offline'}
@@ -552,17 +554,17 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                   {w.verifiedReal && Array.isArray(w.chainBalances) && w.chainBalances.length > 0 && w.type === 'CEX_API' && (
                     <div
                       data-testid={`wallet-breakdown-${w.id}`}
-                      className="px-2 py-1.5 bg-[#060B12] border border-[#17263B] text-[9.5px] space-y-1"
+                      className="px-2 py-1.5 bg-[#060B12] border border-[#17263B] text-[9.5px] space-y-1.5"
                     >
                       {w.chainBalances.map((cb) => (
                         <div key={String(cb.chainId)} className="flex flex-col gap-0.5">
                           <div className="flex items-center justify-between gap-2">
                             <span className="text-[#CBD5E1] font-bold">{cb.chainName}</span>
                             <span className="text-[#00E676] font-extrabold">
-                              ${cb.totalChainUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                              ${cb.totalChainUsd.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                             </span>
                           </div>
-                          <div className="text-[#94A3B8] leading-tight truncate" title={cb.recommendedFor}>
+                          <div className="text-[#94A3B8] leading-snug break-words">
                             {cb.recommendedFor}
                           </div>
                         </div>

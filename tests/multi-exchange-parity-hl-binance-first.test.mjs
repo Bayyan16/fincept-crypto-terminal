@@ -617,9 +617,11 @@ test('Binance Accounting Parity: authoritative /fapi/v2/account free margin + Bi
     // Authoritative Futures equity = $10,000 (NOT inflated by non-margin 0.01 BTC), free margin = $7,500 (excludes $2,500 locked!)
     assert.equal(ver.futuresEquityUsd, 10000);
     assert.equal(ver.futuresBalanceUsd, 7500);
-    // Binance-native Spot prices: 5000 * 1.001436 ($5007.18) + 5000 ($5000) = $10,007.18 total, free = $9,005.74 (excludes $1,001.44 locked!)
+    // Binance-native Spot prices: 5000 * 1.001436 ($5007.18) + 5000 ($5000) = $10,007.18 total equity;
+    // Spendable *USDT Spot Buy Power (`spotBalanceUsd`) is strictly free USDT ($5,000.00), NEVER counting USDC/BTC/locked!
     assert.equal(ver.spotEquityUsd, 10007.18);
-    assert.equal(ver.spotBalanceUsd, 9005.74);
+    assert.equal(ver.spotBalanceUsd, 5000);
+    assert.equal(ver.spotFreeTotalUsd, 9005.74);
     assert.equal(ver.balanceUsd, 20007.18);
 
     // Executing a Spot order on Binance Demo automatically routes to demo-api.binance.com!
