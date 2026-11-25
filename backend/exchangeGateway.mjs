@@ -97,10 +97,59 @@ const THROTTLE_GUARDED_HOSTS = new Set([
   'api.binance.com',
   'testnet.binancefuture.com',
   'testnet.binance.vision',
+  'demo-api.binance.com',
+  'demo-fapi.binance.com',
   'api.bybit.com',
   'api-testnet.bybit.com',
   'www.okx.com',
 ]);
+
+const ALLOWED_BINANCE_TESTNET_SPOT_HOSTS = new Set([
+  'demo-api.binance.com',
+  'testnet.binance.vision',
+]);
+const binanceSpotHostByKeyPrefix = new BoundedMap(100);
+const binanceSpotTickerCache = new Map();
+
+function resolveBinanceSpotBaseUrl(useTestnet, credentials = {}) {
+  if (!useTestnet) return 'https://api.binance.com';
+  const explicitHost = String(credentials?.binanceSpotHost || '').trim().toLowerCase();
+  if (ALLOWED_BINANCE_TESTNET_SPOT_HOSTS.has(explicitHost)) {
+    return `https://${explicitHost}`;
+  }
+  const keyPrefix = String(credentials?.apiKey || '').trim().slice(0, 12);
+  if (keyPrefix) {
+    const remembered = binanceSpotHostByKeyPrefix.get(keyPrefix);
+    if (remembered && ALLOWED_BINANCE_TESTNET_SPOT_HOSTS.has(remembered)) {
+      return `https://${remembered}`;
+    }
+  }
+  return 'https://testnet.binance.vision';
+}
+
+/**
+ * Fetches & caches Binance-native Spot ticker prices so Spot balances (USDC, USDT, BTC, altcoins)
+ * match Binance's own USD valuation rather than Hyperliquid Perp prices.
+ */
+async function fetchBinanceSpotPriceMap(spotBaseUrl) {
+  const cached = binanceSpotTickerCache.get(spotBaseUrl);
+  if (cached && Date.now() - cached.ts < 15_000) {
+    return cached.prices;
+  }
+  const res = await fetchJsonWithTimeout(`${spotBaseUrl}/api/v3/ticker/price`, {}, 3200, true);
+  const prices = {};
+  if (res.ok && Array.isArray(res.data)) {
+    for (const row of res.data) {
+      const sym = String(row?.symbol || '').toUpperCase();
+      const px = parseFloat(row?.price || '0');
+      if (sym && Number.isFinite(px) && px > 0) {
+        prices[sym] = px;
+      }
+    }
+    binanceSpotTickerCache.set(spotBaseUrl, { ts: Date.now(), prices });
+  }
+  return prices;
+}
 
 async function fetchEvmLatestBlock(rpcUrls) {
   for (const url of rpcUrls) {
@@ -2749,22 +2798,44 @@ export async function verifyAndFetchAccountBalance(payload) {
       const futuresBaseUrl = isTestnetEnv
         ? 'https://testnet.binancefuture.com'
         : 'https://fapi.binance.com';
-      const spotBaseUrl = isTestnetEnv
-        ? 'https://testnet.binance.vision'
-        : 'https://api.binance.com';
+      const spotCandidateUrls = isTestnetEnv
+        ? ['https://demo-api.binance.com', 'https://testnet.binance.vision']
+        : ['https://api.binance.com'];
 
-      const [fTs, sTs] = await Promise.all([
-        getSyncedBinanceTimestamp(futuresBaseUrl, true),
-        getSyncedBinanceTimestamp(spotBaseUrl, false),
-      ]);
+      const probeSpotUrl = async (spotUrl) => {
+        const sTs = await getSyncedBinanceTimestamp(spotUrl, false);
+        const sQuery = `omitZeroBalances=true&recvWindow=10000&timestamp=${sTs}`;
+        const sSig = crypto.createHmac('sha256', cleanSecret).update(sQuery).digest('hex');
+        const res = await fetchJsonWithTimeout(
+          `${spotUrl}/api/v3/account?${sQuery}&signature=${sSig}`,
+          {
+            method: 'GET',
+            headers: { 'X-MBX-APIKEY': cleanKey },
+          },
+          4800,
+          true
+        );
+        return {
+          spotUrl,
+          res,
+          ok: Boolean(res.ok && Array.isArray(res.data?.balances)),
+        };
+      };
 
+      const fTs = await getSyncedBinanceTimestamp(futuresBaseUrl, true);
       const fQuery = `recvWindow=10000&timestamp=${fTs}`;
       const fSig = crypto.createHmac('sha256', cleanSecret).update(fQuery).digest('hex');
 
-      const sQuery = `omitZeroBalances=true&recvWindow=10000&timestamp=${sTs}`;
-      const sSig = crypto.createHmac('sha256', cleanSecret).update(sQuery).digest('hex');
-
-      const [fRes, sRes] = await Promise.all([
+      const [fAccRes, fRes, ...spotProbes] = await Promise.all([
+        fetchJsonWithTimeout(
+          `${futuresBaseUrl}/fapi/v2/account?${fQuery}&signature=${fSig}`,
+          {
+            method: 'GET',
+            headers: { 'X-MBX-APIKEY': cleanKey },
+          },
+          4800,
+          true
+        ),
         fetchJsonWithTimeout(
           `${futuresBaseUrl}/fapi/v2/balance?${fQuery}&signature=${fSig}`,
           {
@@ -2774,22 +2845,26 @@ export async function verifyAndFetchAccountBalance(payload) {
           4800,
           true
         ),
-        fetchJsonWithTimeout(
-          `${spotBaseUrl}/api/v3/account?${sQuery}&signature=${sSig}`,
-          {
-            method: 'GET',
-            headers: { 'X-MBX-APIKEY': cleanKey },
-          },
-          4800,
-          true
-        ),
+        ...spotCandidateUrls.map((u) => probeSpotUrl(u)),
       ]);
+
+      const winningSpot = spotProbes.find((p) => p.ok) || spotProbes[0];
+      const fAccOk = Boolean(
+        fAccRes.ok &&
+          fAccRes.data &&
+          typeof fAccRes.data === 'object' &&
+          !Array.isArray(fAccRes.data) &&
+          fAccRes.data.totalMarginBalance !== undefined
+      );
       return {
         isTestnetEnv,
+        fAccRes,
+        fAccOk,
         fRes,
-        sRes,
-        futuresOk: fRes.ok && Array.isArray(fRes.data),
-        spotOk: sRes.ok && Array.isArray(sRes.data?.balances),
+        sRes: winningSpot.res,
+        resolvedSpotBaseUrl: winningSpot.spotUrl,
+        futuresOk: fAccOk || (fRes.ok && Array.isArray(fRes.data)),
+        spotOk: Boolean(winningSpot.ok),
       };
     };
 
@@ -2815,12 +2890,13 @@ export async function verifyAndFetchAccountBalance(payload) {
       }
     }
 
-    const { fRes, sRes, futuresOk, spotOk } = attempt;
+    const { fAccRes, fAccOk, fRes, sRes, resolvedSpotBaseUrl, futuresOk, spotOk } = attempt;
     const publicIp = await detectMachinePublicIpv4();
 
     if (!futuresOk && !spotOk) {
-      const rawCode = fRes.data?.code || sRes.data?.code;
+      const rawCode = fAccRes?.data?.code || fRes.data?.code || sRes.data?.code;
       const rawMsg =
+        fAccRes?.data?.msg ||
         fRes.data?.msg ||
         sRes.data?.msg ||
         fRes.error ||
@@ -2843,75 +2919,159 @@ export async function verifyAndFetchAccountBalance(payload) {
       };
     }
 
+    const resolvedSpotHost = (() => {
+      try {
+        return new URL(resolvedSpotBaseUrl).hostname;
+      } catch {
+        return autoCorrectedUseTestnet ? 'testnet.binance.vision' : 'api.binance.com';
+      }
+    })();
+    if (autoCorrectedUseTestnet && spotOk && ALLOWED_BINANCE_TESTNET_SPOT_HOSTS.has(resolvedSpotHost)) {
+      binanceSpotHostByKeyPrefix.set(cleanKey.slice(0, 12), resolvedSpotHost);
+    }
+
+    // Fetch Binance-native Spot prices when Spot is active so Spot USD matches Binance dashboard accurately!
+    const binanceSpotTickers = spotOk ? await fetchBinanceSpotPriceMap(resolvedSpotBaseUrl) : {};
     const liveAssetsMap = cachedSnapshot?.hlAssets || lastGoodHlAssets || {};
     const pxMap = {
       USDT: 1,
-      USDC: 1,
-      FDUSD: 1,
+      USDC: binanceSpotTickers.USDCUSDT || 1,
+      FDUSD: binanceSpotTickers.FDUSDUSDT || 1,
       BUSD: 1,
-      TUSD: 1,
-      DAI: 1,
-      BTC: liveAssetsMap.BTC?.price || 73800,
-      ETH: liveAssetsMap.ETH?.price || 2220,
-      BNB: liveAssetsMap.BNB?.price || 610,
-      SOL: liveAssetsMap.SOL?.price || 145,
+      TUSD: binanceSpotTickers.TUSDUSDT || 1,
+      DAI: binanceSpotTickers.DAIUSDT || 1,
+      BTC: binanceSpotTickers.BTCUSDT || liveAssetsMap.BTC?.price || 73800,
+      ETH: binanceSpotTickers.ETHUSDT || liveAssetsMap.ETH?.price || 2220,
+      BNB: binanceSpotTickers.BNBUSDT || liveAssetsMap.BNB?.price || 610,
+      SOL: binanceSpotTickers.SOLUSDT || liveAssetsMap.SOL?.price || 145,
     };
     const resolveAssetUsdPx = (assetSym) => {
       const sym = String(assetSym || '').toUpperCase();
+      if (sym === 'USDT') return 1;
+      if (binanceSpotTickers[`${sym}USDT`] > 0) return binanceSpotTickers[`${sym}USDT`];
+      if (binanceSpotTickers[`${sym}USDC`] > 0) {
+        return binanceSpotTickers[`${sym}USDC`] * (binanceSpotTickers.USDCUSDT || 1);
+      }
       if (pxMap[sym]) return pxMap[sym];
       if (liveAssetsMap[sym]?.price > 0) return Number(liveAssetsMap[sym].price);
       if (liveAssetsMap[`k${sym}`]?.price > 0) return Number(liveAssetsMap[`k${sym}`].price) / 1000;
       return 0;
     };
 
-    let futuresUsd = 0;
-    if (futuresOk) {
+    // Authoritative Binance Futures Equity & Free Margin (NEVER over-count locked margin or non-marginable coins!)
+    let futuresEquityUsd = 0;
+    let futuresAvailableUsd = 0;
+    const futuresAssetParts = [];
+    let multiAssetsMargin = false;
+    if (fAccOk) {
+      multiAssetsMargin = Boolean(fAccRes.data.multiAssetsMargin);
+      const authMarginBal = parseFloat(fAccRes.data.totalMarginBalance || '0');
+      const authAvailBal = parseFloat(fAccRes.data.availableBalance || '0');
+      if (Number.isFinite(authMarginBal) && authMarginBal >= 0) futuresEquityUsd = authMarginBal;
+      if (Number.isFinite(authAvailBal) && authAvailBal >= 0) futuresAvailableUsd = authAvailBal;
+      if (Array.isArray(fAccRes.data.assets)) {
+        for (const a of fAccRes.data.assets) {
+          const wb = parseFloat(a?.walletBalance || '0');
+          if (wb > 0.000001) {
+            const sym = String(a.asset || '').toUpperCase();
+            const fmt = wb >= 10 ? wb.toLocaleString(undefined, { maximumFractionDigits: 2 }) : Number(wb.toFixed(5));
+            futuresAssetParts.push(`${fmt} ${sym}${a.marginAvailable === false ? ' (fee/non-margin)' : ''}`);
+          }
+        }
+      }
+    } else if (futuresOk && Array.isArray(fRes.data)) {
       for (const a of fRes.data) {
         const walletBal = parseFloat(a?.balance || '0');
         const unPnl = parseFloat(a?.crossUnPnl || '0');
+        const availBal = parseFloat(a?.availableBalance ?? a?.balance ?? '0');
         const netBal = walletBal + (Number.isFinite(unPnl) ? unPnl : 0);
         const mult = resolveAssetUsdPx(a?.asset);
-        if (Number.isFinite(netBal) && mult > 0) futuresUsd += netBal * mult;
+        const isMarginable = a?.marginAvailable !== false;
+        if (walletBal > 0.000001) {
+          const sym = String(a?.asset || '').toUpperCase();
+          const fmt = walletBal >= 10 ? walletBal.toLocaleString(undefined, { maximumFractionDigits: 2 }) : Number(walletBal.toFixed(5));
+          futuresAssetParts.push(`${fmt} ${sym}${!isMarginable ? ' (non-margin)' : ''}`);
+        }
+        if (isMarginable && Number.isFinite(netBal) && mult > 0) {
+          futuresEquityUsd += netBal * mult;
+        }
+        if (isMarginable && Number.isFinite(availBal) && mult > 0) {
+          futuresAvailableUsd += availBal * mult;
+        }
       }
     }
 
-    let spotUsd = 0;
+    // Authoritative Binance Spot Total (free + locked) & Free Cash (for new Spot orders)
+    let spotTotalUsd = 0;
+    let spotFreeUsd = 0;
+    const spotAssetParts = [];
     if (spotOk) {
       for (const b of sRes.data.balances) {
-        const amt = parseFloat(b?.free || '0') + parseFloat(b?.locked || '0');
+        const freeAmt = parseFloat(b?.free || '0');
+        const lockedAmt = parseFloat(b?.locked || '0');
+        const totalAmt = freeAmt + lockedAmt;
         const mult = resolveAssetUsdPx(b?.asset);
-        if (amt > 0 && mult > 0) spotUsd += amt * mult;
+        if (totalAmt > 0 && mult > 0) {
+          const usdVal = totalAmt * mult;
+          spotTotalUsd += usdVal;
+          spotFreeUsd += freeAmt * mult;
+          if (usdVal >= 1) {
+            const sym = String(b?.asset || '').toUpperCase();
+            const fmt = totalAmt >= 10 ? totalAmt.toLocaleString(undefined, { maximumFractionDigits: 2 }) : Number(totalAmt.toFixed(5));
+            spotAssetParts.push(`${fmt} ${sym}`);
+          }
+        }
       }
     }
 
-    const totalUsd = Number((futuresUsd + spotUsd).toFixed(2));
+    const futuresEqRounded = Number(futuresEquityUsd.toFixed(2));
+    const futuresAvailRounded = Number(futuresAvailableUsd.toFixed(2));
+    const spotTotalRounded = Number(spotTotalUsd.toFixed(2));
+    const spotFreeRounded = Number(spotFreeUsd.toFixed(2));
+    const totalUsd = Number((futuresEqRounded + spotTotalRounded).toFixed(2));
+
     const scopeMode =
       futuresOk && spotOk ? 'Futures+Spot' : futuresOk ? 'USDT-M Futures' : 'Spot Wallet';
-    const envLabel = autoCorrectedUseTestnet ? 'Testnet' : 'Mainnet';
+    const envLabel = autoCorrectedUseTestnet
+      ? resolvedSpotHost === 'demo-api.binance.com'
+        ? 'Demo/Testnet'
+        : 'Testnet'
+      : 'Mainnet';
+    const futuresSummaryText =
+      futuresAssetParts.length > 0
+        ? `Aset: ${futuresAssetParts.slice(0, 5).join(' + ')} | Free Margin: $${futuresAvailRounded.toLocaleString()} (${
+            multiAssetsMargin ? 'Multi-Asset' : 'Single-Asset'
+          })`
+        : 'Aktif — Eksekusi Perpetual Futures Maker Post-Only & Stop Guard';
+    const spotSummaryText =
+      spotAssetParts.length > 0
+        ? `Aset (${resolvedSpotHost}): ${spotAssetParts.slice(0, 5).join(' + ')} | Free: $${spotFreeRounded.toLocaleString()}`
+        : `Aktif (${resolvedSpotHost}) — Likuiditas Spot & Collateral`;
+
     const chainBalances = [
       {
         chainName: `Binance USDT-M Futures (${envLabel})`,
         chainId: 'binance-futures',
-        nativeSymbol: 'BNB',
+        nativeSymbol: 'USDT',
         nativeBalance: 0,
-        stableSymbol: 'USDT / USDC Margin',
-        stableBalanceUsd: Number(futuresUsd.toFixed(2)),
-        totalChainUsd: Number(futuresUsd.toFixed(2)),
-        recommendedFor: futuresOk
-          ? 'Aktif — Eksekusi Perpetual Futures Maker Post-Only & Stop Guard'
-          : 'Belum diaktifkan pada API Key ini',
+        stableSymbol: `Free Margin: $${futuresAvailRounded.toLocaleString()}`,
+        stableBalanceUsd: futuresAvailRounded,
+        totalChainUsd: futuresEqRounded,
+        recommendedFor: futuresOk ? futuresSummaryText : 'Belum diaktifkan pada API Key ini',
       },
       {
         chainName: `Binance Spot Account (${envLabel})`,
         chainId: 'binance-spot',
-        nativeSymbol: 'BTC/ETH/BNB',
+        nativeSymbol: 'USDT/USDC',
         nativeBalance: 0,
-        stableSymbol: 'USDT / USDC Spot',
-        stableBalanceUsd: Number(spotUsd.toFixed(2)),
-        totalChainUsd: Number(spotUsd.toFixed(2)),
+        stableSymbol: `Free Spot: $${spotFreeRounded.toLocaleString()}`,
+        stableBalanceUsd: spotFreeRounded,
+        totalChainUsd: spotTotalRounded,
         recommendedFor: spotOk
-          ? 'Aktif — Likuiditas Spot & Collateral Multi-Asset'
-          : 'Tidak ada akses Spot pada API Key ini',
+          ? spotSummaryText
+          : autoCorrectedUseTestnet
+            ? 'Tidak ada akses Spot pada API Key Testnet/Demo ini'
+            : 'Tidak ada akses Spot pada API Key ini',
       },
     ];
 
@@ -2922,9 +3082,12 @@ export async function verifyAndFetchAccountBalance(payload) {
       balanceUsd: totalUsd,
       futuresEnabled: futuresOk,
       spotEnabled: spotOk,
-      futuresBalanceUsd: Number(futuresUsd.toFixed(2)),
-      spotBalanceUsd: Number(spotUsd.toFixed(2)),
+      futuresBalanceUsd: futuresAvailRounded,
+      futuresEquityUsd: futuresEqRounded,
+      spotBalanceUsd: spotFreeRounded,
+      spotEquityUsd: spotTotalRounded,
       resolvedUseTestnet: autoCorrectedUseTestnet,
+      resolvedSpotHost,
       publicIp,
       chainBalances,
       addressDisplay: `BINANCE-${cleanKey.slice(0, 5)}... (${envLabel} • ${scopeMode})`,
@@ -3197,9 +3360,7 @@ export async function executeRealExchangeOrder(payload) {
         error: 'Binance API Key & Secret belum dimasukkan di menu Wallets & API.',
       };
     }
-    const spotBaseUrl = useTestnet
-      ? 'https://testnet.binance.vision'
-      : 'https://api.binance.com';
+    const spotBaseUrl = resolveBinanceSpotBaseUrl(Boolean(useTestnet), credentials);
     const isExplicitSpot = marketType === 'SPOT' || payload.venueMode === 'SPOT';
 
     const executeBinanceSpotOrder = async () => {
@@ -3221,6 +3382,7 @@ export async function executeRealExchangeOrder(payload) {
         exchangeSymbol: normSpot.exchangeSymbol,
         useTestnet: Boolean(useTestnet),
         marketType: 'SPOT',
+        spotBaseUrl,
         fetchJson: fetchJsonWithTimeout,
       });
       const spotScaledPx = Number(price) * normSpot.priceScale;
@@ -4084,9 +4246,7 @@ export async function cancelRealExchangeOrder(payload = {}) {
     const { apiKey, apiSecret } = credentials || {};
     if (!apiKey || !apiSecret) return { ok: false, error: 'Binance API Key & Secret tidak tersedia.' };
     const baseUrl = isSpot
-      ? useTestnet
-        ? 'https://testnet.binance.vision'
-        : 'https://api.binance.com'
+      ? resolveBinanceSpotBaseUrl(Boolean(useTestnet), credentials)
       : useTestnet
         ? 'https://testnet.binancefuture.com'
         : 'https://fapi.binance.com';
@@ -4329,9 +4489,7 @@ export async function fetchRealOrderStatus(payload = {}) {
     const { apiKey, apiSecret } = credentials || {};
     if (!apiKey || !apiSecret) return { ok: false, error: 'Binance API Key & Secret tidak tersedia.' };
     const baseUrl = isSpot
-      ? useTestnet
-        ? 'https://testnet.binance.vision'
-        : 'https://api.binance.com'
+      ? resolveBinanceSpotBaseUrl(Boolean(useTestnet), credentials)
       : useTestnet
         ? 'https://testnet.binancefuture.com'
         : 'https://fapi.binance.com';

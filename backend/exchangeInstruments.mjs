@@ -195,9 +195,10 @@ export async function fetchExchangeInstrumentSpec({
   exchangeSymbol,
   useTestnet = false,
   marketType = 'PERP',
+  spotBaseUrl = '',
   fetchJson,
 }) {
-  const key = `${exchange}:${marketType}:${useTestnet ? 'T' : 'M'}:${exchangeSymbol}`;
+  const key = `${exchange}:${marketType}:${useTestnet ? 'T' : 'M'}:${spotBaseUrl || ''}:${exchangeSymbol}`;
   const cached = instrumentSpecCache.get(key);
   if (cached && Date.now() - cached.ts < SPEC_TTL_MS) {
     return cached.spec;
@@ -207,9 +208,7 @@ export async function fetchExchangeInstrumentSpec({
     if (exchange === 'BINANCE') {
       const isSpot = marketType === 'SPOT';
       const base = isSpot
-        ? useTestnet
-          ? 'https://testnet.binance.vision'
-          : 'https://api.binance.com'
+        ? spotBaseUrl || (useTestnet ? 'https://testnet.binance.vision' : 'https://api.binance.com')
         : useTestnet
           ? 'https://testnet.binancefuture.com'
           : 'https://fapi.binance.com';

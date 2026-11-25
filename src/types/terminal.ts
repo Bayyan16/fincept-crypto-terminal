@@ -284,6 +284,7 @@ export interface WalletCredentials {
   agentPrivateKey?: string;
   useTestnet?: boolean;
   preferredChainId?: number;
+  binanceSpotHost?: string;
 }
 
 export interface WalletConnectionState {
@@ -303,7 +304,9 @@ export interface WalletConnectionState {
   futuresEnabled?: boolean;
   spotEnabled?: boolean;
   futuresBalanceUsd?: number;
+  futuresEquityUsd?: number;
   spotBalanceUsd?: number;
+  spotEquityUsd?: number;
   credentials?: WalletCredentials;
   rlsOwnerScope?: string;
   rlsIntegrityTag?: string;

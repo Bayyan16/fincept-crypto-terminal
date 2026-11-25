@@ -475,12 +475,15 @@ export async function verifyRealAccountWithBackend(
   futuresEnabled?: boolean;
   spotEnabled?: boolean;
   futuresBalanceUsd?: number;
+  futuresEquityUsd?: number;
   spotBalanceUsd?: number;
+  spotEquityUsd?: number;
   addressDisplay?: string;
   openPositions?: any[];
   chainBalances?: ChainAssetBreakdown[];
   rlsOwnerId?: string;
   resolvedUseTestnet?: boolean;
+  resolvedSpotHost?: string;
   publicIp?: string;
   error?: string;
 }> {
@@ -517,13 +520,16 @@ export async function verifyRealAccountWithBackend(
       futuresEnabled: typeof data.futuresEnabled === 'boolean' ? data.futuresEnabled : undefined,
       spotEnabled: typeof data.spotEnabled === 'boolean' ? data.spotEnabled : undefined,
       futuresBalanceUsd: typeof data.futuresBalanceUsd === 'number' ? data.futuresBalanceUsd : undefined,
+      futuresEquityUsd: typeof data.futuresEquityUsd === 'number' ? data.futuresEquityUsd : undefined,
       spotBalanceUsd: typeof data.spotBalanceUsd === 'number' ? data.spotBalanceUsd : undefined,
+      spotEquityUsd: typeof data.spotEquityUsd === 'number' ? data.spotEquityUsd : undefined,
       addressDisplay: data.addressDisplay,
       openPositions: data.openPositions || [],
       chainBalances: data.chainBalances || undefined,
       rlsOwnerId: data.rlsOwnerId,
       resolvedUseTestnet:
         typeof data.resolvedUseTestnet === 'boolean' ? data.resolvedUseTestnet : undefined,
+      resolvedSpotHost: typeof data.resolvedSpotHost === 'string' ? data.resolvedSpotHost : undefined,
       publicIp: data.publicIp,
       ...(latency ? { latencyMs: latency } : {}),
     };

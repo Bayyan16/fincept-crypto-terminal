@@ -52,7 +52,11 @@ test('Issue #17 NEGATIVE: Binance useTestnet:true refuses to silently flip to re
     async (url) => {
       const u = String(url);
       if (u.includes('/time')) return mockJsonResponse({ serverTime: Date.now() });
-      if (u.includes('testnet.binance')) {
+      if (
+        u.includes('testnet.binance') ||
+        u.includes('demo-api.binance.com') ||
+        u.includes('demo-fapi.binance.com')
+      ) {
         return mockJsonResponse({ code: -2015, msg: 'Invalid API-key' }, 401);
       }
       if (u.includes('fapi.binance.com/fapi/v2/balance')) {

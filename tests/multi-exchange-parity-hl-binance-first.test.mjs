@@ -531,3 +531,120 @@ test('Testnet 1:1 Parity: getRealAggregatedOrderbook(coin, sym, true) routes exc
     globalThis.fetch = originalFetch;
   }
 });
+
+test('Binance Accounting Parity: authoritative /fapi/v2/account free margin + Binance Demo Spot (demo-api.binance.com) native prices', async () => {
+  const originalFetch = globalThis.fetch;
+  let spotOrderUrl = '';
+
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    if (u.includes('/fapi/v1/time') || u.includes('/api/v3/time')) {
+      return mockJsonResponse({ serverTime: Date.now() });
+    }
+    if (u.includes('testnet.binancefuture.com/fapi/v2/account')) {
+      // Authoritative Binance Futures account: totalMarginBalance=$10,000, availableBalance=$7,500 ($2,500 locked in open pos), plus 0.01 BTC fee/non-margin
+      return mockJsonResponse({
+        multiAssetsMargin: false,
+        totalWalletBalance: '10000.00',
+        totalMarginBalance: '10000.00',
+        availableBalance: '7500.00',
+        assets: [
+          { asset: 'USDT', walletBalance: '5000.00', availableBalance: '2500.00', marginAvailable: true },
+          { asset: 'USDC', walletBalance: '5000.00', availableBalance: '5000.00', marginAvailable: true },
+          { asset: 'BTC', walletBalance: '0.01', availableBalance: '0.01', marginAvailable: false },
+        ],
+      });
+    }
+    if (u.includes('testnet.binancefuture.com/fapi/v2/balance')) {
+      return mockJsonResponse([
+        { asset: 'USDT', balance: '5000.00', availableBalance: '2500.00', crossUnPnl: '0', marginAvailable: true },
+        { asset: 'USDC', balance: '5000.00', availableBalance: '5000.00', crossUnPnl: '0', marginAvailable: true },
+        { asset: 'BTC', balance: '0.01', availableBalance: '0.01', crossUnPnl: '0', marginAvailable: false },
+      ]);
+    }
+    if (u.includes('demo-api.binance.com/api/v3/account')) {
+      // Binance Demo Spot: 5000 USDC (free 4000, locked 1000) + 5000 USDT (free 5000)
+      return mockJsonResponse({
+        balances: [
+          { asset: 'USDC', free: '4000.00', locked: '1000.00' },
+          { asset: 'USDT', free: '5000.00', locked: '0.00' },
+        ],
+      });
+    }
+    if (u.includes('testnet.binance.vision/api/v3/account')) {
+      return mockJsonResponse({ code: -2015, msg: 'Invalid API-key' }, 401);
+    }
+    if (u.includes('demo-api.binance.com/api/v3/ticker/price')) {
+      return mockJsonResponse([
+        { symbol: 'USDCUSDT', price: '1.001436' },
+        { symbol: 'BTCUSDT', price: '58316.00' },
+      ]);
+    }
+    if (u.includes('demo-api.binance.com/api/v3/exchangeInfo')) {
+      return mockJsonResponse({
+        symbols: [
+          {
+            symbol: 'ETHUSDT',
+            filters: [
+              { filterType: 'LOT_SIZE', stepSize: '0.0001', minQty: '0.0001' },
+              { filterType: 'PRICE_FILTER', tickSize: '0.01' },
+              { filterType: 'NOTIONAL', minNotional: '5' },
+            ],
+          },
+        ],
+      });
+    }
+    if (u.includes('demo-api.binance.com/api/v3/order')) {
+      spotOrderUrl = u;
+      return mockJsonResponse({ orderId: 990011, status: 'NEW', executedQty: '0', cummulativeQuoteQty: '0' });
+    }
+    return mockJsonResponse({}, 404);
+  };
+
+  try {
+    resetRlsRateLimitersForTest();
+    clearInstrumentSpecCache();
+    const ver = await verifyAndFetchAccountBalance({
+      providerId: 'binance_api',
+      apiKey: 'demo-key-123456',
+      apiSecret: 'demo-sec-987654',
+      useTestnet: true,
+    });
+    assert.equal(ver.ok, true);
+    assert.equal(ver.futuresEnabled, true);
+    assert.equal(ver.spotEnabled, true);
+    assert.equal(ver.resolvedSpotHost, 'demo-api.binance.com');
+    // Authoritative Futures equity = $10,000 (NOT inflated by non-margin 0.01 BTC), free margin = $7,500 (excludes $2,500 locked!)
+    assert.equal(ver.futuresEquityUsd, 10000);
+    assert.equal(ver.futuresBalanceUsd, 7500);
+    // Binance-native Spot prices: 5000 * 1.001436 ($5007.18) + 5000 ($5000) = $10,007.18 total, free = $9,005.74 (excludes $1,001.44 locked!)
+    assert.equal(ver.spotEquityUsd, 10007.18);
+    assert.equal(ver.spotBalanceUsd, 9005.74);
+    assert.equal(ver.balanceUsd, 20007.18);
+
+    // Executing a Spot order on Binance Demo automatically routes to demo-api.binance.com!
+    const spotExec = await executeRealExchangeOrder({
+      exchange: 'BINANCE',
+      symbol: 'ETH-USDT',
+      side: 'LONG',
+      orderPurpose: 'ENTRY_MAKER',
+      sizeUsd: 100,
+      price: 1650,
+      leverage: 1,
+      marketType: 'SPOT',
+      venueMode: 'SPOT',
+      useTestnet: true,
+      credentials: {
+        apiKey: 'demo-key-123456',
+        apiSecret: 'demo-sec-987654',
+        binanceSpotHost: ver.resolvedSpotHost,
+      },
+      rlsContext: { autoSignEnabled: true, nonce: Date.now() },
+    });
+    assert.equal(spotExec.ok, true);
+    assert.ok(spotOrderUrl.includes('demo-api.binance.com/api/v3/order'));
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearInstrumentSpecCache();
+  }
+});

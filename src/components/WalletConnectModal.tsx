@@ -303,14 +303,21 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
             typeof res.futuresBalanceUsd === 'number'
               ? res.futuresBalanceUsd
               : item.futuresBalanceUsd,
+          futuresEquityUsd:
+            typeof res.futuresEquityUsd === 'number'
+              ? res.futuresEquityUsd
+              : item.futuresEquityUsd,
           spotBalanceUsd:
             typeof res.spotBalanceUsd === 'number' ? res.spotBalanceUsd : item.spotBalanceUsd,
+          spotEquityUsd:
+            typeof res.spotEquityUsd === 'number' ? res.spotEquityUsd : item.spotEquityUsd,
           addressOrKeyId: res.addressDisplay || item.addressOrKeyId,
           balanceUsd: res.balanceUsd ?? item.balanceUsd,
           rlsPolicyStatus: 'ENFORCED',
           credentials: {
             ...(item.credentials || {}),
             ...(isEvmPair && creds.walletAddress ? { walletAddress: creds.walletAddress } : {}),
+            ...(res.resolvedSpotHost ? { binanceSpotHost: res.resolvedSpotHost } : {}),
             useTestnet: effectiveTestnet,
           },
         };
@@ -509,12 +516,19 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                           </span>
                         )}
                         <span
-                          className={`px-1.5 py-0.5 text-[9px] font-bold border ${w.verifiedReal
-                              ? 'bg-[#00E676] text-black border-[#00E676]'
+                          className={`px-1.5 py-0.5 text-[9px] font-bold border ${
+                            w.verifiedReal
+                              ? w.credentials?.useTestnet
+                                ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
+                                : 'bg-[#00E676] text-black border-[#00E676]'
                               : 'bg-[#141C2B] text-[#00E5FF] border-[#1E2B40]'
-                            }`}
+                          }`}
                         >
-                          {w.verifiedReal ? '✓ REAL VERIFIED' : w.type}
+                          {w.verifiedReal
+                            ? w.credentials?.useTestnet
+                              ? '✓ TESTNET / DEMO'
+                              : '✓ REAL MAINNET'
+                            : w.type}
                         </span>
                       </div>
                       <div className="text-[10px] text-[#94A3B8] mt-0.5">{w.chainOrScope}</div>
@@ -524,10 +538,37 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                         ${w.balanceUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
                       </div>
                       <div className="text-[9.5px] text-[#64748B]">
-                        {w.verifiedReal ? 'Live Equity' : w.connected ? 'Paper Equity' : 'Offline'}
+                        {w.verifiedReal
+                          ? w.credentials?.useTestnet
+                            ? 'Testnet/Demo Equity'
+                            : 'Live Mainnet Equity'
+                          : w.connected
+                            ? 'Paper Equity'
+                            : 'Offline'}
                       </div>
                     </div>
                   </div>
+
+                  {w.verifiedReal && Array.isArray(w.chainBalances) && w.chainBalances.length > 0 && w.type === 'CEX_API' && (
+                    <div
+                      data-testid={`wallet-breakdown-${w.id}`}
+                      className="px-2 py-1.5 bg-[#060B12] border border-[#17263B] text-[9.5px] space-y-1"
+                    >
+                      {w.chainBalances.map((cb) => (
+                        <div key={String(cb.chainId)} className="flex flex-col gap-0.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <span className="text-[#CBD5E1] font-bold">{cb.chainName}</span>
+                            <span className="text-[#00E676] font-extrabold">
+                              ${cb.totalChainUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                            </span>
+                          </div>
+                          <div className="text-[#94A3B8] leading-tight truncate" title={cb.recommendedFor}>
+                            {cb.recommendedFor}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
 
                   <div className="px-2 py-1 bg-[#05070B] border border-[#141C29] text-[10px] flex items-center justify-between">
                     <span className="text-[#64748B]">STATUS / KEY:</span>

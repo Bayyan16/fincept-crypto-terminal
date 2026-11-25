@@ -1350,10 +1350,22 @@ export function App({
                   typeof syncRes.futuresBalanceUsd === 'number'
                     ? syncRes.futuresBalanceUsd
                     : w.futuresBalanceUsd,
+                futuresEquityUsd:
+                  typeof syncRes.futuresEquityUsd === 'number'
+                    ? syncRes.futuresEquityUsd
+                    : w.futuresEquityUsd,
                 spotBalanceUsd:
                   typeof syncRes.spotBalanceUsd === 'number'
                     ? syncRes.spotBalanceUsd
                     : w.spotBalanceUsd,
+                spotEquityUsd:
+                  typeof syncRes.spotEquityUsd === 'number'
+                    ? syncRes.spotEquityUsd
+                    : w.spotEquityUsd,
+                credentials: {
+                  ...(w.credentials || {}),
+                  ...(syncRes.resolvedSpotHost ? { binanceSpotHost: syncRes.resolvedSpotHost } : {}),
+                },
               };
               return {
                 ...nextRow,
@@ -5704,14 +5716,42 @@ export function App({
                               }`}
                             />
                             <span className="font-extrabold text-white">{w.name}</span>
-                            <span className="px-1.5 py-[1px] bg-[#131C2E] text-[#00E5FF] text-[9.5px] font-bold">
-                              {w.verifiedReal ? 'REAL MAINNET' : w.connected ? 'CONNECTED' : 'OFFLINE'}
+                            <span
+                              data-testid={`portfolio-wallet-badge-${w.id}`}
+                              className={`px-1.5 py-[1px] text-[9.5px] font-bold ${
+                                w.verifiedReal
+                                  ? w.credentials?.useTestnet
+                                    ? 'bg-[#FF9F1C]/20 text-[#FF9F1C] border border-[#FF9F1C]/60'
+                                    : 'bg-[#00E676]/15 text-[#00E676] border border-[#00E676]/60'
+                                  : 'bg-[#131C2E] text-[#00E5FF]'
+                              }`}
+                            >
+                              {w.verifiedReal
+                                ? w.credentials?.useTestnet
+                                  ? 'TESTNET / DEMO'
+                                  : 'REAL MAINNET'
+                                : w.connected
+                                  ? 'CONNECTED'
+                                  : 'OFFLINE'}
                             </span>
                           </div>
                           <div className="text-[10px] text-[#94A3B8]">
                             Alamat / Key: <span className="text-[#FF9F1C]">{w.addressOrKeyId}</span> •{' '}
                             {w.chainOrScope}
                           </div>
+                          {w.verifiedReal && Array.isArray(w.chainBalances) && w.chainBalances.length > 0 && w.type === 'CEX_API' && (
+                            <div className="text-[9.5px] text-[#CBD5E1] flex flex-wrap gap-x-3 gap-y-0.5 pt-0.5">
+                              {w.chainBalances.map((cb) => (
+                                <span key={String(cb.chainId)}>
+                                  <strong className="text-[#00E5FF]">{cb.chainName}:</strong>{' '}
+                                  <span className="text-[#00E676] font-bold">
+                                    ${cb.totalChainUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                                  </span>{' '}
+                                  <span className="text-[#94A3B8]">({cb.stableSymbol})</span>
+                                </span>
+                              ))}
+                            </div>
+                          )}
                         </div>
 
                         <div className="flex items-center justify-between sm:justify-end gap-2.5 sm:gap-3 shrink-0">
