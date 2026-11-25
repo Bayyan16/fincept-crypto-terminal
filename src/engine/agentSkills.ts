@@ -126,6 +126,9 @@ export interface LowRiskHunterCandidate {
   taScore?: number;
   newsCredibilityPct?: number;
   alignedAgentsCount?: number;
+  hasRealCandles?: boolean;
+  hasVeto?: boolean;
+  vetoReason?: string | null;
   riskRewardRatio?: number;
   recommendedLeverage: number;
   recommendedSizeUsd: number;
@@ -136,15 +139,14 @@ export interface LowRiskHunterCandidate {
   analysisSummary: string;
 }
 
+export interface MarketScannerOptions {
+  requireRealCandles?: boolean;
+  requireConsensusQuorum?: boolean;
+}
+
 /**
- * SKILL 5 (UPGRADED WITH 4-AGENT CONSENSUS FORUM):
+ * SKILL 5 (UPGRADED WITH 4-AGENT CONSENSUS FORUM & ZERO-SYNTHETIC REAL-DATA GATES):
  * Autonomous Post-Take-Profit Hunter & All-Market Multi-Agent Scanner.
- * Scans across ALL tradable crypto markets (L1/L2, AI/DePIN, DeFi/RWA, Memecoins, DEX, Top 10)
- * using:
- *  - Agent 1: Bloomberg & Macro News (90-100% Validated)
- *  - Agent 2: Technical Analysis (Price Action S/R, EMA 20/50/200, RSI-14, MACD, Bollinger Bands)
- *  - Agent 3: Institutional Whale Wallet Tracker
- *  - Agent 4: Execution Precision Arbiter (Structure SL, R:R >= 2.2x, Zero-Slop Breakeven Lock)
  */
 export function scanAllMarketMultiAgentCandidates(
   markets: MarketPair[],
@@ -153,15 +155,18 @@ export function scanAllMarketMultiAgentCandidates(
   minLiquidityGate: number,
   baseOrderSizeUsd: number,
   verifiedNews: VerifiedNewsItem[] = INITIAL_VERIFIED_NEWS,
-  candlesMap?: Record<string, CandlePoint[]>
+  candlesMap?: Record<string, CandlePoint[]>,
+  options: MarketScannerOptions = {}
 ): LowRiskHunterCandidate[] {
   const openSymbols = new Set(openPositions.map((p) => p.symbol));
+  const safeMinLiqGate = Math.max(0, Math.min(100, Number(minLiquidityGate) || 0));
 
+  // CRITICAL (#48): Enforce the user's EXACT minLiquidityGate (never cap at Math.min(60, ...))!
   let eligible = markets.filter(
     (m) =>
       m.price > 0 &&
       !openSymbols.has(m.symbol) &&
-      m.liquidityScore >= Math.min(60, minLiquidityGate)
+      m.liquidityScore >= safeMinLiqGate
   );
 
   if (eligible.length === 0) return [];
@@ -173,26 +178,27 @@ export function scanAllMarketMultiAgentCandidates(
 
   const validNews = verifiedNews.filter((n) => n.credibilityScore >= 90);
 
-  const scored: LowRiskHunterCandidate[] = eligible.map((m) => {
+  const scored: LowRiskHunterCandidate[] = [];
+  for (const m of eligible) {
     const spreadSafety = Math.max(0, 100 - m.spreadBps * 16);
     const depthSafety = Math.min(100, 66 + m.depthPlusMinusHalfPctUsd / 1_200_000);
     const liquiditySafety = Math.round(spreadSafety * 0.45 + depthSafety * 0.55);
 
-    // Agent 2: Quantitative Technical Analysis on market using real OHLCV candles if loaded
+    // Agent 2: Strictly real exchange OHLCV candles (NO sine-wave fabrication!)
     const realCandles =
       candlesMap?.[`${m.symbol}_15m`] ||
       candlesMap?.[`${m.symbol}_5m`] ||
       candlesMap?.[`${m.symbol}_1h`] ||
       candlesMap?.[m.hlCoin];
-    const ta = computeTechnicalAnalysisSnapshot(m, realCandles);
-    const taSide: 'LONG' | 'SHORT' =
-      ta.recommendedSide !== 'WAIT'
-        ? ta.recommendedSide
-        : m.change24h >= 0
-          ? 'LONG'
-          : 'SHORT';
+    const hasRealCandles = Boolean(realCandles && realCandles.length >= 24);
+    if (options.requireRealCandles && !hasRealCandles) {
+      continue;
+    }
 
-    // Agent 1: Bloomberg 90-100% Verified News check (Zero Long-Bias: direct news overrides generic 'ALL')
+    const ta = computeTechnicalAnalysisSnapshot(m, realCandles);
+    const taSide: 'LONG' | 'SHORT' | 'WAIT' = ta.hasRealCandles ? ta.recommendedSide : 'WAIT';
+
+    // Agent 1: Independent Verified News (NO circular fallback to change24h or taSide!)
     const directCoinNews = validNews.filter((n) =>
       n.affectedAssets.some((a) => a.toUpperCase() === m.baseAsset.toUpperCase())
     );
@@ -206,45 +212,80 @@ export function scanAllMarketMultiAgentCandidates(
         ? Math.round(
             coinNews.reduce((acc, n) => acc + n.credibilityScore, 0) / coinNews.length
           )
-        : 95;
+        : 0;
 
-    const directBull = directCoinNews.filter((n) => n.sentiment === 'BULLISH').length;
-    const directBear = directCoinNews.filter((n) => n.sentiment === 'BEARISH').length;
-    const newsSide: 'LONG' | 'SHORT' =
-      directBear > directBull
-        ? 'SHORT'
-        : directBull > directBear
-          ? 'LONG'
-          : m.change24h < -0.6 || (taSide === 'SHORT' && m.whaleNetFlow1hUsd < 0)
-            ? 'SHORT'
-            : 'LONG';
+    const bullNewsCount = coinNews.filter((n) => n.sentiment === 'BULLISH').length;
+    const bearNewsCount = coinNews.filter((n) => n.sentiment === 'BEARISH').length;
+    const newsSide: 'LONG' | 'SHORT' | 'WAIT' =
+      bullNewsCount > bearNewsCount
+        ? 'LONG'
+        : bearNewsCount > bullNewsCount
+          ? 'SHORT'
+          : 'WAIT';
 
-    // Agent 3: Institutional Whale Flow
-    const whaleSide: 'LONG' | 'SHORT' =
-      m.whaleNetFlow1hUsd >= 0 && m.obiScore >= -0.05 ? 'LONG' : 'SHORT';
+    // Agent 3: Real Whale Flow & Real L2 OBI (WAIT when no real whale flow or real OBI exists!)
+    const hasRealFlowOrBook =
+      Boolean(m.hasRealWhaleFlow) ||
+      Boolean(m.hasRealOrderbook) ||
+      Math.abs(m.whaleNetFlow1hUsd) >= 25_000 ||
+      Math.abs(m.obiScore) >= 0.12;
+    const whaleSide: 'LONG' | 'SHORT' | 'WAIT' = !hasRealFlowOrBook
+      ? 'WAIT'
+      : m.whaleNetFlow1hUsd > 0 && m.obiScore >= -0.05
+        ? 'LONG'
+        : m.whaleNetFlow1hUsd < 0 && m.obiScore <= 0.05
+          ? 'SHORT'
+          : m.obiScore >= 0.15
+            ? 'LONG'
+            : m.obiScore <= -0.15
+              ? 'SHORT'
+              : 'WAIT';
+
     const obiStrength = Math.min(40, Math.abs(m.obiScore) * 45);
     const whaleStrength = Math.min(45, Math.abs(m.whaleNetFlow1hUsd) / 450_000);
-    const whaleAlignment = Math.round(
-      Math.min(99, 55 + obiStrength * 0.5 + whaleStrength * 0.6)
-    );
+    const whaleAlignment = hasRealFlowOrBook
+      ? Math.round(Math.min(99, 55 + obiStrength * 0.5 + whaleStrength * 0.6))
+      : 50;
 
     const votes = [newsSide, taSide, whaleSide];
     const longVotes = votes.filter((v) => v === 'LONG').length;
-    const side: 'LONG' | 'SHORT' = longVotes >= 2 ? 'LONG' : 'SHORT';
-    const alignedAgentsCount =
-      votes.filter((v) => v === side).length + (liquiditySafety >= 72 ? 1 : 0);
+    const shortVotes = votes.filter((v) => v === 'SHORT').length;
+    const side: 'LONG' | 'SHORT' = longVotes >= shortVotes ? 'LONG' : 'SHORT';
+    const directionalAgreement = Math.max(longVotes, shortVotes);
+
+    const rsiExhaustionVeto =
+      hasRealCandles && ((side === 'LONG' && ta.rsi14 >= 88) || (side === 'SHORT' && ta.rsi14 <= 12));
+    const liquidityVeto = m.spreadBps > 45 || m.liquidityScore < safeMinLiqGate;
+    const hasVeto = !hasRealCandles || rsiExhaustionVeto || liquidityVeto;
+    const vetoReason = !hasRealCandles
+      ? 'No real OHLCV candles loaded'
+      : rsiExhaustionVeto
+        ? `RSI(14) extreme exhaustion (${ta.rsi14})`
+        : liquidityVeto
+          ? `Spread (${m.spreadBps} bps) or liquidity (${m.liquidityScore}) failed gate`
+          : null;
+
+    // Agent 4 (Arbiter) aligns ONLY if not vetoed and >= 2 independent agents agree on direction
+    const arbiterAligned = !hasVeto && directionalAgreement >= 2 && liquiditySafety >= 70;
+    const alignedAgentsCount = hasVeto ? 0 : directionalAgreement + (arbiterAligned ? 1 : 0);
+
+    if (options.requireConsensusQuorum && (hasVeto || alignedAgentsCount < 3)) {
+      continue;
+    }
 
     // Composite 4-Agent Consensus Score
-    const lowRiskScore = Math.min(
-      99,
-      Math.round(
-        liquiditySafety * 0.24 +
-          ta.taScore * 0.28 +
-          whaleAlignment * 0.28 +
-          newsCredibilityPct * 0.2 +
-          (alignedAgentsCount === 4 ? 4 : 0)
-      )
-    );
+    const lowRiskScore = hasVeto
+      ? Math.min(45, Math.round(liquiditySafety * 0.4 + ta.taScore * 0.3))
+      : Math.min(
+          99,
+          Math.round(
+            liquiditySafety * 0.24 +
+              ta.taScore * 0.28 +
+              whaleAlignment * 0.28 +
+              Math.max(50, newsCredibilityPct) * 0.2 +
+              (alignedAgentsCount === 4 ? 4 : 0)
+          )
+        );
 
     const recommendedLeverage =
       lowRiskScore >= 92
@@ -269,9 +310,8 @@ export function scanAllMarketMultiAgentCandidates(
         : Math.min(entryPrice * 1.008, ta.resistance1)
     );
     const initialBeGuardPrice = formatSmartPrice(
-      side === 'LONG' ? entryPrice * 1.0003 : entryPrice * 0.9997
+      side === 'LONG' ? entryPrice * 1.0004 : entryPrice * 0.9996
     );
-    // Minimum +50% ROI Floor + Uncapped Dynamic Agent Target Ratio based on 4-Agent Conviction
     const agentTargetRoiDecimal = Math.max(
       0.55,
       0.5 + Math.max(0, lowRiskScore - 76) * 0.045
@@ -285,16 +325,16 @@ export function scanAllMarketMultiAgentCandidates(
     const riskDist = Math.max(entryPrice * 0.0025, Math.abs(entryPrice - stopLossPrice));
     const rewardDist = Math.abs(takeProfitPrice - entryPrice);
     const riskRewardRatio = Number(
-      Math.max(4.5, rewardDist / riskDist).toFixed(2)
+      Math.max(1.5, rewardDist / riskDist).toFixed(2)
     );
 
-    const analysisSummary = `Forum ${alignedAgentsCount}/4 Agent (${lowRiskScore}/100) | News ${newsCredibilityPct}% Valid | TA: ${ta.structureLabel} (RSI ${ta.rsi14}) | Whale ${
-      m.whaleNetFlow1hUsd >= 0 ? '+' : '-'
-    }$${(Math.abs(m.whaleNetFlow1hUsd) / 1e6).toFixed(2)}M | Min TP +50% → Target Dinamis +${Math.round(
-      agentTargetRoiDecimal * 100
-    )}% / ∞ (R:R 1:${riskRewardRatio} @ ${recommendedLeverage}x)`;
+    const analysisSummary = hasVeto
+      ? `[HOLD/VETO: ${vetoReason}] ${m.symbol} ditahan hingga data real-time & konsensus terpenuhi.`
+      : `Forum ${alignedAgentsCount}/4 Agent (${lowRiskScore}/100) | News ${newsCredibilityPct}% Valid | TA: ${ta.structureLabel} (RSI ${ta.rsi14}) | Whale ${
+          m.whaleNetFlow1hUsd >= 0 ? '+' : '-'
+        }$${(Math.abs(m.whaleNetFlow1hUsd) / 1e6).toFixed(2)}M | R:R 1:${riskRewardRatio} @ ${recommendedLeverage}x`;
 
-    return {
+    scored.push({
       market: m,
       side,
       lowRiskScore,
@@ -303,6 +343,9 @@ export function scanAllMarketMultiAgentCandidates(
       taScore: ta.taScore,
       newsCredibilityPct,
       alignedAgentsCount,
+      hasRealCandles,
+      hasVeto,
+      vetoReason,
       riskRewardRatio,
       recommendedLeverage,
       recommendedSizeUsd,
@@ -311,10 +354,15 @@ export function scanAllMarketMultiAgentCandidates(
       initialBeGuardPrice,
       takeProfitPrice,
       analysisSummary,
-    };
-  });
+    });
+  }
 
-  scored.sort((a, b) => b.lowRiskScore - a.lowRiskScore);
+  scored.sort(
+    (a, b) =>
+      Number(Boolean(b.hasRealCandles)) - Number(Boolean(a.hasRealCandles)) ||
+      (b.alignedAgentsCount || 0) - (a.alignedAgentsCount || 0) ||
+      b.lowRiskScore - a.lowRiskScore
+  );
   return scored;
 }
 
@@ -325,7 +373,8 @@ export function selectBestLowRiskHunterCandidate(
   minLiquidityGate: number,
   baseOrderSizeUsd: number,
   verifiedNews: VerifiedNewsItem[] = INITIAL_VERIFIED_NEWS,
-  candlesMap?: Record<string, CandlePoint[]>
+  candlesMap?: Record<string, CandlePoint[]>,
+  options: MarketScannerOptions = {}
 ): LowRiskHunterCandidate | null {
   const candidates = scanAllMarketMultiAgentCandidates(
     markets,
@@ -334,11 +383,17 @@ export function selectBestLowRiskHunterCandidate(
     minLiquidityGate,
     baseOrderSizeUsd,
     verifiedNews,
-    candlesMap
+    candlesMap,
+    options
   );
-  // Strict Precision Gate: prefer candidates with >= 3/4 agents aligned
-  const highConviction = candidates.find((c) => (c.alignedAgentsCount ?? 4) >= 3);
-  return highConviction || candidates[0] || null;
+  // Strict Precision Gate: ONLY return candidates with real candles, no Veto, and >= 3/4 aligned agents!
+  const verifiedQuorum = candidates.find(
+    (c) => c.hasRealCandles && !c.hasVeto && (c.alignedAgentsCount ?? 0) >= 3
+  );
+  if (options.requireConsensusQuorum || options.requireRealCandles) {
+    return verifiedQuorum || null;
+  }
+  return verifiedQuorum || candidates.find((c) => !c.hasVeto && (c.alignedAgentsCount ?? 0) >= 3) || null;
 }
 
 export interface DeepPositionEvaluation {
@@ -481,8 +536,8 @@ export function evaluateActivePositionDeepIntelligence(
   }
 
   // Position is in Profit (unrealizedPnlPct >= 0)
-  // MANDATORY POLICY: Minimum Take Profit Ratio >= 50% per trade, Maximum UNCAPPED (∞) until Agent decides optimal exit ratio!
-  const minTpFloorPct = Math.max(50, autoTakeProfitTriggerPct);
+  // Honor user's configured autoTakeProfitTriggerPct (min 1% floor, never override <50% settings to 50%!)
+  const minTpFloorPct = Math.max(1, Number.isFinite(autoTakeProfitTriggerPct) ? autoTakeProfitTriggerPct : 15);
 
   // Agent computes an Uncapped Dynamic Target Ratio based on 3-pillar institutional momentum & peak expansion
   const momentumExpansionBonus =

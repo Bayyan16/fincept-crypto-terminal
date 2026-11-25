@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { ExecutionEnvironment, WalletConnectionState, WalletCredentials } from '../types/terminal';
 import {
   connectBrowserExtensionWallet,
+  ExchangeConfigHealthItem,
+  fetchAllExchangesConfigStatus,
   FLEXIBLE_EVM_NETWORKS,
   pingExchangeVenueConnection,
   saveWalletsToVault,
@@ -12,6 +14,7 @@ import {
   computeWalletRowIntegrityTag,
   deriveWalletRlsOwnerScope,
 } from '../engine/rlsSecurityGuard';
+import { computeUnifiedPortfolioEquityUsd } from '../../backend/realExecutionRouter.mjs';
 
 interface WalletConnectModalProps {
   isOpen: boolean;
@@ -66,6 +69,7 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
   const [verifyingId, setVerifyingId] = useState<string | null>(null);
   const [publicIpv4, setPublicIpv4] = useState<string>('');
   const [copiedIp, setCopiedIp] = useState<boolean>(false);
+  const [exchangeHealth, setExchangeHealth] = useState<ExchangeConfigHealthItem[]>([]);
   const [statusBanner, setStatusBanner] = useState<{
     tone: 'SUCCESS' | 'ERROR' | 'INFO';
     text: string;
@@ -76,15 +80,23 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
   useEffect(() => {
     if (isOpen) {
       setVisibility('open');
-      pingExchangeVenueConnection('binance_api', false)
+      const useTestnet = executionEnv === 'EXCHANGE_TESTNET';
+      pingExchangeVenueConnection('binance_api', useTestnet)
         .then((r) => {
           if (r.publicIp) setPublicIpv4(r.publicIp);
         })
-        .catch(() => {});
+        .catch(() => { });
+      fetchAllExchangesConfigStatus(useTestnet)
+        .then((status) => {
+          if (status.ok && Array.isArray(status.exchanges)) {
+            setExchangeHealth(status.exchanges);
+          }
+        })
+        .catch(() => { });
       return;
     }
     setVisibility((prev) => (prev === 'open' ? 'closing' : 'closed'));
-  }, [isOpen]);
+  }, [isOpen, executionEnv]);
 
   useEffect(() => {
     if (visibility !== 'closing') return;
@@ -116,12 +128,12 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
       const next = prev.map((w) =>
         w.id === id
           ? {
-              ...w,
-              credentials: {
-                ...(w.credentials || {}),
-                [field]: value,
-              },
-            }
+            ...w,
+            credentials: {
+              ...(w.credentials || {}),
+              [field]: value,
+            },
+          }
           : w
       );
       saveWalletsToVault(next);
@@ -185,9 +197,8 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
         text: `${w.name} terhubung via Browser Extension (${extRes.fullAddress.slice(
           0,
           6
-        )}...${extRes.fullAddress.slice(-4)} pada ${
-          extRes.activeChainName || 'Multi-Chain'
-        }). Multi-Chain Balance: $${(verifyRes.balanceUsd ?? 0).toLocaleString()}`,
+        )}...${extRes.fullAddress.slice(-4)} pada ${extRes.activeChainName || 'Multi-Chain'
+          }). Multi-Chain Balance: $${(verifyRes.balanceUsd ?? 0).toLocaleString()}`,
       });
     } else {
       setVerifyingId(null);
@@ -326,12 +337,12 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
       const next = prev.map((item) =>
         item.id === w.id
           ? {
-              ...item,
-              connected: false,
-              verifiedReal: false,
-              autoSignEnabled: false,
-              addressOrKeyId: 'Disconnected',
-            }
+            ...item,
+            connected: false,
+            verifiedReal: false,
+            autoSignEnabled: false,
+            addressOrKeyId: 'Disconnected',
+          }
           : item
       );
       saveWalletsToVault(next);
@@ -361,307 +372,351 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
         onClick={(e) => {
           if (e.target === e.currentTarget) onClose();
         }}
-        className={`fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 ${
-          visibility === 'closing' ? 'wm-overlay-out' : 'wm-overlay-in'
-        }`}
+        className={`fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm p-4 ${visibility === 'closing' ? 'wm-overlay-out' : 'wm-overlay-in'
+          }`}
       >
         <div
           data-testid="wallet-modal-panel"
-          className={`w-full max-w-4xl bg-[#070A0F] border-2 border-[#FF9F1C] shadow-2xl flex flex-col max-h-[90vh] ${
-            visibility === 'closing' ? 'wm-panel-out' : 'wm-panel-in'
-          }`}
-        >
-        {/* Header */}
-        <div className="flex items-center justify-between px-4 py-2.5 bg-[#0D131D] border-b border-[#1E2736]">
-          <div className="flex items-center gap-2">
-            <span className="w-2.5 h-2.5 bg-[#FF9F1C] inline-block" />
-            <h2 className="text-xs font-extrabold tracking-wider text-[#F8FAFC] uppercase">
-              REAL-MONEY MULTI-WALLET (PHANTOM / TRUST / HL) & CEX API EXECUTION VAULT
-            </h2>
-          </div>
-          <button
-            data-testid="wallet-modal-close"
-            onClick={onClose}
-            className="wm-btn px-2.5 py-0.5 text-xs font-bold text-[#94A3B8] hover:text-white hover:bg-[#FF1744]/20 border border-[#1E2736] hover:border-[#FF1744]"
-          >
-            ESC / CLOSE ✕
-          </button>
-        </div>
-
-        {/* Security Notice */}
-        <div
-          data-testid="wallet-rls-security-banner"
-          className="px-4 py-2 bg-[#0A0E17] border-b border-[#1E2736] text-[11px] text-[#CBD5E1] flex items-center justify-between"
-        >
-          <div>
-            <span className="text-[#00E5FF] font-bold">PROTEKSI RLS (ROW-LEVEL SECURITY) & REAL-MONEY 5-LAYER SHIELD:</span>{' '}
-            Isolasi pemilik sesi per-wallet, segel brankas kriptografi lokal, anti-replay nonce 5 menit, proteksi harga mark oracle, & izin{' '}
-            <strong>Trade-Only (Tanpa Withdraw)</strong>.
-          </div>
-          <span
-            data-testid="wallet-rls-enforced-badge"
-            className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-[10px] font-extrabold whitespace-nowrap ml-2"
-          >
-            RLS 5-LAYER ACTIVE
-          </span>
-        </div>
-
-        {statusBanner && (
-          <div
-            className={`px-4 py-2 border-b text-[11px] font-bold ${
-              statusBanner.tone === 'SUCCESS'
-                ? 'bg-[#00E676]/15 border-[#00E676]/50 text-[#00E676]'
-                : statusBanner.tone === 'ERROR'
-                  ? 'bg-[#FF1744]/20 border-[#FF1744] text-[#FF1744]'
-                  : 'bg-[#00E5FF]/15 border-[#00E5FF]/50 text-[#00E5FF]'
+          className={`w-full max-w-4xl bg-[#070A0F] border-2 border-[#FF9F1C] shadow-2xl flex flex-col max-h-[90vh] ${visibility === 'closing' ? 'wm-panel-out' : 'wm-panel-in'
             }`}
-          >
-            {statusBanner.text}
+        >
+          {/* Header */}
+          <div className="flex items-center justify-between px-4 py-2.5 bg-[#0D131D] border-b border-[#1E2736]">
+            <div className="flex items-center gap-2">
+              <span className="w-2.5 h-2.5 bg-[#FF9F1C] inline-block" />
+              <h2 className="text-xs font-extrabold tracking-wider text-[#F8FAFC] uppercase">
+                REAL-MONEY MULTI-WALLET (PHANTOM / TRUST / HL) & CEX API EXECUTION VAULT
+              </h2>
+            </div>
+            <button
+              data-testid="wallet-modal-close"
+              onClick={onClose}
+              className="wm-btn px-2.5 py-0.5 text-xs font-bold text-[#94A3B8] hover:text-white hover:bg-[#FF1744]/20 border border-[#1E2736] hover:border-[#FF1744]"
+            >
+              ESC / CLOSE ✕
+            </button>
           </div>
-        )}
 
-        {/* Wallets & CEX Cards */}
-        <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3 overflow-y-auto flex-1">
-          {wallets.map((w) => {
-            const isExpanded = expandedId === w.id;
-            const creds = w.credentials || {};
-            const isWeb3 = w.id === 'phantom' || w.id === 'trust' || w.id === 'hyperliquid_agent';
+          {/* Security Notice */}
+          <div
+            data-testid="wallet-rls-security-banner"
+            className="px-4 py-2 bg-[#0A0E17] border-b border-[#1E2736] text-[11px] text-[#CBD5E1] flex items-center justify-between"
+          >
+            <div>
+              <span className="text-[#00E5FF] font-bold">PROTEKSI RLS (ROW-LEVEL SECURITY) & REAL-MONEY 5-LAYER SHIELD:</span>{' '}
+              Isolasi pemilik sesi per-wallet, segel brankas kriptografi lokal, anti-replay nonce 5 menit, proteksi harga mark oracle, & izin{' '}
+              <strong>Trade-Only (Tanpa Withdraw)</strong>.
+            </div>
+            <span
+              data-testid="wallet-rls-enforced-badge"
+              className="px-2 py-0.5 bg-[#00E676]/15 border border-[#00E676] text-[#00E676] text-[10px] font-extrabold whitespace-nowrap ml-2"
+            >
+              RLS 5-LAYER ACTIVE
+            </span>
+          </div>
 
-            return (
-              <div
-                key={w.id}
-                data-testid={`wallet-option-${w.id}`}
-                className={`p-3 border transition-colors duration-150 ${
-                  w.verifiedReal
-                    ? 'bg-[#081410] border-[#00E676]'
-                    : w.connected
-                      ? 'bg-[#0B1018] border-[#1E2F45] hover:border-[#00E5FF]/50'
-                      : 'bg-[#070A0E] border-[#161D2A] hover:border-[#00E5FF]/40'
-                } flex flex-col justify-between gap-2.5`}
-              >
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span
-                        className={`w-2 h-2 rounded-full ${
-                          w.verifiedReal
-                            ? 'bg-[#00E676] animate-ping'
-                            : w.connected
-                              ? 'bg-[#FF9F1C]'
-                              : 'bg-[#64748B]'
-                        }`}
-                      />
-                      <span className="text-xs font-extrabold text-white">{w.name}</span>
-                      <span
-                        className={`px-1.5 py-0.5 text-[9px] font-bold border ${
-                          w.verifiedReal
-                            ? 'bg-[#00E676] text-black border-[#00E676]'
-                            : 'bg-[#141C2B] text-[#00E5FF] border-[#1E2B40]'
-                        }`}
-                      >
-                        {w.verifiedReal ? '✓ REAL VERIFIED' : w.type}
-                      </span>
-                    </div>
-                    <div className="text-[10px] text-[#94A3B8] mt-0.5">{w.chainOrScope}</div>
-                  </div>
-                  <div className="text-right">
-                    <div className="text-xs font-extrabold text-[#00E676]">
-                      ${w.balanceUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                    </div>
-                    <div className="text-[9.5px] text-[#64748B]">
-                      {w.verifiedReal ? 'Live Equity' : w.connected ? 'Paper Equity' : 'Offline'}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="px-2 py-1 bg-[#05070B] border border-[#141C29] text-[10px] flex items-center justify-between">
-                  <span className="text-[#64748B]">STATUS / KEY:</span>
-                  <span className="text-[#FF9F1C] font-semibold truncate max-w-[230px]">
-                    {w.addressOrKeyId}
+          {/* 4-Exchange Live Parity & Priority Strip (#1 Hyperliquid -> #2 Binance -> #3 Bybit -> #4 OKX) */}
+          <div
+            data-testid="exchange-parity-strip"
+            className="px-4 py-1.5 bg-[#060910] border-b border-[#1E2736] flex flex-wrap items-center justify-between gap-2 text-[10px]"
+          >
+            <span className="text-[#94A3B8] font-bold">
+              PRIORITAS BURSA TERKONFIGURASI:
+            </span>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(exchangeHealth.length > 0
+                ? exchangeHealth
+                : ([
+                  { priority: 1, tier: 'PRIMARY', exchange: 'HYPERLIQUID', reachable: true, latencyMs: 0 },
+                  { priority: 2, tier: 'PRIMARY', exchange: 'BINANCE', reachable: true, latencyMs: 0 },
+                  { priority: 3, tier: 'SECONDARY', exchange: 'BYBIT', reachable: true, latencyMs: 0 },
+                  { priority: 4, tier: 'SECONDARY', exchange: 'OKX', reachable: true, latencyMs: 0 },
+                ] as Array<Partial<ExchangeConfigHealthItem>>)
+              ).map((ex) => {
+                const isPrimary = ex.tier === 'PRIMARY';
+                const isOnline = ex.reachable !== false;
+                return (
+                  <span
+                    key={ex.exchange}
+                    data-testid={`exchange-health-${ex.exchange}`}
+                    className={`px-2 py-0.5 border font-extrabold flex items-center gap-1 ${isOnline
+                        ? isPrimary
+                          ? 'bg-[#FF9F1C]/15 border-[#FF9F1C] text-[#FF9F1C]'
+                          : 'bg-[#00E676]/10 border-[#00E676]/60 text-[#00E676]'
+                        : 'bg-[#FF1744]/15 border-[#FF1744] text-[#FF1744]'
+                      }`}
+                  >
+                    <span>#{ex.priority} {ex.exchange}</span>
+                    <span className="opacity-80">
+                      {exchangeHealth.length > 0
+                        ? isOnline
+                          ? `● ${ex.latencyMs}ms`
+                          : '✕ OFFLINE'
+                        : '…'}
+                    </span>
                   </span>
-                </div>
+                );
+              })}
+            </div>
+          </div>
 
+          {statusBanner && (
+            <div
+              className={`px-4 py-2 border-b text-[11px] font-bold ${statusBanner.tone === 'SUCCESS'
+                  ? 'bg-[#00E676]/15 border-[#00E676]/50 text-[#00E676]'
+                  : statusBanner.tone === 'ERROR'
+                    ? 'bg-[#FF1744]/20 border-[#FF1744] text-[#FF1744]'
+                    : 'bg-[#00E5FF]/15 border-[#00E5FF]/50 text-[#00E5FF]'
+                }`}
+            >
+              {statusBanner.text}
+            </div>
+          )}
+
+          {/* Wallets & CEX Cards */}
+          <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-3 overflow-y-auto flex-1">
+            {wallets.map((w) => {
+              const isExpanded = expandedId === w.id;
+              const creds = w.credentials || {};
+              const isWeb3 = w.id === 'phantom' || w.id === 'trust' || w.id === 'hyperliquid_agent';
+
+              return (
                 <div
-                  data-testid={`wallet-rls-scope-${w.id}`}
-                  className="px-2 py-0.5 bg-[#070C14] border border-[#142235] text-[9.5px] flex items-center justify-between"
+                  key={w.id}
+                  data-testid={`wallet-option-${w.id}`}
+                  className={`p-3 border transition-colors duration-150 ${w.verifiedReal
+                      ? 'bg-[#081410] border-[#00E676]'
+                      : w.connected
+                        ? 'bg-[#0B1018] border-[#1E2F45] hover:border-[#00E5FF]/50'
+                        : 'bg-[#070A0E] border-[#161D2A] hover:border-[#00E5FF]/40'
+                    } flex flex-col justify-between gap-2.5`}
                 >
-                  <span className="text-[#00E5FF] font-bold">RLS ROW SCOPE:</span>
-                  <span className="text-[#00E676] font-mono truncate max-w-[220px]">
-                    {(w.rlsOwnerScope || deriveWalletRlsOwnerScope(w)).slice(0, 24)} • SEALED
-                  </span>
-                </div>
-
-                {/* Expandable Real-Money Credential Form */}
-                {isExpanded && (
-                  <div className="p-2.5 bg-[#05070B] border border-[#26354D] space-y-2 text-[10.5px]">
-                    <div className="flex items-center justify-between text-[#00E5FF] font-bold border-b border-[#162030] pb-1">
-                      <span>KONFIGURASI KREDENSIAL REAL-MONEY</span>
-                      <label className="flex items-center gap-1 text-[10px] text-[#FF9F1C] cursor-pointer">
-                        <input
-                          type="checkbox"
-                          checked={Boolean(creds.useTestnet)}
-                          onChange={(e) =>
-                            updateCredentialField(w.id, 'useTestnet', e.target.checked)
-                          }
-                          className="wm-input accent-[#FF9F1C]"
+                  <div className="flex items-start justify-between">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span
+                          className={`w-2 h-2 rounded-full ${w.verifiedReal
+                              ? 'bg-[#00E676] animate-ping'
+                              : w.connected
+                                ? 'bg-[#FF9F1C]'
+                                : 'bg-[#64748B]'
+                            }`}
                         />
-                        Gunakan Testnet
-                      </label>
-                    </div>
-
-                    {isWeb3 ? (
-                      <>
-                        <div>
-                          <label className="block text-[9.5px] text-[#94A3B8] mb-0.5">
-                            {w.id === 'phantom'
-                              ? 'ALAMAT PUBLIC SOLANA (PHANTOM)'
-                              : 'ALAMAT WALLET UTAMA EVM / HYPERLIQUID (0x...)'}
-                          </label>
-                          <input
-                            type="text"
-                            value={creds.walletAddress || ''}
-                            onChange={(e) =>
-                              updateCredentialField(w.id, 'walletAddress', e.target.value)
-                            }
-                            placeholder={
-                              w.id === 'phantom'
-                                ? 'Contoh: 7xQpL92mN4vR8cK1wZ3yT9mK2...'
-                                : 'Contoh: 0xdfc24b077bc1425ad1dea75bcb6f8158e10df303'
-                            }
-                            className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
-                          />
-                        </div>
-                        {(w.id === 'trust' || w.id === 'hyperliquid_agent') && (
-                          <div>
-                            <label className="block text-[9.5px] text-[#00E5FF] font-bold mb-1">
-                              JARINGAN FLEKSIBEL AKTIF (AUTO-CHAIN-ID SYNC — ANTI REJECT):
-                            </label>
-                            <div className="flex flex-wrap gap-1">
-                              {FLEXIBLE_EVM_NETWORKS.map((net) => {
-                                const isActiveNet = (w.activeChainId || 42161) === net.chainId;
-                                return (
-                                  <button
-                                    key={net.chainId}
-                                    type="button"
-                                    onClick={() => handleSwitchChainInModal(net.chainId)}
-                                    className={`wm-btn px-2 py-0.5 text-[9px] font-extrabold border ${
-                                      isActiveNet
-                                        ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
-                                        : 'bg-[#0C121D] text-[#94A3B8] border-[#1E2B40] hover:text-white'
-                                    }`}
-                                  >
-                                    {net.shortName}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
+                        <span className="text-xs font-extrabold text-white">{w.name}</span>
+                        {(w.id === 'hyperliquid_agent' || w.id === 'binance_api') && (
+                          <span className="px-1.5 py-0.5 text-[8.5px] font-extrabold border bg-[#FF9F1C]/15 text-[#FF9F1C] border-[#FF9F1C]">
+                            {w.id === 'hyperliquid_agent' ? 'PRIORITY #1' : 'PRIORITY #2'}
+                          </span>
                         )}
-                        {w.id === 'hyperliquid_agent' && (
+                        <span
+                          className={`px-1.5 py-0.5 text-[9px] font-bold border ${w.verifiedReal
+                              ? 'bg-[#00E676] text-black border-[#00E676]'
+                              : 'bg-[#141C2B] text-[#00E5FF] border-[#1E2B40]'
+                            }`}
+                        >
+                          {w.verifiedReal ? '✓ REAL VERIFIED' : w.type}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-[#94A3B8] mt-0.5">{w.chainOrScope}</div>
+                    </div>
+                    <div className="text-right">
+                      <div className="text-xs font-extrabold text-[#00E676]">
+                        ${w.balanceUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                      </div>
+                      <div className="text-[9.5px] text-[#64748B]">
+                        {w.verifiedReal ? 'Live Equity' : w.connected ? 'Paper Equity' : 'Offline'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="px-2 py-1 bg-[#05070B] border border-[#141C29] text-[10px] flex items-center justify-between">
+                    <span className="text-[#64748B]">STATUS / KEY:</span>
+                    <span className="text-[#FF9F1C] font-semibold truncate max-w-[230px]">
+                      {w.addressOrKeyId}
+                    </span>
+                  </div>
+
+                  <div
+                    data-testid={`wallet-rls-scope-${w.id}`}
+                    className="px-2 py-0.5 bg-[#070C14] border border-[#142235] text-[9.5px] flex items-center justify-between"
+                  >
+                    <span className="text-[#00E5FF] font-bold">RLS ROW SCOPE:</span>
+                    <span className="text-[#00E676] font-mono truncate max-w-[220px]">
+                      {(w.rlsOwnerScope || deriveWalletRlsOwnerScope(w)).slice(0, 24)} • SEALED
+                    </span>
+                  </div>
+
+                  {/* Expandable Real-Money Credential Form */}
+                  {isExpanded && (
+                    <div className="p-2.5 bg-[#05070B] border border-[#26354D] space-y-2 text-[10.5px]">
+                      <div className="flex items-center justify-between text-[#00E5FF] font-bold border-b border-[#162030] pb-1">
+                        <span>KONFIGURASI KREDENSIAL REAL-MONEY</span>
+                        <label className="flex items-center gap-1 text-[10px] text-[#FF9F1C] cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={Boolean(creds.useTestnet)}
+                            onChange={(e) =>
+                              updateCredentialField(w.id, 'useTestnet', e.target.checked)
+                            }
+                            className="wm-input accent-[#FF9F1C]"
+                          />
+                          Gunakan Testnet
+                        </label>
+                      </div>
+
+                      {isWeb3 ? (
+                        <>
                           <div>
                             <label className="block text-[9.5px] text-[#94A3B8] mb-0.5">
-                              HYPERLIQUID AGENT PRIVATE KEY (OPSIONAL — TRADE ONLY)
+                              {w.id === 'phantom'
+                                ? 'ALAMAT PUBLIC SOLANA (PHANTOM)'
+                                : 'ALAMAT WALLET UTAMA EVM / HYPERLIQUID (0x...)'}
                             </label>
                             <input
-                              type="password"
-                              value={creds.agentPrivateKey || ''}
+                              type="text"
+                              value={creds.walletAddress || ''}
                               onChange={(e) =>
-                                updateCredentialField(w.id, 'agentPrivateKey', e.target.value)
+                                updateCredentialField(w.id, 'walletAddress', e.target.value)
                               }
-                              placeholder="0x... (Kosongkan jika tanda tangan langsung via ekstensi)"
+                              placeholder={
+                                w.id === 'phantom'
+                                  ? 'Contoh: 7xQpL92mN4vR8cK1wZ3yT9mK2...'
+                                  : 'Contoh: 0xdfc24b077bc1425ad1dea75bcb6f8158e10df303'
+                              }
                               className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
                             />
                           </div>
-                        )}
-                      </>
-                    ) : (
-                      <>
-                        {w.id === 'binance_api' && (
-                          <div
-                            data-testid="binance-ip-whitelist-helper"
-                            className="p-2 bg-[#091320] border border-[#1E3A5F] text-[9.5px] text-[#CBD5E1] space-y-1"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="text-[#00E5FF] font-extrabold">
-                                IP PUBLIK WHITELIST BINANCE ANDA:
-                              </span>
-                              <div className="flex items-center gap-1.5">
-                                <code className="px-1.5 py-0.5 bg-[#05080F] border border-[#00E676]/50 text-[#00E676] font-extrabold">
-                                  {publicIpv4 || 'Mendeteksi...'}
-                                </code>
-                                {publicIpv4 && (
-                                  <button
-                                    type="button"
-                                    onClick={handleCopyPublicIp}
-                                    className="wm-btn px-1.5 py-0.5 bg-[#FF9F1C] text-black font-extrabold text-[9px]"
-                                  >
-                                    {copiedIp ? '✓ COPIED' : 'COPY IP'}
-                                  </button>
-                                )}
+                          {(w.id === 'trust' || w.id === 'hyperliquid_agent') && (
+                            <div>
+                              <label className="block text-[9.5px] text-[#00E5FF] font-bold mb-1">
+                                JARINGAN FLEKSIBEL AKTIF (AUTO-CHAIN-ID SYNC — ANTI REJECT):
+                              </label>
+                              <div className="flex flex-wrap gap-1">
+                                {FLEXIBLE_EVM_NETWORKS.map((net) => {
+                                  const isActiveNet = (w.activeChainId || 42161) === net.chainId;
+                                  return (
+                                    <button
+                                      key={net.chainId}
+                                      type="button"
+                                      onClick={() => handleSwitchChainInModal(net.chainId)}
+                                      className={`wm-btn px-2 py-0.5 text-[9px] font-extrabold border ${isActiveNet
+                                          ? 'bg-[#FF9F1C] text-black border-[#FF9F1C]'
+                                          : 'bg-[#0C121D] text-[#94A3B8] border-[#1E2B40] hover:text-white'
+                                        }`}
+                                    >
+                                      {net.shortName}
+                                    </button>
+                                  );
+                                })}
                               </div>
                             </div>
-                            <div className="text-[#94A3B8] leading-tight">
-                              Agar <strong>Enable Spot & Margin</strong> dan <strong>Enable Futures</strong> bisa dicentang di Binance: klik <strong>Edit restrictions</strong> &rarr; pilih <strong>Restrict access to trusted IPs only</strong> &rarr; paste IP di atas &rarr; klik <strong>Confirm</strong> (buka tab Futures di Binance lebih dulu jika membuat API Key Futures baru).
+                          )}
+                          {w.id === 'hyperliquid_agent' && (
+                            <div>
+                              <label className="block text-[9.5px] text-[#00E5FF] font-bold mb-0.5">
+                                HYPERLIQUID AGENT PRIVATE KEY (UNLOCK AUTO-HUNTER & AUTO-SL UNATTENDED)
+                              </label>
+                              <input
+                                type="password"
+                                value={creds.agentPrivateKey || ''}
+                                onChange={(e) =>
+                                  updateCredentialField(w.id, 'agentPrivateKey', e.target.value)
+                                }
+                                placeholder="0x... (Trade-Only Agent Key — eksekusi EIP-712 & Cancel SL otomatis tanpa popup)"
+                                className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
+                              />
                             </div>
-                          </div>
-                        )}
-                        <div>
-                          <label className="block text-[9.5px] text-[#94A3B8] mb-0.5">
-                            API KEY ({w.name.toUpperCase()})
-                          </label>
-                          <input
-                            type="text"
-                            value={creds.apiKey || ''}
-                            onChange={(e) => updateCredentialField(w.id, 'apiKey', e.target.value)}
-                            placeholder="Paste API Key Trade-Only..."
-                            className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
-                          />
-                        </div>
-                        <div>
-                          <label className="block text-[9.5px] text-[#94A3B8] mb-0.5">
-                            API SECRET (HMAC-SHA256)
-                          </label>
-                          <input
-                            type="password"
-                            value={creds.apiSecret || ''}
-                            onChange={(e) =>
-                              updateCredentialField(w.id, 'apiSecret', e.target.value)
-                            }
-                            placeholder="Paste API Secret..."
-                            className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
-                          />
-                        </div>
-                        {w.id === 'okx_api' && (
+                          )}
+                        </>
+                      ) : (
+                        <>
+                          {w.id === 'binance_api' && (
+                            <div
+                              data-testid="binance-ip-whitelist-helper"
+                              className="p-2 bg-[#091320] border border-[#1E3A5F] text-[9.5px] text-[#CBD5E1] space-y-1"
+                            >
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[#00E5FF] font-extrabold">
+                                  IP PUBLIK WHITELIST BINANCE ANDA:
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <code className="px-1.5 py-0.5 bg-[#05080F] border border-[#00E676]/50 text-[#00E676] font-extrabold">
+                                    {publicIpv4 || 'Mendeteksi...'}
+                                  </code>
+                                  {publicIpv4 && (
+                                    <button
+                                      type="button"
+                                      onClick={handleCopyPublicIp}
+                                      className="wm-btn px-1.5 py-0.5 bg-[#FF9F1C] text-black font-extrabold text-[9px]"
+                                    >
+                                      {copiedIp ? '✓ COPIED' : 'COPY IP'}
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="text-[#94A3B8] leading-tight">
+                                Agar <strong>Enable Spot & Margin</strong> dan <strong>Enable Futures</strong> bisa dicentang di Binance: klik <strong>Edit restrictions</strong> &rarr; pilih <strong>Restrict access to trusted IPs only</strong> &rarr; paste IP di atas &rarr; klik <strong>Confirm</strong> (buka tab Futures di Binance lebih dulu jika membuat API Key Futures baru).
+                              </div>
+                            </div>
+                          )}
                           <div>
                             <label className="block text-[9.5px] text-[#94A3B8] mb-0.5">
-                              OKX API PASSPHRASE
+                              API KEY ({w.name.toUpperCase()})
                             </label>
                             <input
-                              type="password"
-                              value={creds.passphrase || ''}
-                              onChange={(e) =>
-                                updateCredentialField(w.id, 'passphrase', e.target.value)
-                              }
-                              placeholder="Paste OKX Passphrase..."
+                              type="text"
+                              value={creds.apiKey || ''}
+                              onChange={(e) => updateCredentialField(w.id, 'apiKey', e.target.value)}
+                              placeholder="Paste API Key Trade-Only..."
                               className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
                             />
                           </div>
-                        )}
-                      </>
-                    )}
+                          <div>
+                            <label className="block text-[9.5px] text-[#94A3B8] mb-0.5">
+                              API SECRET (HMAC-SHA256)
+                            </label>
+                            <input
+                              type="password"
+                              value={creds.apiSecret || ''}
+                              onChange={(e) =>
+                                updateCredentialField(w.id, 'apiSecret', e.target.value)
+                              }
+                              placeholder="Paste API Secret..."
+                              className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
+                            />
+                          </div>
+                          {w.id === 'okx_api' && (
+                            <div>
+                              <label className="block text-[9.5px] text-[#94A3B8] mb-0.5">
+                                OKX API PASSPHRASE
+                              </label>
+                              <input
+                                type="password"
+                                value={creds.passphrase || ''}
+                                onChange={(e) =>
+                                  updateCredentialField(w.id, 'passphrase', e.target.value)
+                                }
+                                placeholder="Paste OKX Passphrase..."
+                                className="wm-input w-full px-2 py-1 bg-[#0B1018] border border-[#1E2B40] text-white focus:border-[#FF9F1C] focus:outline-none"
+                              />
+                            </div>
+                          )}
+                        </>
+                      )}
 
-                    <div className="flex items-center gap-2 pt-1">
-                      {isWeb3 ? (
-                        <button
-                          onClick={() => handleBrowserExtensionConnect(w)}
-                          disabled={verifyingId === w.id}
-                          className="wm-btn wm-glow flex-1 py-1 bg-[#142238] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF] font-extrabold text-[10px] disabled:opacity-60 disabled:cursor-not-allowed"
-                        >
-                          {verifyingId === w.id
-                            ? 'CONNECTING...'
-                            : '1-CLICK BROWSER EXTENSION'}
-                        </button>
-                      ) : (
+                      <div className="flex flex-wrap items-center gap-2 pt-1">
+                        {isWeb3 && (
+                          <button
+                            type="button"
+                            onClick={() => handleBrowserExtensionConnect(w)}
+                            disabled={verifyingId === w.id}
+                            className="wm-btn wm-glow flex-1 py-1 bg-[#142238] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF] font-extrabold text-[10px] disabled:opacity-60 disabled:cursor-not-allowed"
+                          >
+                            {verifyingId === w.id
+                              ? 'CONNECTING...'
+                              : '1-CLICK BROWSER EXTENSION'}
+                          </button>
+                        )}
                         <button
                           type="button"
                           data-testid={`wallet-ping-${w.id}`}
@@ -673,80 +728,78 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
                             ? 'TESTING...'
                             : '⚡ TEST KONEKSI SERVER'}
                         </button>
-                      )}
+                        <button
+                          onClick={() => handleVerifyRealCredentials(w)}
+                          disabled={verifyingId === w.id}
+                          className="wm-btn wm-glow-green flex-1 py-1 bg-[#00E676] hover:bg-[#26ff92] text-black font-extrabold text-[10px] disabled:opacity-60 disabled:cursor-not-allowed"
+                        >
+                          {verifyingId === w.id
+                            ? 'VERIFYING...'
+                            : 'VERIFY & SYNC REAL BALANCE'}
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Bottom Card Actions */}
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      onClick={() => handleToggleAutoSign(w.id)}
+                      disabled={!w.connected}
+                      className={`wm-btn px-2 py-1 text-[10px] font-bold border disabled:cursor-not-allowed ${w.connected && w.autoSignEnabled
+                          ? 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]'
+                          : 'bg-[#0D121B] text-[#64748B] border-[#1E2736]'
+                        }`}
+                    >
+                      {w.connected && w.autoSignEnabled ? '● AUTO-SIGN ON' : '○ AUTO-SIGN OFF'}
+                    </button>
+
+                    <div className="flex items-center gap-1.5">
                       <button
-                        onClick={() => handleVerifyRealCredentials(w)}
-                        disabled={verifyingId === w.id}
-                        className="wm-btn wm-glow-green flex-1 py-1 bg-[#00E676] hover:bg-[#26ff92] text-black font-extrabold text-[10px] disabled:opacity-60 disabled:cursor-not-allowed"
+                        onClick={() => setExpandedId(isExpanded ? null : w.id)}
+                        className="wm-btn px-2.5 py-1 text-[10px] font-extrabold bg-[#131B2A] text-[#00E5FF] border border-[#1E2F48] hover:bg-[#1C283E]"
                       >
-                        {verifyingId === w.id
-                          ? 'VERIFYING...'
-                          : 'VERIFY & SYNC REAL BALANCE'}
+                        {isExpanded ? 'HIDE CONFIG' : 'SETUP REAL KEY / WALLET'}
                       </button>
+                      {w.connected && (
+                        <button
+                          onClick={() => handleDisconnect(w)}
+                          className="wm-btn px-2 py-1 text-[10px] font-bold bg-[#1A1116] text-[#FF1744] border border-[#FF1744]/50 hover:bg-[#FF1744] hover:text-white"
+                        >
+                          ✕
+                        </button>
+                      )}
                     </div>
                   </div>
-                )}
-
-                {/* Bottom Card Actions */}
-                <div className="flex items-center justify-between pt-1">
-                  <button
-                    onClick={() => handleToggleAutoSign(w.id)}
-                    disabled={!w.connected}
-                    className={`wm-btn px-2 py-1 text-[10px] font-bold border disabled:cursor-not-allowed ${
-                      w.connected && w.autoSignEnabled
-                        ? 'bg-[#00E676]/15 text-[#00E676] border-[#00E676]'
-                        : 'bg-[#0D121B] text-[#64748B] border-[#1E2736]'
-                    }`}
-                  >
-                    {w.connected && w.autoSignEnabled ? '● AUTO-SIGN ON' : '○ AUTO-SIGN OFF'}
-                  </button>
-
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      onClick={() => setExpandedId(isExpanded ? null : w.id)}
-                      className="wm-btn px-2.5 py-1 text-[10px] font-extrabold bg-[#131B2A] text-[#00E5FF] border border-[#1E2F48] hover:bg-[#1C283E]"
-                    >
-                      {isExpanded ? 'HIDE CONFIG' : 'SETUP REAL KEY / WALLET'}
-                    </button>
-                    {w.connected && (
-                      <button
-                        onClick={() => handleDisconnect(w)}
-                        className="wm-btn px-2 py-1 text-[10px] font-bold bg-[#1A1116] text-[#FF1744] border border-[#FF1744]/50 hover:bg-[#FF1744] hover:text-white"
-                      >
-                        ✕
-                      </button>
-                    )}
-                  </div>
                 </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Footer */}
-        <div className="px-4 py-2.5 bg-[#0B0F17] border-t border-[#1E2736] flex items-center justify-between text-[11px]">
-          <div className="flex items-center gap-4">
-            <span className="text-[#94A3B8]">
-              Total Unified Purchasing Power:{' '}
-              <span className="text-[#00E676] font-extrabold">
-                $
-                {wallets
-                  .filter((w) => w.connected)
-                  .reduce((s, w) => s + w.balanceUsd, 0)
-                  .toLocaleString(undefined, { maximumFractionDigits: 2 })}
-              </span>
-            </span>
-            <span className="text-[#00E5FF] font-bold">
-              Verified Real Accounts: {wallets.filter((w) => w.verifiedReal).length} / {wallets.length}
-            </span>
+              );
+            })}
           </div>
-          <button
-            onClick={onClose}
-            className="wm-btn px-4 py-1 bg-[#FF9F1C] text-black font-extrabold text-xs hover:bg-[#FFB84D] hover:shadow-[0_0_14px_rgba(255,159,28,0.45)]"
-          >
-            SAVE & RETURN TO TERMINAL
-          </button>
-        </div>
+
+          {/* Footer */}
+          <div className="px-4 py-2.5 bg-[#0B0F17] border-t border-[#1E2736] flex items-center justify-between text-[11px]">
+            <div className="flex items-center gap-4">
+              <span className="text-[#94A3B8]">
+                Total Unified Purchasing Power:{' '}
+                <span data-testid="wallet-modal-unified-equity" className="text-[#00E676] font-extrabold">
+                  $
+                  {computeUnifiedPortfolioEquityUsd({ wallets, executionEnv }).toLocaleString(
+                    undefined,
+                    { maximumFractionDigits: 2 }
+                  )}
+                </span>
+              </span>
+              <span className="text-[#00E5FF] font-bold">
+                Verified Real Accounts: {wallets.filter((w) => w.verifiedReal).length} / {wallets.length}
+              </span>
+            </div>
+            <button
+              onClick={onClose}
+              className="wm-btn px-4 py-1 bg-[#FF9F1C] text-black font-extrabold text-xs hover:bg-[#FFB84D] hover:shadow-[0_0_14px_rgba(255,159,28,0.45)]"
+            >
+              SAVE & RETURN TO TERMINAL
+            </button>
+          </div>
         </div>
       </div>
     </>

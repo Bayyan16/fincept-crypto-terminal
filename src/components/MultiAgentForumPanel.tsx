@@ -15,6 +15,7 @@ import { VaultSettlementCourier3DViz } from './VaultSettlementCourier3DViz';
 
 interface MultiAgentForumPanelProps {
   consensus: MultiAgentForumConsensus;
+  activeMarket?: MarketPair;
   verifiedNews: VerifiedNewsItem[];
   topOpportunities: LowRiskHunterCandidate[];
   positionAudits?: PositionAccuracyAuditItem[];
@@ -28,6 +29,7 @@ interface MultiAgentForumPanelProps {
 
 export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
   consensus,
+  activeMarket,
   verifiedNews,
   topOpportunities,
   positionAudits = [],
@@ -169,30 +171,30 @@ export const MultiAgentForumPanel: React.FC<MultiAgentForumPanelProps> = ({
           disabled={consensus.hasVeto}
           onClick={() =>
             onExecutePrecisionTrade(
-              {
+              activeMarket || {
                 symbol: consensus.symbol,
                 baseAsset: consensus.baseAsset,
                 quoteAsset: 'USDC',
                 hlCoin: consensus.baseAsset,
-                binanceSymbol: `${consensus.baseAsset}USDT`,
+                binanceSymbol: `${consensus.baseAsset.replace(/^k(?=[A-Z]{2,})/, '')}USDT`,
                 marketType: 'PERP',
                 primaryExchange: 'HYPERLIQUID',
-                supportedExchanges: ['HYPERLIQUID', 'BINANCE'],
+                supportedExchanges: ['HYPERLIQUID', 'BINANCE', 'BYBIT', 'OKX'],
                 price: consensus.entryPrice,
                 change24h: 0,
                 high24h: consensus.takeProfit2,
                 low24h: consensus.stopLossPrice,
-                volume24hUsd: 100_000_000,
-                openInterestUsd: 50_000_000,
-                fundingRate: 0.0085,
-                spreadBps: 0.4,
-                depthPlusMinusHalfPctUsd: 10_000_000,
-                dexPoolTvlUsd: 20_000_000,
-                liquidityScore: 92,
-                obiScore: 0.35,
-                cvdDelta15mUsd: 2_000_000,
+                volume24hUsd: 0,
+                openInterestUsd: 0,
+                fundingRate: 0,
+                spreadBps: 1,
+                depthPlusMinusHalfPctUsd: 0,
+                dexPoolTvlUsd: 0,
+                liquidityScore: 0,
+                obiScore: 0,
+                cvdDelta15mUsd: 0,
                 whaleNetFlow1hUsd: consensus.whale.netFlow1hUsd,
-                whaleBias: 'STRONG LONG',
+                whaleBias: 'NEUTRAL',
               },
               consensus.recommendedSide,
               consensus.recommendedLeverage

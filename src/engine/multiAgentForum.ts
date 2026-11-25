@@ -288,6 +288,7 @@ function computeRsi14(closes: number[]): number {
     avgLoss = (avgLoss * (period - 1) + loss) / period;
   }
 
+  if (avgGain === 0 && avgLoss === 0) return 50;
   if (avgLoss === 0) return 78;
   const rs = avgGain / avgLoss;
   const rsi = 100 - 100 / (1 + rs);
@@ -365,9 +366,59 @@ export function computeTechnicalAnalysisSnapshot(
   pair: MarketPair,
   rawCandles?: CandlePoint[]
 ): TechnicalAnalysisSnapshot {
-  const series = ensureCandleSeries(pair, rawCandles);
+  const hasRealCandles = Boolean(rawCandles && rawCandles.length >= 24);
+  const lastPrice = pair.price > 0 ? pair.price : rawCandles?.[rawCandles.length - 1]?.close || 1;
+
+  // CRITICAL (#47): NEVER fabricate sine-wave OHLCV candles to generate trading signals!
+  // If real exchange candles are not loaded yet, return honest WAIT with hasRealCandles=false.
+  if (!hasRealCandles) {
+    const px = formatSmartPrice(lastPrice);
+    const estAtr = formatSmartPrice(lastPrice * 0.01);
+    const s1 = formatSmartPrice(lastPrice * 0.99);
+    const s2 = formatSmartPrice(lastPrice * 0.975);
+    const r1 = formatSmartPrice(lastPrice * 1.01);
+    const r2 = formatSmartPrice(lastPrice * 1.025);
+    return {
+      symbol: pair.symbol,
+      price: lastPrice,
+      hasRealCandles: false,
+      priceActionStructure: 'RANGE_ACCUMULATION',
+      structureLabel: 'NO REAL OHLCV CANDLES (WAITING EXCHANGE SYNC)',
+      swingHigh: r1,
+      swingLow: s1,
+      support1: s1,
+      support2: s2,
+      resistance1: r1,
+      resistance2: r2,
+      distanceToSupportPct: 1,
+      distanceToResistancePct: 1,
+      ema20: px,
+      ema50: px,
+      ema200: px,
+      emaAlignment: 'MIXED_CONSOLIDATION',
+      emaAlignmentLabel: 'AWAITING REAL OHLCV DATA',
+      rsi14: 50,
+      rsiState: 'NEUTRAL_BALANCE',
+      macdLine: 0,
+      macdSignal: 0,
+      macdHistogram: 0,
+      macdState: 'BULLISH_EXPANSION',
+      bbUpper: r1,
+      bbMiddle: px,
+      bbLower: s1,
+      bbPercentB: 0.5,
+      bbWidthPct: 2,
+      bbState: 'MEAN_REVERSION_ZONE',
+      atr14: estAtr,
+      atrPct: 1,
+      taScore: 50,
+      recommendedSide: 'WAIT',
+      summary: 'Menunggu sinkronisasi candle OHLCV asli dari bursa — analisa teknikal sintetis dinonaktifkan demi keamanan dana.',
+    };
+  }
+
+  const series = rawCandles!;
   const closes = series.map((c) => c.close);
-  const lastPrice = pair.price > 0 ? pair.price : closes[closes.length - 1] || 1;
   closes[closes.length - 1] = lastPrice;
 
   // 1. EMA 20 / EMA 50 / EMA 200
@@ -381,16 +432,16 @@ export function computeTechnicalAnalysisSnapshot(
 
   let emaAlignment: TechnicalAnalysisSnapshot['emaAlignment'] = 'MIXED_CONSOLIDATION';
   let emaAlignmentLabel = 'MIXED / MEAN CONSOLIDATION';
-  if (lastPrice >= ema20 && ema20 >= ema50 && ema50 >= ema200) {
+  if (lastPrice > ema20 && ema20 > ema50 && ema50 > ema200) {
     emaAlignment = 'BULLISH_STACK';
     emaAlignmentLabel = 'BULLISH EMA STACK (Px > EMA20 > EMA50 > EMA200)';
-  } else if (lastPrice <= ema20 && ema20 <= ema50 && ema50 <= ema200) {
+  } else if (lastPrice < ema20 && ema20 < ema50 && ema50 < ema200) {
     emaAlignment = 'BEARISH_STACK';
     emaAlignmentLabel = 'BEARISH EMA STACK (Px < EMA20 < EMA50 < EMA200)';
-  } else if (ema20 > ema50 && lastPrice >= ema20) {
+  } else if (ema20 > ema50 && lastPrice > ema20) {
     emaAlignment = 'GOLDEN_CROSS';
     emaAlignmentLabel = 'BULLISH GOLDEN CROSS (EMA20 > EMA50)';
-  } else if (ema20 < ema50 && lastPrice <= ema20) {
+  } else if (ema20 < ema50 && lastPrice < ema20) {
     emaAlignment = 'DEATH_CROSS';
     emaAlignmentLabel = 'BEARISH DEATH CROSS (EMA20 < EMA50)';
   }
@@ -510,8 +561,8 @@ export function computeTechnicalAnalysisSnapshot(
   else if (priceActionStructure === 'BEARISH_BOS_LH_LL') bullPoints -= 10;
   else if (priceActionStructure === 'BEARISH_CHOCH_REVERSAL') bullPoints -= 8;
 
-  if (macdState === 'BULLISH_CROSS' || macdState === 'BULLISH_EXPANSION') bullPoints += 6;
-  else bullPoints -= 6;
+  if (histogram > 0 && (macdState === 'BULLISH_CROSS' || macdState === 'BULLISH_EXPANSION')) bullPoints += 6;
+  else if (histogram < 0) bullPoints -= 6;
 
   if (rsiState === 'BULLISH_MOMENTUM' || rsiState === 'OVERSOLD_BOUNCE') bullPoints += 6;
   else if (rsiState === 'BEARISH_MOMENTUM' || rsiState === 'OVERBOUGHT_EXHAUSTION') bullPoints -= 6;
@@ -543,6 +594,7 @@ export function computeTechnicalAnalysisSnapshot(
   return {
     symbol: pair.symbol,
     price: lastPrice,
+    hasRealCandles: true,
     priceActionStructure,
     structureLabel,
     swingHigh,
@@ -589,9 +641,12 @@ export function computeWhaleWalletIntelSnapshot(
 ): WhaleWalletIntelSnapshot {
   const coinWhales = whaleTxs.filter(
     (w) =>
+      w.isDirectionalWhaleTrade !== false &&
+      (w.direction === 'BULLISH' || w.direction === 'BEARISH') &&
       w.tokenSymbol !== 'USDC' &&
       (w.symbol === pair.symbol ||
-        w.symbol.startsWith(pair.baseAsset) ||
+        w.symbol.startsWith(`${pair.baseAsset}-`) ||
+        w.symbol.startsWith(`${pair.baseAsset} /`) ||
         w.tokenSymbol?.toUpperCase() === pair.baseAsset.toUpperCase())
   );
 
@@ -623,13 +678,15 @@ export function computeWhaleWalletIntelSnapshot(
     );
   }
 
-  // Blend on-chain flow with live L2 Orderbook Imbalance (OBI) and 24h momentum so Agent 3 never votes LONG against a -99% L2 Ask Wall!
-  const obiFlowUsd = (orderbook.obiPercent / 100) * Math.max(4_500_000, Math.abs(pair.whaleNetFlow1hUsd) * 0.85);
-  const rawNetFlow = pair.whaleNetFlow1hUsd;
+  const obiFlowUsd =
+    orderbook.isLiveBook === false
+      ? 0
+      : (orderbook.obiPercent / 100) * Math.max(4_500_000, Math.abs(pair.whaleNetFlow1hUsd) * 0.85);
+  const rawNetFlow = pair.hasRealWhaleFlow === false ? 0 : pair.whaleNetFlow1hUsd;
   const netFlow =
-    orderbook.obiPercent <= -25 && pair.change24h < 0
+    orderbook.isLiveBook !== false && orderbook.obiPercent <= -25 && pair.change24h < 0
       ? Math.min(-Math.abs(obiFlowUsd), rawNetFlow * 0.35 + obiFlowUsd)
-      : orderbook.obiPercent >= 25 && pair.change24h >= 0
+      : orderbook.isLiveBook !== false && orderbook.obiPercent >= 25 && pair.change24h >= 0
         ? Math.max(Math.abs(obiFlowUsd), rawNetFlow * 0.35 + obiFlowUsd)
         : Math.round(rawNetFlow * 0.55 + obiFlowUsd * 0.45);
 
@@ -710,16 +767,12 @@ export function runMultiAgentForumConsensus(
     now.getMinutes()
   ).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
-  // --- AGENT 2: TECHNICAL ANALYST & PRICE ACTION STRUCTURE AGENT (Computed first so News & Whale cross-check structure) ---
+  // --- AGENT 2: TECHNICAL ANALYST & PRICE ACTION STRUCTURE AGENT ---
+  // Strictly independent: NEVER replace WAIT with change24h sign!
   const ta = computeTechnicalAnalysisSnapshot(pair, candles);
-  const taVoteDir: 'LONG' | 'SHORT' | 'WAIT' =
-    ta.recommendedSide !== 'WAIT'
-      ? ta.recommendedSide
-      : pair.change24h >= 0
-        ? 'LONG'
-        : 'SHORT';
+  const taVoteDir: 'LONG' | 'SHORT' | 'WAIT' = ta.hasRealCandles ? ta.recommendedSide : 'WAIT';
 
-  // --- AGENT 1: BLOOMBERG & MACRO VERIFIED NEWS AGENT (90-100% VALIDITY, ZERO LONG-BIAS) ---
+  // --- AGENT 1: BLOOMBERG & MACRO VERIFIED NEWS AGENT (90-100% VALIDITY, INDEPENDENT OF TA/PRICE) ---
   const cryptoSemanticGate =
     /\b(crypto|bitcoin|btc|ethereum|eth|solana|sol|hyperliquid|hype|defi|token|stablecoin|usdc|usdt|etf|sec|cftc|fed|fomc|powell|rate cut|rate hike|inflation|cpi|treasury|yield|tariff|liquidity|blackrock|ibit|fidelity|whale|on-chain|binance|coinbase|dex|perp|derivatives|institutional|altcoin|xrp|bnb|doge|avax|sui|ton|link|tao|render|ondo|aave|uni|pepe)\b/i;
 
@@ -745,7 +798,7 @@ export function runMultiAgentForumConsensus(
       ? Math.round(
           matchedNews.reduce((acc, n) => acc + n.credibilityScore, 0) / matchedNews.length
         )
-      : 96;
+      : 0;
 
   let newsBullWeight = 0;
   let newsBearWeight = 0;
@@ -753,25 +806,20 @@ export function runMultiAgentForumConsensus(
     const isDirect = item.affectedAssets.some(
       (a) => a.toUpperCase() === pair.baseAsset.toUpperCase()
     );
-    // Direct coin news has 3x weight; generic 'ALL' macro news has minor weight (0.35x) so it never overrides a coin's actual bearish breakdown!
-    const mult = isDirect ? 2.8 : 0.35;
+    const mult = isDirect ? 2.8 : 0.5;
     if (item.sentiment === 'BULLISH') newsBullWeight += item.impactScore * mult;
     else if (item.sentiment === 'BEARISH') newsBearWeight += item.impactScore * mult;
   }
 
-  // Coin-specific real-time momentum, funding & structure regime weight
-  if (pair.change24h >= 0.8) newsBullWeight += 65;
-  else if (pair.change24h <= -0.8) newsBearWeight += 75;
-
-  if (taVoteDir === 'LONG' && pair.whaleNetFlow1hUsd >= 0) newsBullWeight += 45;
-  else if (taVoteDir === 'SHORT' && pair.whaleNetFlow1hUsd <= 0) newsBearWeight += 55;
-
+  // Strictly independent News vote: returns WAIT when no verified directional news exists (NO circular copying of TA/change24h!)
   const newsVoteDir: 'LONG' | 'SHORT' | 'WAIT' =
-    newsBullWeight > newsBearWeight * 1.05
-      ? 'LONG'
-      : newsBearWeight > newsBullWeight * 1.05
-        ? 'SHORT'
-        : taVoteDir;
+    matchedNews.length === 0 || (newsBullWeight === 0 && newsBearWeight === 0)
+      ? 'WAIT'
+      : newsBullWeight > newsBearWeight * 1.15
+        ? 'LONG'
+        : newsBearWeight > newsBullWeight * 1.15
+          ? 'SHORT'
+          : 'WAIT';
 
   const topHeadline =
     directNews[0]?.headline ||
@@ -853,9 +901,12 @@ export function runMultiAgentForumConsensus(
   };
 
   // --- AGENT 3: INSTITUTIONAL WHALE WALLET TRACKER AGENT ---
+  // Strictly independent: NEVER copy taVoteDir when whale/L2 signals are neutral!
   const whale = computeWhaleWalletIntelSnapshot(pair, orderbook, whaleTxs, whalePositions);
   const whaleVoteDir: 'LONG' | 'SHORT' | 'WAIT' =
-    whale.recommendedSide !== 'WAIT' ? whale.recommendedSide : taVoteDir;
+    orderbook.isLiveBook === false && !pair.hasRealWhaleFlow && whale.hlpVaultSide === 'FLAT'
+      ? 'WAIT'
+      : whale.recommendedSide;
 
   const agent3Vote: SpecialistAgentVote = {
     agentId: 'WHALE_WALLET',
@@ -979,21 +1030,25 @@ export function runMultiAgentForumConsensus(
   const spreadPenalty = Math.min(20, Math.max(0, (orderbook.spreadBps - 2.5) * 1.1));
   const liquidityReady = pair.liquidityScore >= 55 && orderbook.spreadBps <= 45;
   const rsiExhaustionVeto =
-    (majoritySide === 'LONG' && ta.rsi14 >= 90) ||
-    (majoritySide === 'SHORT' && ta.rsi14 <= 10);
+    ta.hasRealCandles !== false &&
+    ((majoritySide === 'LONG' && ta.rsi14 >= 88) ||
+      (majoritySide === 'SHORT' && ta.rsi14 <= 12));
+  const missingRealCandlesVeto = ta.hasRealCandles === false;
 
-  const hasVeto = !liquidityReady || rsiExhaustionVeto;
-  const vetoReason = !liquidityReady
-    ? `Spread (${orderbook.spreadBps} bps) atau Likuiditas (${pair.liquidityScore}/100) di bawah standar presisi institusional.`
-    : rsiExhaustionVeto
-      ? `RSI(14) berada di zona jenuh ekstrem (${ta.rsi14}); Agent 4 menahan entry untuk mencegah beli di pucuk / jual di dasar.`
-      : null;
+  const hasVeto = !liquidityReady || rsiExhaustionVeto || missingRealCandlesVeto;
+  const vetoReason = missingRealCandlesVeto
+    ? 'Candle OHLCV asli belum tersedia — entry ditahan untuk mencegah keputusan dari data sintetis.'
+    : !liquidityReady
+      ? `Spread (${orderbook.spreadBps} bps) atau Likuiditas (${pair.liquidityScore}/100) di bawah standar presisi institusional.`
+      : rsiExhaustionVeto
+        ? `RSI(14) berada di zona jenuh ekstrem (${ta.rsi14}); Agent 4 menahan entry untuk mencegah beli di pucuk / jual di dasar.`
+        : null;
 
   const arbiterVote: SpecialistAgentVote['vote'] = hasVeto
     ? 'VETO'
-    : longCount >= 2
+    : longCount >= 2 && longCount > shortCount
       ? 'LONG'
-      : shortCount >= 2
+      : shortCount >= 2 && shortCount > longCount
         ? 'SHORT'
         : 'WAIT';
 
@@ -1366,8 +1421,9 @@ export function runWalkForwardAccuracyBacktest(
       candlesMap[`${mkt.symbol}_15m`] ||
       candlesMap[`${mkt.symbol}_5m`] ||
       candlesMap[`${mkt.symbol}_1h`];
-    const series = ensureCandleSeries(mkt, rawCandles);
-    if (series.length < 36) continue;
+    // Strictly require real exchange OHLCV candles — never backtest synthetic sine-wave candles!
+    if (!rawCandles || rawCandles.length < 36) continue;
+    const series = rawCandles;
 
     // Test at two distinct walk-forward checkpoints (e.g., 16 bars ago and 8 bars ago)
     const checkpoints = [series.length - 16];
@@ -1444,22 +1500,7 @@ export function runWalkForwardAccuracyBacktest(
         if (favPct > maxFavorablePct) maxFavorablePct = favPct;
         if (advPct < maxAdversePct) maxAdversePct = advPct;
 
-        // 1. Check if Take Profit hit
-        if (
-          (side === 'LONG' && bar.high >= takeProfitPrice) ||
-          (side === 'SHORT' && bar.low <= takeProfitPrice)
-        ) {
-          finalExitPrice = takeProfitPrice;
-          exitLabel = bar.label;
-          outcome = 'WIN_TAKE_PROFIT';
-          break;
-        }
-
-        if (favPct >= beTriggerPct) {
-          beLocked = true;
-        }
-
-        // 2. Check if Breakeven+Fee Guard or Stop Loss hit
+        // Conservative zero-bias order: check Stop-Loss BEFORE Take-Profit if both hit in same bar
         if (beLocked) {
           const bePx = side === 'LONG' ? entryPrice * 1.0006 : entryPrice * 0.9994;
           if (
@@ -1479,6 +1520,21 @@ export function runWalkForwardAccuracyBacktest(
           exitLabel = bar.label;
           outcome = 'LOSS_STOP';
           break;
+        }
+
+        // Check Take Profit hit
+        if (
+          (side === 'LONG' && bar.high >= takeProfitPrice) ||
+          (side === 'SHORT' && bar.low <= takeProfitPrice)
+        ) {
+          finalExitPrice = takeProfitPrice;
+          exitLabel = bar.label;
+          outcome = 'WIN_TAKE_PROFIT';
+          break;
+        }
+
+        if (favPct >= beTriggerPct) {
+          beLocked = true;
         }
       }
 
@@ -1522,11 +1578,11 @@ export function runWalkForwardAccuracyBacktest(
         isAccurate,
         reason: `${taAtEntry.structureLabel} | RSI ${taAtEntry.rsi14} | ${
           outcome === 'WIN_TAKE_PROFIT'
-            ? `Keputusan Agent TP (+${realizedPnlPct}% >= Min +50%, Max ∞)`
+            ? `Target ATR TP Tercapai (+${realizedPnlPct}% ROE)`
             : outcome === 'WIN_TRAIL_PROFIT'
-              ? `Uncapped Trailing Profit (+${realizedPnlPct}% >= Min +50%)`
+              ? `Trailing Profit Aktif (+${realizedPnlPct}% ROE)`
               : outcome === 'PROTECTED_BREAKEVEN'
-                ? 'Zero-Slop Breakeven+Fee Guard Mengunci Profit Mikro'
+                ? 'Breakeven+Fee Guard Mengunci Profit Mikro'
                 : 'Stop-Loss Struktural Tersentuh'
         }`,
       });

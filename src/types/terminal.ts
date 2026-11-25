@@ -46,6 +46,11 @@ export interface MarketPair {
   cvdDelta15mUsd: number;
   whaleNetFlow1hUsd: number;
   whaleBias: 'STRONG LONG' | 'ACCUMULATING' | 'NEUTRAL' | 'DISTRIBUTING' | 'STRONG SHORT';
+  isLiveSynced?: boolean;
+  hasRealOrderbook?: boolean;
+  hasRealWhaleFlow?: boolean;
+  hasRealCandles?: boolean;
+  lastSyncedAt?: number;
 }
 
 export interface OrderbookLevel {
@@ -57,6 +62,13 @@ export interface OrderbookLevel {
   isWhaleWall?: boolean;
 }
 
+export interface VenueBookQuote {
+  bestBid: number;
+  bestAsk: number;
+  spreadBps: number;
+  obiPercent: number;
+}
+
 export interface OrderbookState {
   bids: OrderbookLevel[];
   asks: OrderbookLevel[];
@@ -65,6 +77,9 @@ export interface OrderbookState {
   obiPercent: number;
   absorptionDetected: 'BULLISH_ABSORPTION' | 'BEARISH_ABSORPTION' | 'NONE';
   spoofingAlert: string | null;
+  isLiveBook?: boolean;
+  primaryVenue?: ExchangeId | 'GATEIO';
+  venueBooks?: Record<string, VenueBookQuote>;
 }
 
 export interface CandlePoint {
@@ -124,6 +139,7 @@ export interface WhaleTransaction {
   gasPriceGwei?: number;
   gasLimit?: number;
   isLiveVerified?: boolean;
+  isDirectionalWhaleTrade?: boolean;
 }
 
 export interface WhalePositionItem {
@@ -178,6 +194,9 @@ export interface AgentPosition {
   currentPrice: number;
   sizeUsd: number;
   executedQty?: number;
+  filledQty?: number;
+  requestedQty?: number;
+  orderState?: 'FILLED' | 'PARTIALLY_FILLED' | 'RESTING';
   venueMode?: 'FUTURES' | 'SPOT';
   initialStopOrderId?: string;
   stopOrderId?: string;
@@ -357,6 +376,7 @@ export interface VerifiedNewsItem {
 export interface TechnicalAnalysisSnapshot {
   symbol: string;
   price: number;
+  hasRealCandles?: boolean;
   priceActionStructure:
     | 'BULLISH_BOS_HH_HL'
     | 'BEARISH_BOS_LH_LL'

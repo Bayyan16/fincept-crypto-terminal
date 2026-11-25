@@ -138,6 +138,60 @@ const STORAGE_KEY = 'fincept_real_wallet_vault_v1';
 
 export const INITIAL_WALLET_CONNECTIONS: WalletConnectionState[] = [
   {
+    id: 'hyperliquid_agent',
+    name: 'Hyperliquid L1 Perp & Spot',
+    type: 'PERP_AGENT_KEY',
+    chainOrScope: 'Priority #1 • Hyperliquid L1 Native Clearinghouse + Autonomous Agent Key / EVM',
+    connected: true,
+    verifiedReal: false,
+    addressOrKeyId: 'HL-AGENT-0x9F2...E81C (Paper)',
+    balanceUsd: 86500.0,
+    latencyMs: 4,
+    autoSignEnabled: true,
+    activeChainId: 42161,
+    activeChainName: 'Hyperliquid L1 + Arbitrum',
+    credentials: { walletAddress: '', agentPrivateKey: '', useTestnet: false },
+  },
+  {
+    id: 'binance_api',
+    name: 'Binance Futures & Spot',
+    type: 'CEX_API',
+    chainOrScope: 'Priority #2 • USDT-M Perpetual & Spot (HMAC-SHA256)',
+    connected: true,
+    verifiedReal: false,
+    addressOrKeyId: 'API-KEY-BNC-PAPER (Ready for Real Key)',
+    balanceUsd: 64200.0,
+    latencyMs: 7,
+    autoSignEnabled: true,
+    credentials: { apiKey: '', apiSecret: '', useTestnet: false },
+  },
+  {
+    id: 'bybit_api',
+    name: 'Bybit V5 Unified Trading',
+    type: 'CEX_API',
+    chainOrScope: 'Priority #3 • Unified Margin USDT Perp & Spot (HMAC-SHA256)',
+    connected: true,
+    verifiedReal: false,
+    addressOrKeyId: 'API-KEY-BYB-PAPER (Ready for Real Key)',
+    balanceUsd: 31900.0,
+    latencyMs: 9,
+    autoSignEnabled: true,
+    credentials: { apiKey: '', apiSecret: '', useTestnet: false },
+  },
+  {
+    id: 'okx_api',
+    name: 'OKX V5 Multi-Asset Engine',
+    type: 'CEX_API',
+    chainOrScope: 'Priority #4 • USDT-SWAP & Spot Orderbook (HMAC-SHA256)',
+    connected: false,
+    verifiedReal: false,
+    addressOrKeyId: 'Not Connected',
+    balanceUsd: 0,
+    latencyMs: 0,
+    autoSignEnabled: false,
+    credentials: { apiKey: '', apiSecret: '', passphrase: '', useTestnet: false },
+  },
+  {
     id: 'trust',
     name: 'Trust Wallet / EVM Multi-Chain',
     type: 'DEX_WALLET',
@@ -165,60 +219,6 @@ export const INITIAL_WALLET_CONNECTIONS: WalletConnectionState[] = [
     autoSignEnabled: true,
     activeChainName: 'Solana Mainnet-Beta',
     credentials: { walletAddress: '', useTestnet: false },
-  },
-  {
-    id: 'hyperliquid_agent',
-    name: 'Hyperliquid L1 Perp & Spot',
-    type: 'PERP_AGENT_KEY',
-    chainOrScope: 'Hyperliquid L1 Native Clearinghouse + Trust/EVM Signer',
-    connected: true,
-    verifiedReal: false,
-    addressOrKeyId: 'HL-AGENT-0x9F2...E81C (Paper)',
-    balanceUsd: 86500.0,
-    latencyMs: 4,
-    autoSignEnabled: true,
-    activeChainId: 42161,
-    activeChainName: 'Hyperliquid L1 + Arbitrum',
-    credentials: { walletAddress: '', agentPrivateKey: '', useTestnet: false },
-  },
-  {
-    id: 'binance_api',
-    name: 'Binance Futures & Spot',
-    type: 'CEX_API',
-    chainOrScope: 'USDT-M Perpetual & Spot (HMAC-SHA256)',
-    connected: true,
-    verifiedReal: false,
-    addressOrKeyId: 'API-KEY-BNC-PAPER (Ready for Real Key)',
-    balanceUsd: 64200.0,
-    latencyMs: 7,
-    autoSignEnabled: true,
-    credentials: { apiKey: '', apiSecret: '', useTestnet: false },
-  },
-  {
-    id: 'bybit_api',
-    name: 'Bybit V5 Unified Trading',
-    type: 'CEX_API',
-    chainOrScope: 'Unified Margin USDT Perp & Spot (HMAC-SHA256)',
-    connected: true,
-    verifiedReal: false,
-    addressOrKeyId: 'API-KEY-BYB-PAPER (Ready for Real Key)',
-    balanceUsd: 31900.0,
-    latencyMs: 9,
-    autoSignEnabled: true,
-    credentials: { apiKey: '', apiSecret: '', useTestnet: false },
-  },
-  {
-    id: 'okx_api',
-    name: 'OKX V5 Multi-Asset Engine',
-    type: 'CEX_API',
-    chainOrScope: 'USDT-SWAP & Spot Orderbook (HMAC-SHA256)',
-    connected: false,
-    verifiedReal: false,
-    addressOrKeyId: 'Not Connected',
-    balanceUsd: 0,
-    latencyMs: 0,
-    autoSignEnabled: false,
-    credentials: { apiKey: '', apiSecret: '', passphrase: '', useTestnet: false },
   },
 ];
 
@@ -754,7 +754,10 @@ export async function executeRealOrderOnVenue(params: {
   ok: boolean;
   orderId?: string;
   status?: string;
+  orderState?: 'FILLED' | 'PARTIALLY_FILLED' | 'RESTING';
   venueMode?: 'FUTURES' | 'SPOT';
+  requestedQty?: number;
+  filledQty?: number;
   executedQty?: number;
   executedPrice?: number;
   rlsOwnerId?: string;
@@ -832,36 +835,41 @@ export async function executeRealOrderOnVenue(params: {
     ...(wallet.credentials || {}),
     apiSecret: unsealCredentialSecret(wallet.credentials?.apiSecret),
     passphrase: unsealCredentialSecret(wallet.credentials?.passphrase),
-    agentPrivateKey: unsealCredentialSecret(wallet.credentials?.agentPrivateKey),
+    agentPrivateKey:
+      unsealCredentialSecret(wallet.credentials?.agentPrivateKey) ||
+      (params.exchange === 'HYPERLIQUID'
+        ? unsealCredentialSecret(hlAgentWallet?.credentials?.agentPrivateKey)
+        : ''),
   };
 
   let hlSignedAction: any = undefined;
   const unsealedHlAgentKey = unsealCredentialSecret(hlAgentWallet?.credentials?.agentPrivateKey);
   if (params.exchange === 'HYPERLIQUID') {
-    const hasEvmExt = typeof window !== 'undefined' && Boolean(window.trustwallet || window.ethereum);
-    if (!hasEvmExt && unsealedHlAgentKey) {
-      return {
-        ok: false,
-        error:
-          'Eksekusi Hyperliquid memerlukan ekstensi Trust/MetaMask EVM untuk tanda tangan EIP-712 L1 (signing offline dengan agentPrivateKey belum diaktifkan di browser).',
-      };
+    const effectiveAgentKey = (unsealedCredentials.agentPrivateKey || unsealedHlAgentKey || '').trim();
+    const hasValidAgentKey =
+      /^(0x)?[a-fA-F0-9]{64}$/.test(effectiveAgentKey) && !/^0x?0+$/i.test(effectiveAgentKey);
+
+    if (hasValidAgentKey) {
+      // Unattended server-side EIP-712 Phantom Agent signing + automatic updateLeverage sync (no browser popup!)
+      unsealedCredentials.agentPrivateKey = effectiveAgentKey;
+    } else {
+      const signRes = await signHyperliquidEip712Order({
+        symbol: params.symbol,
+        side: params.side,
+        orderPurpose: params.orderPurpose,
+        price: params.price,
+        stopPrice: params.stopPrice,
+        sizeUsd: params.sizeUsd,
+        quantity: params.quantity,
+        makerOnly: params.makerOnly,
+        useTestnet: params.useTestnet,
+        expectedAddress: unsealedCredentials.walletAddress,
+      });
+      if (!signRes.ok) {
+        return { ok: false, error: signRes.error };
+      }
+      hlSignedAction = signRes.signedAction;
     }
-    const signRes = await signHyperliquidEip712Order({
-      symbol: params.symbol,
-      side: params.side,
-      orderPurpose: params.orderPurpose,
-      price: params.price,
-      stopPrice: params.stopPrice,
-      sizeUsd: params.sizeUsd,
-      quantity: params.quantity,
-      makerOnly: params.makerOnly,
-      useTestnet: params.useTestnet,
-      expectedAddress: unsealedCredentials.walletAddress,
-    });
-    if (!signRes.ok) {
-      return { ok: false, error: signRes.error };
-    }
-    hlSignedAction = signRes.signedAction;
   }
 
   let solanaSignedTx: string | undefined = undefined;
@@ -919,6 +927,212 @@ export async function executeRealOrderOnVenue(params: {
     return {
       ok: false,
       error: err instanceof Error ? err.message : 'Gagal mengirim order ke exchange gateway.',
+    };
+  }
+}
+
+/**
+ * Cancels an active exchange order or conditional Stop-Loss before replace/close (#50).
+ */
+export async function cancelRealOrderOnVenue(params: {
+  exchange: ExchangeId;
+  symbol: string;
+  binanceSymbol?: string;
+  orderId: string;
+  isAlgoOrder?: boolean;
+  marketType?: MarketType;
+  venueMode?: 'FUTURES' | 'SPOT';
+  wallets: WalletConnectionState[];
+  useTestnet: boolean;
+  rowOwnerScope?: string;
+}): Promise<{ ok: boolean; alreadyClosed?: boolean; error?: string }> {
+  const wallet = resolveOwningWalletForExchange(params.exchange, params.wallets);
+  if (!wallet || !wallet.connected) {
+    return { ok: false, error: `Wallet ${params.exchange} tidak aktif.` };
+  }
+  const sessionOwnerScope = deriveWalletRlsOwnerScope(wallet);
+  if (params.rowOwnerScope && params.rowOwnerScope !== sessionOwnerScope) {
+    return { ok: false, error: '[RLS ISOLATION BLOCKED] Pembatalan order lintas-wallet ditolak.' };
+  }
+  const hlAgentWallet = params.wallets.find((w) => w.id === 'hyperliquid_agent');
+  const unsealedCredentials: WalletCredentials = {
+    ...(wallet.credentials || {}),
+    apiSecret: unsealCredentialSecret(wallet.credentials?.apiSecret),
+    passphrase: unsealCredentialSecret(wallet.credentials?.passphrase),
+    agentPrivateKey:
+      unsealCredentialSecret(wallet.credentials?.agentPrivateKey) ||
+      (params.exchange === 'HYPERLIQUID'
+        ? unsealCredentialSecret(hlAgentWallet?.credentials?.agentPrivateKey)
+        : ''),
+  };
+  try {
+    const res = await fetch('/api/execute/cancel', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        exchange: params.exchange,
+        symbol: params.symbol,
+        binanceSymbol: params.binanceSymbol,
+        orderId: params.orderId,
+        isAlgoOrder: Boolean(params.isAlgoOrder),
+        marketType: params.marketType,
+        venueMode: params.venueMode,
+        credentials: unsealedCredentials,
+        useTestnet: params.useTestnet,
+        rlsContext: {
+          sessionOwnerScope,
+          rowOwnerScope: params.rowOwnerScope || sessionOwnerScope,
+        },
+      }),
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Gagal membatalkan order.' };
+  }
+}
+
+/**
+ * Queries real exchange fill status for a resting Post-Only limit order (#49).
+ */
+export async function fetchRealOrderStatusOnVenue(params: {
+  exchange: ExchangeId;
+  symbol: string;
+  binanceSymbol?: string;
+  orderId: string;
+  marketType?: MarketType;
+  venueMode?: 'FUTURES' | 'SPOT';
+  wallets: WalletConnectionState[];
+  useTestnet: boolean;
+}): Promise<{
+  ok: boolean;
+  status?: string;
+  orderState?: 'FILLED' | 'PARTIALLY_FILLED' | 'RESTING' | 'CANCELED';
+  filledQty?: number;
+  executedPrice?: number;
+  error?: string;
+}> {
+  const wallet = resolveOwningWalletForExchange(params.exchange, params.wallets);
+  if (!wallet || !wallet.connected) {
+    return { ok: false, error: `Wallet ${params.exchange} tidak aktif.` };
+  }
+  const hlAgentWallet = params.wallets.find((w) => w.id === 'hyperliquid_agent');
+  const unsealedCredentials: WalletCredentials = {
+    ...(wallet.credentials || {}),
+    apiSecret: unsealCredentialSecret(wallet.credentials?.apiSecret),
+    passphrase: unsealCredentialSecret(wallet.credentials?.passphrase),
+    agentPrivateKey:
+      unsealCredentialSecret(wallet.credentials?.agentPrivateKey) ||
+      (params.exchange === 'HYPERLIQUID'
+        ? unsealCredentialSecret(hlAgentWallet?.credentials?.agentPrivateKey)
+        : ''),
+  };
+  try {
+    const res = await fetch('/api/execute/order-status', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        exchange: params.exchange,
+        symbol: params.symbol,
+        binanceSymbol: params.binanceSymbol,
+        orderId: params.orderId,
+        marketType: params.marketType,
+        venueMode: params.venueMode,
+        credentials: unsealedCredentials,
+        useTestnet: params.useTestnet,
+      }),
+    });
+    return await res.json();
+  } catch (err: any) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Gagal cek status order.' };
+  }
+}
+
+/**
+ * Reconciles live open positions directly from a connected CEX exchange (#49).
+ */
+export async function fetchRealExchangePositions(
+  wallet: WalletConnectionState,
+  useTestnet: boolean
+): Promise<{ ok: boolean; positions: any[]; error?: string }> {
+  if (!wallet?.connected || !wallet.verifiedReal || !wallet.credentials) {
+    return { ok: false, positions: [] };
+  }
+  const unsealedCredentials: WalletCredentials = {
+    ...wallet.credentials,
+    apiSecret: unsealCredentialSecret(wallet.credentials.apiSecret),
+    passphrase: unsealCredentialSecret(wallet.credentials.passphrase),
+    agentPrivateKey: unsealCredentialSecret(wallet.credentials.agentPrivateKey),
+  };
+  try {
+    const res = await fetch('/api/account/positions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        providerId: wallet.id,
+        credentials: unsealedCredentials,
+        useTestnet,
+      }),
+    });
+    const data = await res.json();
+    return { ok: Boolean(data?.ok), positions: Array.isArray(data?.positions) ? data.positions : [], error: data?.error };
+  } catch (err: any) {
+    return { ok: false, positions: [], error: err instanceof Error ? err.message : 'Gagal sinkronisasi posisi.' };
+  }
+}
+
+export interface ExchangeConfigHealthItem {
+  priority: number;
+  tier: 'PRIMARY' | 'SECONDARY';
+  exchange: ExchangeId;
+  providerId: WalletConnectionState['id'];
+  label: string;
+  reachable: boolean;
+  futuresReachable?: boolean;
+  spotReachable?: boolean;
+  latencyMs: number;
+  transport: string;
+  useTestnet: boolean;
+  error?: string;
+  capabilities: {
+    futures: boolean;
+    spot: boolean;
+    leverageSync: boolean;
+    postOnlyMaker: boolean;
+    protectiveStop: boolean;
+    cancelOrder: boolean;
+    orderStatus: boolean;
+    positionsReconcile: boolean;
+    serverTimeSync: boolean;
+    unattendedAutonomous: boolean;
+    autonomousSigningMode: string;
+  };
+}
+
+/**
+ * Queries live connectivity & capability parity across all 4 exchanges (#1 HYPERLIQUID, #2 BINANCE, #3 BYBIT, #4 OKX).
+ */
+export async function fetchAllExchangesConfigStatus(useTestnet = false): Promise<{
+  ok: boolean;
+  priorityOrder: ExchangeId[];
+  primaryExchanges: ExchangeId[];
+  allReachable: boolean;
+  reachableCount: number;
+  totalCount: number;
+  exchanges: ExchangeConfigHealthItem[];
+}> {
+  try {
+    const res = await fetch(`/api/exchanges/status?testnet=${useTestnet ? '1' : '0'}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return await res.json();
+  } catch {
+    return {
+      ok: false,
+      priorityOrder: ['HYPERLIQUID', 'BINANCE', 'BYBIT', 'OKX'],
+      primaryExchanges: ['HYPERLIQUID', 'BINANCE'],
+      allReachable: false,
+      reachableCount: 0,
+      totalCount: 4,
+      exchanges: [],
     };
   }
 }

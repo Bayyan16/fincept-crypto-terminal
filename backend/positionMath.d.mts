@@ -49,3 +49,17 @@ export function computeClosedTradeSettlement(params: {
   settlementTxHash: string | undefined;
   allowLocalBalanceMutation: boolean;
 };
+export function computeSafeBreakevenParams(params: {
+  side: 'LONG' | 'SHORT';
+  entryPrice: number;
+  currentPrice: number;
+  leverage?: number;
+  configuredTriggerPct?: number;
+  lockOffsetPct?: number;
+  alreadyLocked?: boolean;
+}): {
+  shouldLock: boolean;
+  canPlaceExchangeStop: boolean;
+  beStopPrice: number;
+  effectiveTriggerRoePct: number;
+};

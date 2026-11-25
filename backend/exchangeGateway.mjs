@@ -24,6 +24,12 @@ import {
   quantizeFloorToStep,
   resolveHyperliquidAssetKey,
 } from './exchangeInstruments.mjs';
+import {
+  buildHyperliquidCancelAction,
+  buildHyperliquidLeverageAction,
+  buildHyperliquidOrderAction,
+} from './hyperliquidProtocol.mjs';
+import { signHyperliquidActionWithPrivateKey } from './hyperliquidSigner.mjs';
 
 export { queryDexUniverse, searchDexUniverseLive, fetchSpecificPoolTrades, resolveTokenIcon };
 
@@ -82,6 +88,9 @@ let lastGoodHlpVaultSummary = null;
 let lastGoodWhalePositions = [];
 const cachedCandlesMap = new BoundedMap(250);
 const cachedBookMap = new BoundedMap(150);
+export function clearOrderbookCacheForTest() {
+  cachedBookMap.clear();
+}
 const hostCooldownUntil = new BoundedMap(100);
 const THROTTLE_GUARDED_HOSTS = new Set([
   'fapi.binance.com',
@@ -204,6 +213,7 @@ async function fetchHlpEcosystemStates() {
 const dohIpCache = new BoundedMap(100);
 const ISP_SINKHOLE_IPS = new Set(['0.0.0.0', '127.0.0.1', '43.173.57.48', '108.137.176.189']);
 const binanceTimeOffsetMap = new Map();
+const bybitTimeOffsetMap = new Map();
 let cachedPublicIpv4 = '';
 let lastPublicIpFetchMs = 0;
 
@@ -397,6 +407,21 @@ async function getSyncedBinanceTimestamp(baseUrl, isFutures = true) {
     return Date.now() + offsetMs;
   }
   return Date.now();
+}
+
+async function getSyncedBybitTimestamp(baseUrl) {
+  const cached = bybitTimeOffsetMap.get(baseUrl);
+  if (cached && Date.now() - cached.ts < 60_000) {
+    return String(Date.now() + cached.offsetMs);
+  }
+  const timeRes = await fetchJsonWithTimeout(`${baseUrl}/v5/market/time`, {}, 3000, true);
+  const serverTimeMs = Number(timeRes?.data?.time || 0);
+  if (timeRes.ok && Number.isFinite(serverTimeMs) && serverTimeMs > 1_600_000_000_000) {
+    const offsetMs = serverTimeMs - Date.now();
+    bybitTimeOffsetMap.set(baseUrl, { offsetMs, ts: Date.now() });
+    return String(Date.now() + offsetMs);
+  }
+  return String(Date.now());
 }
 
 /**
@@ -1382,6 +1407,7 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
       gasFeeUsd: 0.0,
       gasPriceGwei: 0,
       isLiveVerified: true,
+      isDirectionalWhaleTrade: true,
     });
   }
 
@@ -1476,7 +1502,7 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
     for (const item of parsed.slice(0, 6)) {
       extractedVolUsd += item.usdVal;
       const { tx } = item;
-      const isSellRisk = item.methodName === 'DEX Swap Router' && cfg.chainName === 'BNB Smart Chain';
+      // Generic EVM transfers without verified exchange deposit/withdraw attribution must be NEUTRAL (never fake BULLISH bias!)
       realOnChainTrades.push({
         id: `${cfg.prefix}-blk-${tx.hash.slice(0, 12)}`,
         timestamp: formatTimeHMS(blockTsMs),
@@ -1499,8 +1525,8 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
         sizeUsd: item.usdVal,
         sizeCoins: item.sizeCoins,
         price: cfg.nativePriceUsd,
-        direction: isSellRisk ? 'BEARISH' : 'BULLISH',
-        confidence: item.usdVal >= 25000 ? 96 : 91,
+        direction: 'NEUTRAL',
+        confidence: item.usdVal >= 25000 ? 94 : 88,
         txHash: `${tx.hash.slice(0, 10)}...${tx.hash.slice(-6)}`,
         fullTxHash: tx.hash,
         explorerTxUrl: `${cfg.explorerBase}/tx/${tx.hash}`,
@@ -1509,6 +1535,7 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
         gasPriceGwei: item.gasPriceGwei,
         gasLimit: item.gasLimit,
         isLiveVerified: true,
+        isDirectionalWhaleTrade: false,
       });
     }
     return extractedVolUsd;
@@ -1601,12 +1628,20 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
           ? 'HL Bridge2 USDC Withdraw'
           : 'USDC ERC20 Transfer',
         tokenSymbol: 'USDC',
-        symbol: 'BTC-PERP',
-        action: item.isBridgeWithdraw ? 'CEX DEPOSIT (SELL RISK)' : 'BRIDGE TO HYPERLIQUID',
+        symbol: 'USDC-BRIDGE',
+        action: item.isBridgeWithdraw
+          ? 'CEX DEPOSIT (SELL RISK)'
+          : item.isBridgeDeposit
+            ? 'BRIDGE TO HYPERLIQUID'
+            : 'SPOT ACCUMULATION',
         sizeUsd: item.usdcVal,
         sizeCoins: item.usdcVal,
         price: 1,
-        direction: item.isBridgeWithdraw ? 'BEARISH' : 'BULLISH',
+        direction: item.isBridgeWithdraw
+          ? 'BEARISH'
+          : item.isBridgeDeposit
+            ? 'BULLISH'
+            : 'NEUTRAL',
         confidence: item.usdcVal >= 50_000 ? 97 : 92,
         txHash: `${item.lg.transactionHash.slice(0, 10)}...${item.lg.transactionHash.slice(-6)}`,
         fullTxHash: item.lg.transactionHash,
@@ -1615,6 +1650,7 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
         gasFeeUsd: 0.015,
         gasPriceGwei: 0.01,
         isLiveVerified: true,
+        isDirectionalWhaleTrade: Boolean(item.isBridgeDeposit || item.isBridgeWithdraw),
       });
     }
   }
@@ -1632,43 +1668,8 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
     explorerBase: 'https://bscscan.com',
   });
 
-  // Extract Real Solana Mainnet Confirmed Transactions from RPC (Jupiter V6 Router)
-  if (solJupSigsRes?.ok && Array.isArray(solJupSigsRes.data?.result)) {
-    const solPxLive = hlAssets.SOL?.price || 84;
-    for (const sigItem of solJupSigsRes.data.result.slice(0, 3)) {
-      if (!sigItem?.signature || sigItem.err) continue;
-      const sig = sigItem.signature;
-      const blockMs = sigItem.blockTime ? sigItem.blockTime * 1000 : Date.now();
-      realOnChainTrades.push({
-        id: `sol-rpc-${sig.slice(0, 12)}`,
-        timestamp: formatTimeHMS(blockMs),
-        blockTimestamp: new Date(blockMs).toISOString(),
-        walletLabel: 'Solana Jupiter V6 Confirmed',
-        walletAddress: 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
-        counterpartyAddress: 'So11111111111111111111111111111111111111112',
-        sourceNode: 'PHANTOM SOL',
-        targetNode: 'JUPITER DEX',
-        exchange: 'JUPITER',
-        chainName: 'Solana Mainnet',
-        blockNumber: sigItem.slot || liveSolanaSlot,
-        methodName: 'Jupiter V6 Route Swap',
-        tokenSymbol: 'SOL',
-        symbol: 'SOL-PERP',
-        action: 'DEX POOL INFLOW',
-        sizeUsd: jupSolQuote?.tradeUsd || 25000,
-        sizeCoins: Number(((jupSolQuote?.tradeUsd || 25000) / Math.max(1, solPxLive)).toFixed(2)),
-        price: jupSolQuote?.effectiveAskPx || solPxLive,
-        direction: 'BULLISH',
-        confidence: 95,
-        txHash: `${sig.slice(0, 8)}...${sig.slice(-6)}`,
-        fullTxHash: sig,
-        explorerTxUrl: `https://solscan.io/tx/${sig}`,
-        explorerWalletUrl: 'https://solscan.io/account/JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4',
-        gasFeeUsd: 0.0005,
-        isLiveVerified: true,
-      });
-    }
-  }
+  // Note: Do NOT fabricate fake $25,000 BULLISH SOL-PERP trades from undecoded Solana getSignaturesForAddress hashes.
+  // Authentic decoded Solana DEX swaps arrive via fetchMultiChainLiveSwaps() (GeckoTerminal decoded trades).
 
   // Refresh full Multi-Chain DEX Universe (Solana, BSC, Hyperliquid/HyperEVM, Robinhood, Ethereum)
   // sequentially BEFORE fetching live swaps so universePoolMap is populated on cold start.
@@ -1743,9 +1744,10 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
         apr24h,
         priceMin: Number(Number(rp.day?.priceMin || priceUsd * 0.92).toFixed(3)),
         priceMax: Number(Number(rp.day?.priceMax || priceUsd * 1.08).toFixed(3)),
-        buys1h: Math.round(vol24h / 18500),
-        sells1h: Math.round(vol24h / 21000),
-        whaleNetBuy1hUsd: Math.round(vol24h * 0.042),
+        buys1h: 0,
+        sells1h: 0,
+        whaleNetBuy1hUsd: 0,
+        hasRealTxnSplit: false,
         passedLiquidityGate: tvl >= 1_500_000 && vol24h >= 1_000_000,
       });
     }
@@ -1888,76 +1890,9 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
     realWhalePositions.push(...lastGoodWhalePositions);
   }
 
-  // Also inject real Jupiter & Raydium On-Chain Flows into realOnChainTrades so Whale Tape shows ALL DEX venues
+  // Keep realOnChainTrades strictly authentic: do NOT inject Jupiter price quotes or Raydium TVL summaries as fake BULLISH trades.
   const nowDate = new Date();
   const nowStr = formatTimeHMS(nowDate.getTime());
-
-  if (jupSolQuote && jupSolQuote.routeSteps?.length) {
-    const topStep = jupSolQuote.routeSteps[0];
-    const ammAddr = topStep.ammKey || 'JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4';
-    const solSlot = Number(jupSolQuote.contextSlot || liveSolanaSlot || 0);
-    realOnChainTrades.unshift({
-      id: `jup-live-${solSlot}`,
-      timestamp: nowStr,
-      blockTimestamp: nowDate.toISOString(),
-      walletLabel: `Jupiter V1 Route (${topStep.dexLabel})`,
-      walletAddress: ammAddr,
-      counterpartyAddress: 'So11111111111111111111111111111111111111112',
-      sourceNode: 'PHANTOM SOL',
-      targetNode: 'JUPITER DEX',
-      exchange: 'JUPITER',
-      chainName: 'Solana Mainnet',
-      blockNumber: solSlot,
-      methodName: `Jupiter Route (${topStep.dexLabel})`,
-      tokenSymbol: 'SOL',
-      symbol: 'SOL-PERP',
-      action: 'SPOT ACCUMULATION',
-      sizeUsd: jupSolQuote.tradeUsd,
-      sizeCoins: Number((jupSolQuote.tradeUsd / Math.max(1, jupSolQuote.effectiveAskPx)).toFixed(2)),
-      price: jupSolQuote.effectiveAskPx,
-      direction: 'BULLISH',
-      confidence: 95,
-      txHash: `${ammAddr.slice(0, 8)}...${ammAddr.slice(-6)}`,
-      fullTxHash: ammAddr,
-      explorerTxUrl: `https://solscan.io/account/${ammAddr}`,
-      explorerWalletUrl: `https://solscan.io/account/${ammAddr}`,
-      gasFeeUsd: 0.0005,
-      isLiveVerified: true,
-    });
-  }
-
-  if (realRaydiumPools.length > 0) {
-    const topRay = realRaydiumPools[0];
-    const solSlot = Number(jupSolQuote?.contextSlot || liveSolanaSlot || 0);
-    realOnChainTrades.unshift({
-      id: `ray-live-${topRay.pairAddress}`,
-      timestamp: nowStr,
-      blockTimestamp: nowDate.toISOString(),
-      walletLabel: `${topRay.dexName} LP (${topRay.pairAddress})`,
-      walletAddress: topRay.fullPairAddress,
-      counterpartyAddress: '675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8',
-      sourceNode: 'DEXSCREENER',
-      targetNode: 'PHANTOM SOL',
-      exchange: 'DEXSCREENER',
-      chainName: 'Solana Mainnet',
-      blockNumber: solSlot,
-      methodName: `${topRay.dexName} Pool Flow`,
-      tokenSymbol: topRay.symbol.split(' / ')[0] || 'SOL',
-      symbol: 'SOL-PERP',
-      action: 'DEX POOL INFLOW',
-      sizeUsd: Math.max(50000, Math.abs(topRay.whaleNetBuy1hUsd)),
-      sizeCoins: Number((Math.max(50000, Math.abs(topRay.whaleNetBuy1hUsd)) / Math.max(1, topRay.priceUsd)).toFixed(2)),
-      price: topRay.priceUsd,
-      direction: topRay.whaleNetBuy1hUsd >= 0 ? 'BULLISH' : 'BEARISH',
-      confidence: 94,
-      txHash: `${topRay.fullPairAddress.slice(0, 8)}...${topRay.fullPairAddress.slice(-6)}`,
-      fullTxHash: topRay.fullPairAddress,
-      explorerTxUrl: `https://solscan.io/account/${topRay.fullPairAddress}`,
-      explorerWalletUrl: `https://solscan.io/account/${topRay.fullPairAddress}`,
-      gasFeeUsd: 0.0005,
-      isLiveVerified: true,
-    });
-  }
 
   // Build 100% Dynamic Real-Time Chord Flow Links from Live Multi-Exchange & On-Chain Telemetry
   const hlBtcVol = hlAssets.BTC?.volume24hUsd || 0;
@@ -2106,15 +2041,9 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
     });
   }
 
-  // Synthesize 90-100% Verified Bloomberg Official RSS + On-Chain Macro News from live market/whale telemetry
+  // Official Verified Bloomberg & CoinDesk RSS Wire + Neutral On-Chain Clearinghouse Telemetry
+  // (Never synthesize fake "Bloomberg" directional headlines from 24h gainers/losers!)
   const allHlList = Object.values(hlAssets).filter((x) => x && x.price > 0);
-  const sortedByChange = [...allHlList].sort((a, b) => (b.change24h || 0) - (a.change24h || 0));
-  const topGainer = sortedByChange[0];
-  const topLoser = sortedByChange[sortedByChange.length - 1];
-  const topVolumeAlt = [...allHlList]
-    .filter((a) => !['BTC', 'ETH', 'SOL'].includes(a.coin))
-    .sort((a, b) => (b.volume24hUsd || 0) - (a.volume24hUsd || 0))[0];
-
   const liveBbgRssItems = await fetchLiveBloombergRssItems(hlAssets, nowStr);
 
   const verifiedMacroNews = [
@@ -2122,87 +2051,22 @@ async function computeRealMarketSnapshot(activeCoin = 'BTC') {
     {
       id: `bbg-live-hlp-${now}`,
       timestamp: nowStr,
-      source: 'BLOOMBERG CRYPTO & HYPERLIQUID L1 DESK',
-      category: 'ETF_INSTITUTIONAL',
+      source: 'HYPERLIQUID L1 CLEARINGHOUSE TELEMETRY',
+      category: 'ONCHAIN_WHALE',
       headline: `Institutional Perp & Custody Liquidity: HLP Vault TVL $${(
-        (hlpVaultSummary?.accountValueUsd || 245_000_000) / 1e6
-      ).toFixed(1)}M Across ${allHlList.length || 235} Active Crypto Markets`,
-      summary: `Verifikasi langsung clearinghouse Hyperliquid L1 & multi-exchange: ${
-        allHlList.length || 235
+        (hlpVaultSummary?.accountValueUsd || 0) / 1e6
+      ).toFixed(1)}M Across ${allHlList.length} Active Markets`,
+      summary: `Verifikasi langsung clearinghouse Hyperliquid L1: ${
+        allHlList.length
       } market aktif dengan total eksposur institusional $${(
-        (hlpVaultSummary?.totalNotionalPosUsd || 110_000_000) / 1e6
+        (hlpVaultSummary?.totalNotionalPosUsd || 0) / 1e6
       ).toFixed(1)}M.`,
-      affectedAssets: ['BTC', 'ETH', 'SOL', 'HYPE', 'ALL'],
-      sentiment: (hlAssets.BTC?.change24h ?? 0) >= 0 ? 'BULLISH' : 'BEARISH',
+      affectedAssets: ['HYPE'],
+      sentiment: 'NEUTRAL',
       credibilityScore: 99,
-      impactScore: 95,
-      verificationProof: 'Verified: Hyperliquid L1 Clearinghouse + Multi-CEX Orderflow',
+      impactScore: 80,
+      verificationProof: 'Verified: Hyperliquid L1 Clearinghouse State',
     },
-    ...(topGainer
-      ? [
-          {
-            id: `bbg-live-gainer-${topGainer.coin}`,
-            timestamp: nowStr,
-            source: 'BLOOMBERG QUANT MOMENTUM WIRE (LONG CATALYST)',
-            category: 'PROTOCOL_CATALYST',
-            headline: `Bullish Breakout Alert: ${topGainer.coin} Surges +${Math.abs(
-              topGainer.change24h
-            )}% (24H Vol $${((topGainer.volume24hUsd || 0) / 1e6).toFixed(2)}M, OI $${(
-              (topGainer.openInterestUsd || 0) / 1e6
-            ).toFixed(2)}M)`,
-            summary: `Akumulasi agresif terdeteksi pada ${topGainer.coin} dengan konfirmasi kenaikan harga & Open Interest.`,
-            affectedAssets: [topGainer.coin.replace(/^k(?=[A-Z]{2,})/, ''), topGainer.coin],
-            sentiment: 'BULLISH',
-            credibilityScore: 98,
-            impactScore: 92,
-            verificationProof: 'Verified: Live L1 metaAndAssetCtxs + 24H OI Expansion',
-          },
-        ]
-      : []),
-    ...(topLoser && topLoser.change24h < 0
-      ? [
-          {
-            id: `bbg-live-loser-${topLoser.coin}`,
-            timestamp: nowStr,
-            source: 'BLOOMBERG QUANT RISK WIRE (SHORT CATALYST)',
-            category: 'EXCHANGE_FLOW',
-            headline: `Bearish Distribution Alert: ${topLoser.coin} Drops ${
-              topLoser.change24h
-            }% on Heavy Selling Pressure (Vol $${((topLoser.volume24hUsd || 0) / 1e6).toFixed(
-              2
-            )}M)`,
-            summary: `Distribusi institusional & tekanan jual terverifikasi pada ${topLoser.coin}; struktur mendukung peluang SHORT atau penghindaran LONG.`,
-            affectedAssets: [topLoser.coin.replace(/^k(?=[A-Z]{2,})/, ''), topLoser.coin],
-            sentiment: 'BEARISH',
-            credibilityScore: 97,
-            impactScore: 91,
-            verificationProof: 'Verified: Live L1 metaAndAssetCtxs + Bearish Orderflow Breakdown',
-          },
-        ]
-      : []),
-    ...(topVolumeAlt
-      ? [
-          {
-            id: `bbg-live-altvol-${topVolumeAlt.coin}`,
-            timestamp: nowStr,
-            source: 'BLOOMBERG INSTITUTIONAL ALTCOIN DESK',
-            category: 'ONCHAIN_WHALE',
-            headline: `High-Conviction Altcoin Flow: ${topVolumeAlt.coin} Leads Non-Major Volume at $${(
-              (topVolumeAlt.volume24hUsd || 0) / 1e6
-            ).toFixed(1)}M (24H ${topVolumeAlt.change24h >= 0 ? '+' : ''}${
-              topVolumeAlt.change24h
-            }%)`,
-            summary: `Likuiditas institusional padat pada ${topVolumeAlt.coin} memungkinkan eksekusi Post-Only Maker dengan arah ${
-              topVolumeAlt.change24h >= 0 ? 'LONG' : 'SHORT'
-            }.`,
-            affectedAssets: [topVolumeAlt.coin.replace(/^k(?=[A-Z]{2,})/, ''), topVolumeAlt.coin],
-            sentiment: topVolumeAlt.change24h >= 0 ? 'BULLISH' : 'BEARISH',
-            credibilityScore: 96,
-            impactScore: 89,
-            verificationProof: 'Verified: Multi-Exchange 24H Volume & L2 Depth Audit',
-          },
-        ]
-      : []),
   ];
 
   cachedSnapshot = {
@@ -2255,9 +2119,9 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
     return cachedBookEntry.data;
   }
 
-  const okxInstId = `${resolvedHlCoin}-USDT-SWAP`;
-  const gatePair = `${resolvedHlCoin.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase()}_USDT`;
-  const [hlBookRes, binBookRes, bybitBookRes, okxBookRes, gateBookRes] = await Promise.all([
+  const okxInstId = `${cleanBookBase}-USDT-SWAP`;
+  const gatePair = `${cleanBookBase}_USDT`;
+  const [hlBookRes, binBookRes, bybitBookRes, okxBookRes, okxSpec, gateBookRes] = await Promise.all([
     fetchJsonWithTimeout('https://api.hyperliquid.xyz/info', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -2275,12 +2139,23 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
       {},
       2200
     ),
-    fetchJsonWithTimeout(
-      `https://www.okx.com/api/v5/market/books?instId=${encodeURIComponent(okxInstId)}&sz=5`,
-      {},
-      2200
-    ),
-    resolvedHlCoin !== 'HYPE'
+    !isKBookCoin
+      ? fetchJsonWithTimeout(
+          `https://www.okx.com/api/v5/market/books?instId=${encodeURIComponent(okxInstId)}&sz=8`,
+          {},
+          2200
+        )
+      : Promise.resolve({ ok: false }),
+    !isKBookCoin
+      ? fetchExchangeInstrumentSpec({
+          exchange: 'OKX',
+          exchangeSymbol: okxInstId,
+          useTestnet: false,
+          marketType: 'PERP',
+          fetchJson: fetchJsonWithTimeout,
+        })
+      : Promise.resolve(null),
+    resolvedHlCoin !== 'HYPE' && !isKBookCoin
       ? fetchJsonWithTimeout(
           `https://api.gateio.ws/api/v4/spot/order_book?currency_pair=${encodeURIComponent(gatePair)}&limit=8`,
           {},
@@ -2289,114 +2164,164 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
       : Promise.resolve({ ok: false }),
   ]);
 
-  const rawBids = [];
-  const rawAsks = [];
+  const computeSymmetricVenueStats = (vBids, vAsks) => {
+    if (!vBids.length || !vAsks.length) return null;
+    const sortedBids = [...vBids].sort((a, b) => b.price - a.price);
+    const sortedAsks = [...vAsks].sort((a, b) => a.price - b.price);
+    const bestBid = sortedBids[0].price;
+    const bestAsk = sortedAsks[0].price;
+    if (!(bestBid > 0) || !(bestAsk > bestBid)) return null;
+    const mid = (bestBid + bestAsk) / 2;
+    const spreadUsd = bestAsk - bestBid;
+    const spreadBps = Number(((spreadUsd / Math.max(1e-12, mid)) * 10000).toFixed(2));
+    let wBid = 0;
+    let wAsk = 0;
+    let totalDepthUsd = 0;
+    const len = Math.min(10, sortedBids.length, sortedAsks.length);
+    for (let k = 0; k < len; k++) {
+      const w = Math.exp(-0.35 * k);
+      wBid += w * sortedBids[k].totalUsd;
+      wAsk += w * sortedAsks[k].totalUsd;
+      totalDepthUsd += sortedBids[k].totalUsd + sortedAsks[k].totalUsd;
+    }
+    const obiPercent = Math.round(((wBid - wAsk) / Math.max(1, wBid + wAsk)) * 100);
+    return {
+      bids: sortedBids,
+      asks: sortedAsks,
+      bestBid,
+      bestAsk,
+      mid,
+      spreadUsd,
+      spreadBps,
+      obiPercent,
+      totalDepthUsd,
+    };
+  };
 
-  // 1. Hyperliquid L1 L2 Levels (strictly tagged HYPERLIQUID — authentic L1 CLOB depth)
+  const venueParsed = {};
+
+  // 1. Hyperliquid L1 L2 Levels (primary authoritative L1 CLOB book)
   if (hlBookRes.ok && Array.isArray(hlBookRes.data?.levels) && hlBookRes.data.levels.length >= 2) {
+    const hlBids = [];
+    const hlAsks = [];
     hlBookRes.data.levels[0].slice(0, 14).forEach((b) => {
       const price = parseFloat(b.px);
       const size = parseFloat(b.sz);
       if (price > 0 && size > 0) {
-        rawBids.push({ price, size, totalUsd: Math.round(price * size), exchange: 'HYPERLIQUID' });
+        hlBids.push({ price, size, totalUsd: Math.round(price * size), exchange: 'HYPERLIQUID' });
       }
     });
     hlBookRes.data.levels[1].slice(0, 14).forEach((a) => {
       const price = parseFloat(a.px);
       const size = parseFloat(a.sz);
       if (price > 0 && size > 0) {
-        rawAsks.push({ price, size, totalUsd: Math.round(price * size), exchange: 'HYPERLIQUID' });
+        hlAsks.push({ price, size, totalUsd: Math.round(price * size), exchange: 'HYPERLIQUID' });
       }
     });
+    const stats = computeSymmetricVenueStats(hlBids, hlAsks);
+    if (stats) venueParsed.HYPERLIQUID = stats;
   }
 
-  let refMidPrice =
-    rawBids.length > 0 && rawAsks.length > 0
-      ? (rawBids[0].price + rawAsks[0].price) / 2
-      : 0;
-
-  const appendBookLevels = (bidsList, asksList, exchangeName, limit = 5) => {
+  const parseTupleVenue = (bidsList, asksList, exchangeName, limit = 8, qtyMultiplier = 1) => {
     if (!Array.isArray(bidsList) || !Array.isArray(asksList)) return;
-    if (!refMidPrice && bidsList.length > 0 && asksList.length > 0) {
-      refMidPrice = (parseFloat(bidsList[0][0]) + parseFloat(asksList[0][0])) / 2;
-    }
-    const pushSide = (levels, targetArr) => {
-      for (const lvl of levels.slice(0, limit)) {
-        const price = parseFloat(lvl[0]);
-        const size = parseFloat(lvl[1]);
-        if (price > 0 && size > 0 && (!refMidPrice || Math.abs(price - refMidPrice) / refMidPrice < 0.02)) {
-          targetArr.push({ price, size, totalUsd: Math.round(price * size), exchange: exchangeName });
-        }
+    if (!(qtyMultiplier > 0)) return;
+    const vBids = [];
+    const vAsks = [];
+    for (const lvl of bidsList.slice(0, limit)) {
+      const price = parseFloat(lvl[0]);
+      const rawSz = parseFloat(lvl[1]);
+      const size = Number((rawSz * qtyMultiplier).toFixed(8));
+      if (price > 0 && size > 0) {
+        vBids.push({ price, size, totalUsd: Math.round(price * size), exchange: exchangeName });
       }
-    };
-    pushSide(bidsList, rawBids);
-    pushSide(asksList, rawAsks);
+    }
+    for (const lvl of asksList.slice(0, limit)) {
+      const price = parseFloat(lvl[0]);
+      const rawSz = parseFloat(lvl[1]);
+      const size = Number((rawSz * qtyMultiplier).toFixed(8));
+      if (price > 0 && size > 0) {
+        vAsks.push({ price, size, totalUsd: Math.round(price * size), exchange: exchangeName });
+      }
+    }
+    const stats = computeSymmetricVenueStats(vBids, vAsks);
+    if (stats) venueParsed[exchangeName] = stats;
   };
 
-  // 2. Binance Futures, Bybit V5, OKX V5, & Gate.io Spot L2 Levels (guarded within 2% of refMidPrice so unrelated tickers never mix)
+  // 2. Perp CEX Venues (Binance Futures, Bybit Linear, OKX SWAP scaled strictly by ctVal!)
   if (resolvedHlCoin !== 'HYPE') {
-    if (binBookRes.ok) appendBookLevels(binBookRes.data?.bids, binBookRes.data?.asks, 'BINANCE', 5);
-    if (bybitBookRes.ok) appendBookLevels(bybitBookRes.data?.result?.b, bybitBookRes.data?.result?.a, 'BYBIT', 4);
+    if (binBookRes.ok) parseTupleVenue(binBookRes.data?.bids, binBookRes.data?.asks, 'BINANCE', 8, 1);
+    if (bybitBookRes.ok) parseTupleVenue(bybitBookRes.data?.result?.b, bybitBookRes.data?.result?.a, 'BYBIT', 8, 1);
     const okxBook = Array.isArray(okxBookRes?.data?.data) ? okxBookRes.data.data[0] : null;
-    if (okxBook) appendBookLevels(okxBook.bids, okxBook.asks, 'OKX', 4);
-    if (gateBookRes.ok) appendBookLevels(gateBookRes.data?.bids, gateBookRes.data?.asks, 'GATEIO', 6);
+    // CRITICAL (#46): OKX SWAP `sz` is in CONTRACTS. Multiply by `ctVal` to get true base coin quantity.
+    // If `ctVal` is unavailable, strictly skip OKX levels rather than inflating depth 100x!
+    const okxCtVal = Number(okxSpec?.ctVal || 0);
+    if (okxBook && Number.isFinite(okxCtVal) && okxCtVal > 0) {
+      parseTupleVenue(okxBook.bids, okxBook.asks, 'OKX', 8, okxCtVal);
+    }
 
-    // Binance Spot L2 fallback for spot-only tokens like RAYUSDT when HL & Futures return no book
-    if (rawBids.length === 0 || rawAsks.length === 0) {
-      const binSpotBookRes = await fetchJsonWithTimeout(
-        `https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(resolvedBinSymbol)}&limit=10`,
-        {},
-        2200
-      );
-      if (binSpotBookRes.ok) {
-        appendBookLevels(binSpotBookRes.data?.bids, binSpotBookRes.data?.asks, 'BINANCE', 8);
+    // Only use Spot fallbacks (Gate.io Spot / Binance Spot) when NO Perpetual orderbook is available.
+    // Never overlay Spot prices directly onto a Perp orderbook (prevents crossed-book basis corruption!).
+    const hasAnyPerpBook = Boolean(
+      venueParsed.HYPERLIQUID || venueParsed.BINANCE || venueParsed.BYBIT || venueParsed.OKX
+    );
+    if (!hasAnyPerpBook) {
+      if (gateBookRes.ok) {
+        parseTupleVenue(gateBookRes.data?.bids, gateBookRes.data?.asks, 'GATEIO', 8, 1);
+      }
+      if (!venueParsed.GATEIO) {
+        const binSpotBookRes = await fetchJsonWithTimeout(
+          `https://api.binance.com/api/v3/depth?symbol=${encodeURIComponent(resolvedBinSymbol)}&limit=10`,
+          {},
+          2200
+        );
+        if (binSpotBookRes.ok) {
+          parseTupleVenue(binSpotBookRes.data?.bids, binSpotBookRes.data?.asks, 'BINANCE', 8, 1);
+        }
       }
     }
   }
 
-  // 4. Inject Real Jupiter V1 On-Chain Executable Liquidity Levels (for SOL, JUP, RAY)
-  const jupQuote = cachedJupiterRoutes[resolvedHlCoin];
-  if (jupQuote && !refMidPrice && jupQuote.effectiveAskPx > 0) {
-    refMidPrice = jupQuote.effectiveAskPx;
-  }
-  if (jupQuote && refMidPrice > 0 && Math.abs(jupQuote.effectiveAskPx - refMidPrice) / refMidPrice < 0.03) {
-    const decimals = refMidPrice > 100 ? 2 : refMidPrice > 1 ? 3 : 4;
-    const jupBidPx = Number((refMidPrice * 0.9997).toFixed(decimals));
-    const jupAskPx = Number((refMidPrice * 1.0003).toFixed(decimals));
-    rawBids.push({
-      price: jupBidPx,
-      size: Number((25000 / jupBidPx).toFixed(2)),
-      totalUsd: 25000,
-      exchange: 'JUPITER',
-    });
-    rawAsks.push({
-      price: jupAskPx,
-      size: Number((25000 / jupAskPx).toFixed(2)),
-      totalUsd: 25000,
-      exchange: 'JUPITER',
-    });
+  // Pick authoritative primary venue in strict priority order
+  const venuePriority = ['HYPERLIQUID', 'BINANCE', 'BYBIT', 'OKX', 'GATEIO'];
+  const primaryVenue = venuePriority.find((v) => Boolean(venueParsed[v]));
+  if (!primaryVenue) {
+    return cachedBookEntry?.data || { ok: false };
   }
 
-  // 5. Inject Real Raydium V3 CLMM Concentrated Liquidity Ticks
-  if (cachedRaydiumPools.length > 0 && refMidPrice > 0) {
-    const matchingRay = cachedRaydiumPools.find((p) => p.symbol.startsWith(hlCoin));
-    if (matchingRay && matchingRay.liquidityTvlUsd > 0) {
-      const decimals = refMidPrice > 100 ? 2 : refMidPrice > 1 ? 3 : 4;
-      const tickBid = Number((refMidPrice * 0.9994).toFixed(decimals));
-      const tickAsk = Number((refMidPrice * 1.0006).toFixed(decimals));
-      const sliceUsd = Math.round(Math.min(180_000, matchingRay.liquidityTvlUsd * 0.015));
-      rawBids.push({
-        price: tickBid,
-        size: Number((sliceUsd / tickBid).toFixed(2)),
-        totalUsd: sliceUsd,
-        exchange: 'DEXSCREENER',
-      });
-      rawAsks.push({
-        price: tickAsk,
-        size: Number((sliceUsd / tickAsk).toFixed(2)),
-        totalUsd: sliceUsd,
-        exchange: 'DEXSCREENER',
-      });
+  const anchor = venueParsed[primaryVenue];
+  const refMidPrice = anchor.mid;
+
+  // Build per-venue quote summary & strictly uncrossed aggregated display book
+  const venueBooks = {};
+  const contributingVenues = [];
+  for (const vName of venuePriority) {
+    const vp = venueParsed[vName];
+    if (!vp) continue;
+    // Reject any secondary venue whose mid diverges > 2% from authoritative anchor (guards against ticker collisions)
+    if (vName !== primaryVenue && Math.abs(vp.mid - refMidPrice) / Math.max(1e-12, refMidPrice) > 0.02) {
+      continue;
+    }
+    venueBooks[vName] = {
+      bestBid: vp.bestBid,
+      bestAsk: vp.bestAsk,
+      spreadBps: vp.spreadBps,
+      obiPercent: vp.obiPercent,
+    };
+    contributingVenues.push({ name: vName, data: vp });
+  }
+
+  const rawBids = [...anchor.bids];
+  const rawAsks = [...anchor.asks];
+
+  // Merge secondary perp levels strictly at/outside the authoritative anchor spread:
+  // guarantees max(bids) <= anchor.bestBid < anchor.bestAsk <= min(asks) -> mathematically impossible to cross!
+  for (const { name, data } of contributingVenues) {
+    if (name === primaryVenue) continue;
+    for (const b of data.bids.slice(0, 6)) {
+      if (b.price <= anchor.bestBid) rawBids.push(b);
+    }
+    for (const a of data.asks.slice(0, 6)) {
+      if (a.price >= anchor.bestAsk) rawAsks.push(a);
     }
   }
 
@@ -2430,23 +2355,24 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
     };
   });
 
-  const mid = (bids[0].price + asks[0].price) / 2;
-  const minRelTick = Math.max(1e-10, mid * 0.00001);
-  const spreadUsd = Math.max(minRelTick, Math.abs(asks[0].price - bids[0].price));
-  const spreadBps = Number(((spreadUsd / Math.max(1e-12, mid)) * 10000).toFixed(2));
+  // Authoritative uncrossed spread strictly from primary execution venue
+  const spreadUsd = Number(anchor.spreadUsd.toPrecision(6));
+  const spreadBps = anchor.spreadBps;
 
-  let wBid = 0;
-  let wAsk = 0;
-  const len = Math.min(10, bids.length, asks.length);
-  for (let k = 0; k < len; k++) {
-    const w = Math.exp(-0.35 * k);
-    wBid += w * bids[k].totalUsd;
-    wAsk += w * asks[k].totalUsd;
+  // Symmetric depth-weighted OBI across contributing venues (immune to cross-venue ask truncation!)
+  let obiWeightedSum = 0;
+  let obiWeightTotal = 0;
+  for (const { name, data } of contributingVenues) {
+    const w = name === primaryVenue ? Math.max(1, data.totalDepthUsd) * 1.5 : Math.max(1, data.totalDepthUsd);
+    obiWeightedSum += data.obiPercent * w;
+    obiWeightTotal += w;
   }
-  const obiPercent = Math.round(((wBid - wAsk) / Math.max(1, wBid + wAsk)) * 100);
+  const obiPercent = obiWeightTotal > 0 ? Math.round(obiWeightedSum / obiWeightTotal) : anchor.obiPercent;
 
   const bookPayload = {
     ok: true,
+    primaryVenue,
+    venueBooks,
     bids,
     asks,
     spreadUsd,
@@ -2681,16 +2607,30 @@ export async function verifyAndFetchAccountBalance(payload) {
       .map((ap) => ap.position)
       .filter((p) => p && Math.abs(parseFloat(p.szi || '0')) > 0);
 
+    const hasValidAgentKey = Boolean(
+      payload?.agentPrivateKey &&
+        /^(0x)?[a-fA-F0-9]{64}$/.test(String(payload.agentPrivateKey).trim()) &&
+        !/^0x?0+$/i.test(String(payload.agentPrivateKey).trim())
+    );
+
     return {
       ok: true,
       rlsPolicy: 'ENFORCED',
       rlsOwnerId: rlsCheck.rlsOwnerId,
       balanceUsd: totalMultiChainUsd,
       withdrawableUsd: Number(withdrawable.toFixed(2)),
+      futuresEnabled: true,
+      spotEnabled: false,
+      futuresBalanceUsd: hlTotalUsd,
+      spotBalanceUsd: 0,
+      autonomousReady: hasValidAgentKey,
+      resolvedUseTestnet: Boolean(useTestnet),
       openPositionsCount: openPositions.length,
       openPositions,
       chainBalances,
-      addressDisplay: `${userAddr.slice(0, 6)}...${userAddr.slice(-4)} (Multi-Chain EVM + HL)`,
+      addressDisplay: `${userAddr.slice(0, 6)}...${userAddr.slice(-4)} (${
+        hasValidAgentKey ? 'HL Agent Autonomous + EVM' : 'Multi-Chain EVM + HL'
+      })`,
     };
   }
 
@@ -3009,12 +2949,31 @@ export async function verifyAndFetchAccountBalance(payload) {
     }
 
     const totalEquity = parseFloat(res.data?.result?.list?.[0]?.totalEquity || '0');
+    const safeBybitEq = Number((Number.isFinite(totalEquity) ? totalEquity : 0).toFixed(2));
+    const bybitEnvLabel = useTestnet ? 'Testnet' : 'Mainnet';
     return {
       ok: true,
       rlsPolicy: 'ENFORCED',
       rlsOwnerId: rlsCheck.rlsOwnerId,
-      balanceUsd: Number(totalEquity.toFixed(2)),
-      addressDisplay: `BYBIT-${apiKey.slice(0, 5)}... (${useTestnet ? 'Testnet' : 'Mainnet'})`,
+      balanceUsd: safeBybitEq,
+      futuresEnabled: true,
+      spotEnabled: true,
+      futuresBalanceUsd: safeBybitEq,
+      spotBalanceUsd: safeBybitEq,
+      resolvedUseTestnet: Boolean(useTestnet),
+      chainBalances: [
+        {
+          chainName: `Bybit V5 Unified Trading (${bybitEnvLabel})`,
+          chainId: 'bybit-unified',
+          nativeSymbol: 'USDT',
+          nativeBalance: 0,
+          stableSymbol: 'USDT Unified Margin (Linear + Spot)',
+          stableBalanceUsd: safeBybitEq,
+          totalChainUsd: safeBybitEq,
+          recommendedFor: 'Aktif — Eksekusi Linear Perpetual & Spot Post-Only + Stop Guard',
+        },
+      ],
+      addressDisplay: `BYBIT-${apiKey.slice(0, 5)}... (${bybitEnvLabel} • Unified)`,
     };
   }
 
@@ -3058,16 +3017,92 @@ export async function verifyAndFetchAccountBalance(payload) {
     }
 
     const totalEq = parseFloat(res.data?.data?.[0]?.totalEq || '0');
+    const safeOkxEq = Number((Number.isFinite(totalEq) ? totalEq : 0).toFixed(2));
+    const okxEnvLabel = useTestnet ? 'Demo/Testnet' : 'Mainnet';
     return {
       ok: true,
       rlsPolicy: 'ENFORCED',
       rlsOwnerId: rlsCheck.rlsOwnerId,
-      balanceUsd: Number(totalEq.toFixed(2)),
-      addressDisplay: `OKX-${apiKey.slice(0, 5)}... (${useTestnet ? 'Demo/Testnet' : 'Mainnet'})`,
+      balanceUsd: safeOkxEq,
+      futuresEnabled: true,
+      spotEnabled: true,
+      futuresBalanceUsd: safeOkxEq,
+      spotBalanceUsd: safeOkxEq,
+      resolvedUseTestnet: Boolean(useTestnet),
+      chainBalances: [
+        {
+          chainName: `OKX V5 Multi-Asset (${okxEnvLabel})`,
+          chainId: 'okx-unified',
+          nativeSymbol: 'USDT',
+          nativeBalance: 0,
+          stableSymbol: 'USDT Multi-Currency (SWAP + Spot)',
+          stableBalanceUsd: safeOkxEq,
+          totalChainUsd: safeOkxEq,
+          recommendedFor: 'Aktif — Eksekusi USDT-SWAP & Spot Post-Only + Algo Stop Guard',
+        },
+      ],
+      addressDisplay: `OKX-${apiKey.slice(0, 5)}... (${okxEnvLabel} • Multi-Asset)`,
     };
   }
 
   return { ok: false, error: 'Provider tidak dikenali.' };
+}
+
+const hlServerMetaCache = new Map();
+
+/**
+ * Resolves & caches Hyperliquid L1 asset metadata (`index`, `name`, `szDecimals`, `maxLeverage`)
+ * for server-side autonomous EIP-712 signing, leverage sync, and order cancellation.
+ */
+async function resolveHyperliquidAssetMetaServer(symbol, useTestnet = false) {
+  const netKey = useTestnet ? 'testnet' : 'mainnet';
+  const cached = hlServerMetaCache.get(netKey);
+  let assets = cached && Date.now() - cached.ts < 5 * 60 * 1000 ? cached.assets : null;
+
+  if (!assets) {
+    const hlInfoUrl = useTestnet
+      ? 'https://api.hyperliquid-testnet.xyz/info'
+      : 'https://api.hyperliquid.xyz/info';
+    const metaRes = await fetchJsonWithTimeout(
+      hlInfoUrl,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'meta' }),
+      },
+      4500,
+      true
+    );
+    const universe = Array.isArray(metaRes?.data?.universe) ? metaRes.data.universe : [];
+    if (universe.length > 0) {
+      assets = universe.map((u, idx) => ({
+        index: idx,
+        name: String(u?.name || ''),
+        szDecimals: Number.isFinite(Number(u?.szDecimals)) ? Number(u.szDecimals) : 4,
+        maxLeverage: Number.isFinite(Number(u?.maxLeverage)) ? Number(u.maxLeverage) : 20,
+      }));
+      hlServerMetaCache.set(netKey, { ts: Date.now(), assets });
+    }
+  }
+
+  if (!Array.isArray(assets) || assets.length === 0) return null;
+
+  const rawBase = String(symbol || '').split('-')[0].split('/')[0].trim();
+  const upperBase = rawBase.toUpperCase();
+  const noKUpper = rawBase.replace(/^[kK](?=[A-Za-z]{2,})/, '').toUpperCase();
+  const candidates = [
+    rawBase,
+    upperBase,
+    `k${noKUpper}`,
+    upperBase.startsWith('1000') ? `k${upperBase.slice(4)}` : '',
+    noKUpper,
+  ].filter(Boolean);
+
+  for (const cand of candidates) {
+    const exact = assets.find((a) => a.name === cand);
+    if (exact) return exact;
+  }
+  return assets.find((a) => a.name.toUpperCase() === upperBase) || null;
 }
 
 /**
@@ -3165,6 +3200,16 @@ export async function executeRealExchangeOrder(payload) {
           error: `[BINANCE SPOT LOT GUARD] Kuantitas Spot (${spotOrderQty}) di bawah batas minimum untuk ${normSpot.exchangeSymbol}.`,
         };
       }
+      if (
+        orderPurpose === 'ENTRY_MAKER' &&
+        spotSpec?.minNotional > 0 &&
+        spotOrderQty * spotOrderPx < spotSpec.minNotional
+      ) {
+        return {
+          ok: false,
+          error: `[BINANCE SPOT NOTIONAL GUARD] Nilai order ($${(spotOrderQty * spotOrderPx).toFixed(2)}) di bawah batas minimum notional Binance Spot ($${spotSpec.minNotional}) untuk ${normSpot.exchangeSymbol}.`,
+        };
+      }
       const spotParams = new URLSearchParams();
       spotParams.set('symbol', normSpot.exchangeSymbol);
       spotParams.set('side', isBuy ? 'BUY' : 'SELL');
@@ -3212,19 +3257,35 @@ export async function executeRealExchangeOrder(payload) {
           error: `Binance Spot Order Rejected: ${spotRes.data?.msg || spotRes.error || 'Unknown error'}`,
         };
       }
-      const rawSpotExecQty = Number(spotRes.data?.executedQty || 0) || spotOrderQty;
+      const spotStatus = String(spotRes.data?.status || 'NEW').toUpperCase();
+      const actualSpotExecQty = Number(spotRes.data?.executedQty || 0);
+      const isSpotResting =
+        orderPurpose === 'ENTRY_MAKER' &&
+        (spotStatus === 'NEW' || spotStatus === 'PENDING_NEW') &&
+        actualSpotExecQty <= 0;
+      const rawSpotExecQty = isSpotResting ? 0 : actualSpotExecQty || spotOrderQty;
       const rawSpotCumQuote = Number(spotRes.data?.cummulativeQuoteQty || 0);
       const rawSpotExecPx =
-        Number(spotRes.data?.executedQty || 0) > 0 && rawSpotCumQuote > 0
-          ? rawSpotCumQuote / Number(spotRes.data.executedQty)
+        actualSpotExecQty > 0 && rawSpotCumQuote > 0
+          ? rawSpotCumQuote / actualSpotExecQty
           : spotOrderPx;
+      const normSpotQty = Number((spotOrderQty / (normSpot.qtyScale || 1)).toFixed(8));
+      const normSpotFilled = Number((rawSpotExecQty / (normSpot.qtyScale || 1)).toFixed(8));
       return {
         ok: true,
         exchange: 'BINANCE',
         venueMode: 'SPOT',
         orderId: String(spotRes.data.orderId),
-        status: spotRes.data.status || 'NEW',
-        executedQty: Number((rawSpotExecQty / (normSpot.qtyScale || 1)).toFixed(8)),
+        status: spotStatus,
+        orderState:
+          spotStatus === 'FILLED'
+            ? 'FILLED'
+            : actualSpotExecQty > 0
+              ? 'PARTIALLY_FILLED'
+              : 'RESTING',
+        requestedQty: normSpotQty,
+        filledQty: isSpotResting ? 0 : normSpotFilled,
+        executedQty: normSpotFilled,
         executedPrice: Number((rawSpotExecPx / (normSpot.priceScale || 1)).toFixed(10)),
       };
     };
@@ -3265,6 +3326,16 @@ export async function executeRealExchangeOrder(payload) {
       return {
         ok: false,
         error: `[BINANCE LOT GUARD] Kuantitas terukur (${binOrderQty}) di bawah batas minimum Binance (${binSpec?.minQty || 'stepSize'}) untuk ${resolvedBinSymbol}.`,
+      };
+    }
+    if (
+      orderPurpose === 'ENTRY_MAKER' &&
+      binSpec?.minNotional > 0 &&
+      binOrderQty * binOrderPrice < binSpec.minNotional
+    ) {
+      return {
+        ok: false,
+        error: `[BINANCE NOTIONAL GUARD] Nilai order ($${(binOrderQty * binOrderPrice).toFixed(2)}) di bawah batas minimum notional Binance Futures ($${binSpec.minNotional}) untuk ${resolvedBinSymbol}.`,
       };
     }
 
@@ -3361,15 +3432,31 @@ export async function executeRealExchangeOrder(payload) {
       };
     }
 
-    const rawBinExecQty = Number(res.data?.executedQty || 0) || binOrderQty;
+    const binStatus = String(res.data?.status || 'NEW').toUpperCase();
+    const actualBinExecQty = Number(res.data?.executedQty || 0);
+    const isBinResting =
+      orderPurpose === 'ENTRY_MAKER' &&
+      (binStatus === 'NEW' || binStatus === 'PENDING_NEW') &&
+      actualBinExecQty <= 0;
+    const rawBinExecQty = isBinResting ? 0 : actualBinExecQty || binOrderQty;
     const rawBinExecPx = Number(res.data?.avgPrice || 0) || binOrderPrice;
+    const normBinReqQty = Number((binOrderQty / (normBin.qtyScale || 1)).toFixed(8));
+    const normBinFilledQty = Number((rawBinExecQty / (normBin.qtyScale || 1)).toFixed(8));
     return {
       ok: true,
       exchange: 'BINANCE',
       venueMode: 'FUTURES',
       orderId: String(res.data.orderId),
-      status: res.data.status || 'NEW',
-      executedQty: Number((rawBinExecQty / (normBin.qtyScale || 1)).toFixed(8)),
+      status: binStatus,
+      orderState:
+        binStatus === 'FILLED'
+          ? 'FILLED'
+          : actualBinExecQty > 0
+            ? 'PARTIALLY_FILLED'
+            : 'RESTING',
+      requestedQty: normBinReqQty,
+      filledQty: isBinResting ? 0 : normBinFilledQty,
+      executedQty: normBinFilledQty,
       executedPrice: Number((rawBinExecPx / (normBin.priceScale || 1)).toFixed(10)),
     };
   }
@@ -3418,10 +3505,20 @@ export async function executeRealExchangeOrder(payload) {
         error: `[BYBIT LOT GUARD] Kuantitas terukur (${bybitQty}) di bawah batas minimum Bybit (${bybitSpec?.minQty || 'qtyStep'}) untuk ${bybitSymbol}.`,
       };
     }
+    if (
+      orderPurpose === 'ENTRY_MAKER' &&
+      bybitSpec?.minNotional > 0 &&
+      bybitQty * bybitPrice < bybitSpec.minNotional
+    ) {
+      return {
+        ok: false,
+        error: `[BYBIT NOTIONAL GUARD] Nilai order ($${(bybitQty * bybitPrice).toFixed(2)}) di bawah batas minimum notional Bybit ($${bybitSpec.minNotional}) untuk ${bybitSymbol}.`,
+      };
+    }
     const recvWindow = '5000';
 
     if (orderPurpose === 'ENTRY_MAKER' && !isBybitSpot && Number(leverage) >= 1) {
-      const levTs = String(Date.now());
+      const levTs = await getSyncedBybitTimestamp(baseUrl);
       const levBodyStr = JSON.stringify({
         category: 'linear',
         symbol: bybitSymbol,
@@ -3459,7 +3556,7 @@ export async function executeRealExchangeOrder(payload) {
       }
     }
 
-    const timestamp = String(Date.now());
+    const timestamp = await getSyncedBybitTimestamp(baseUrl);
 
     const bybitStopPrice = bybitSpec?.tickSize
       ? alignPriceToTickSize(Number(stopPrice || price) * normBybit.priceScale, bybitSpec.tickSize)
@@ -3530,13 +3627,18 @@ export async function executeRealExchangeOrder(payload) {
       };
     }
 
+    const bybitNormQty = Number((bybitQty / (normBybit.qtyScale || 1)).toFixed(8));
+    const isBybitMakerResting = orderPurpose === 'ENTRY_MAKER' && payload.makerOnly !== false;
     return {
       ok: true,
       exchange: 'BYBIT',
       venueMode: isBybitSpot ? 'SPOT' : 'FUTURES',
       orderId: String(res.data?.result?.orderId || Date.now()),
-      status: 'LIVE',
-      executedQty: Number((bybitQty / (normBybit.qtyScale || 1)).toFixed(8)),
+      status: isBybitMakerResting ? 'RESTING' : 'LIVE',
+      orderState: isBybitMakerResting ? 'RESTING' : 'FILLED',
+      requestedQty: bybitNormQty,
+      filledQty: isBybitMakerResting ? 0 : bybitNormQty,
+      executedQty: bybitNormQty,
       executedPrice: Number((bybitPrice / (normBybit.priceScale || 1)).toFixed(10)),
     };
   }
@@ -3710,6 +3812,8 @@ export async function executeRealExchangeOrder(payload) {
       };
     }
 
+    const okxNormQty = Number((okxEffectiveCoins / (normOkx.qtyScale || 1)).toFixed(8));
+    const isOkxMakerResting = orderPurpose === 'ENTRY_MAKER' && payload.makerOnly !== false;
     return {
       ok: true,
       exchange: 'OKX',
@@ -3717,8 +3821,11 @@ export async function executeRealExchangeOrder(payload) {
       orderId: String(
         res.data?.data?.[0]?.algoId || res.data?.data?.[0]?.ordId || Date.now()
       ),
-      status: orderPurpose === 'BREAKEVEN_STOP' ? 'CONDITIONAL_SL' : 'LIVE',
-      executedQty: Number((okxEffectiveCoins / (normOkx.qtyScale || 1)).toFixed(8)),
+      status: orderPurpose === 'BREAKEVEN_STOP' ? 'CONDITIONAL_SL' : isOkxMakerResting ? 'RESTING' : 'LIVE',
+      orderState: isOkxMakerResting ? 'RESTING' : 'FILLED',
+      requestedQty: okxNormQty,
+      filledQty: isOkxMakerResting ? 0 : okxNormQty,
+      executedQty: okxNormQty,
       executedContracts: isOkxSpot ? undefined : okxSz,
       executedPrice: Number(
         (
@@ -3729,25 +3836,108 @@ export async function executeRealExchangeOrder(payload) {
     };
   }
 
-  if (exchange === 'HYPERLIQUID' && payload.hlSignedAction) {
-    const hlUrl = useTestnet
+  if (exchange === 'HYPERLIQUID' && (payload.hlSignedAction || credentials?.agentPrivateKey)) {
+    const hlExchangeUrl = useTestnet
       ? 'https://api.hyperliquid-testnet.xyz/exchange'
       : 'https://api.hyperliquid.xyz/exchange';
 
-    const signerAddr = payload.hlSignedAction?.signer || credentials?.walletAddress || '';
+    let signedPayload = payload.hlSignedAction;
+    let signerAddr = payload.hlSignedAction?.signer || credentials?.walletAddress || '';
+    let resolvedOrderQty = quantity;
+
+    // Server-side unattended EIP-712 signing via Hyperliquid Agent Private Key (enables true autonomous execution!)
+    if (!signedPayload && credentials?.agentPrivateKey) {
+      const assetMeta = await resolveHyperliquidAssetMetaServer(symbol, Boolean(useTestnet));
+      if (!assetMeta) {
+        return {
+          ok: false,
+          exchange: 'HYPERLIQUID',
+          error: `Aset '${symbol}' tidak ditemukan pada universe Hyperliquid L1 (${useTestnet ? 'Testnet' : 'Mainnet'}).`,
+        };
+      }
+
+      let lastNonce = Date.now();
+      // Sync Hyperliquid leverage before ENTRY_MAKER (mirrors Binance/Bybit/OKX leverage sync parity)
+      if (orderPurpose === 'ENTRY_MAKER' && Number(leverage) >= 1) {
+        const clampedLev = Math.max(1, Math.min(assetMeta.maxLeverage || 20, targetLeverage));
+        const levAction = buildHyperliquidLeverageAction({
+          assetIndex: assetMeta.index,
+          leverage: clampedLev,
+          isCross: true,
+        });
+        const signedLev = signHyperliquidActionWithPrivateKey({
+          action: levAction,
+          nonce: lastNonce,
+          privateKey: credentials.agentPrivateKey,
+          useTestnet: Boolean(useTestnet),
+        });
+        const levRes = await fetchJsonWithTimeout(
+          hlExchangeUrl,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              action: signedLev.action,
+              nonce: signedLev.nonce,
+              signature: signedLev.signature,
+            }),
+          },
+          4500,
+          true
+        );
+        if (!levRes.ok || levRes.data?.status !== 'ok') {
+          const levErr =
+            typeof levRes.data?.response === 'string'
+              ? levRes.data.response
+              : levRes.error || 'Rejected by Hyperliquid L1';
+          return {
+            ok: false,
+            exchange: 'HYPERLIQUID',
+            error: `Hyperliquid Leverage Sync Failed (${clampedLev}x): ${levErr}`,
+          };
+        }
+      }
+
+      const orderAction = buildHyperliquidOrderAction({
+        assetIndex: assetMeta.index,
+        side,
+        orderPurpose,
+        price,
+        stopPrice,
+        sizeUsd: payload.sizeUsd,
+        quantity,
+        szDecimals: assetMeta.szDecimals,
+        makerOnly: payload.makerOnly !== false,
+      });
+      const builtSz = Number(orderAction?.orders?.[0]?.s || 0);
+      if (!Number.isFinite(builtSz) || builtSz <= 0) {
+        return {
+          ok: false,
+          exchange: 'HYPERLIQUID',
+          error: `[HYPERLIQUID LOT GUARD] Kuantitas order (${quantity}) di bawah presisi minimum szDecimals=${assetMeta.szDecimals} untuk ${assetMeta.name}.`,
+        };
+      }
+      resolvedOrderQty = builtSz;
+      const orderNonce = Math.max(Date.now(), lastNonce + 1);
+      signedPayload = signHyperliquidActionWithPrivateKey({
+        action: orderAction,
+        nonce: orderNonce,
+        privateKey: credentials.agentPrivateKey,
+        useTestnet: Boolean(useTestnet),
+      });
+      signerAddr = signedPayload.signer;
+    }
 
     // Send only Hyperliquid L1 protocol fields (never leak internal metadata fields to /exchange)
     const hlBody = {
-      action: payload.hlSignedAction.action,
-      nonce: payload.hlSignedAction.nonce,
-      signature: payload.hlSignedAction.signature,
-      ...(payload.hlSignedAction.vaultAddress
-        ? { vaultAddress: payload.hlSignedAction.vaultAddress }
-        : {}),
+      action: signedPayload.action,
+      nonce: signedPayload.nonce,
+      signature: signedPayload.signature,
+      ...(signedPayload.vaultAddress ? { vaultAddress: signedPayload.vaultAddress } : {}),
     };
 
     const res = await fetchJsonWithTimeout(
-      hlUrl,
+      hlExchangeUrl,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -3776,10 +3966,14 @@ export async function executeRealExchangeOrder(payload) {
       return {
         ok: true,
         exchange: 'HYPERLIQUID',
+        venueMode: 'FUTURES',
         orderId: oid !== undefined ? String(oid) : `HL-L1-${Date.now()}`,
         status: filled ? 'FILLED' : 'RESTING',
+        orderState: filled ? 'FILLED' : 'RESTING',
         signer: signerAddr,
-        executedQty: filledQty > 0 ? filledQty : quantity,
+        requestedQty: resolvedOrderQty,
+        filledQty: filledQty > 0 ? filledQty : 0,
+        executedQty: filledQty > 0 ? filledQty : 0,
         executedPrice: filledPx > 0 ? filledPx : price,
       };
     }
@@ -3812,6 +4006,911 @@ export async function executeRealExchangeOrder(payload) {
   return {
     ok: false,
     error: `Untuk eksekusi Real Money di ${exchange}, pastikan Wallet / API Key aktif dan tanda tangan disetujui.`,
+  };
+}
+
+/**
+ * 5B. Cancel an Active Exchange Order / Conditional Stop-Loss (#50)
+ * Essential for cancel-before-replace (Initial SL -> Breakeven SL) and cancel-before-close
+ * (releases locked Spot balances and eliminates orphaned Futures stops).
+ */
+export async function cancelRealExchangeOrder(payload = {}) {
+  const {
+    exchange,
+    symbol,
+    binanceSymbol,
+    orderId,
+    isAlgoOrder = false,
+    marketType,
+    venueMode,
+    credentials,
+    useTestnet = false,
+    rlsContext,
+  } = payload;
+
+  if (!exchange || !symbol || !orderId) {
+    return { ok: false, error: 'Parameter cancel order tidak lengkap (exchange, symbol, orderId wajib diisi).' };
+  }
+  if (
+    rlsContext?.rowOwnerScope &&
+    rlsContext?.sessionOwnerScope &&
+    rlsContext.rowOwnerScope !== rlsContext.sessionOwnerScope
+  ) {
+    return {
+      ok: false,
+      error: '[RLS ISOLATION BLOCKED] Pembatalan order lintas-wallet ditolak.',
+    };
+  }
+
+  const isSpot = marketType === 'SPOT' || venueMode === 'SPOT';
+
+  if (exchange === 'BINANCE') {
+    const { apiKey, apiSecret } = credentials || {};
+    if (!apiKey || !apiSecret) return { ok: false, error: 'Binance API Key & Secret tidak tersedia.' };
+    const baseUrl = isSpot
+      ? useTestnet
+        ? 'https://testnet.binance.vision'
+        : 'https://api.binance.com'
+      : useTestnet
+        ? 'https://testnet.binancefuture.com'
+        : 'https://fapi.binance.com';
+    const norm = normalizeExchangeSymbol({
+      exchange: 'BINANCE',
+      symbol,
+      binanceSymbol: isSpot ? undefined : binanceSymbol,
+      marketType: isSpot ? 'SPOT' : 'PERP',
+    });
+    const ts = await getSyncedBinanceTimestamp(baseUrl, !isSpot);
+    const params = new URLSearchParams({
+      symbol: norm.exchangeSymbol,
+      orderId: String(orderId),
+      recvWindow: '10000',
+      timestamp: String(ts),
+    });
+    const q = params.toString();
+    const sig = crypto.createHmac('sha256', apiSecret.trim()).update(q).digest('hex');
+    const path = isSpot ? '/api/v3/order' : '/fapi/v1/order';
+    const res = await fetchJsonWithTimeout(
+      `${baseUrl}${path}?${q}&signature=${sig}`,
+      { method: 'DELETE', headers: { 'X-MBX-APIKEY': apiKey.trim() } },
+      4500,
+      true
+    );
+    // -2011 = Unknown order sent (already filled or already canceled -> idempotent success)
+    if (res.ok || res.data?.code === -2011) {
+      return {
+        ok: true,
+        exchange: 'BINANCE',
+        orderId: String(orderId),
+        alreadyClosed: res.data?.code === -2011,
+      };
+    }
+    return {
+      ok: false,
+      error: `Binance Cancel Rejected: ${res.data?.msg || res.error || 'Unknown error'}`,
+    };
+  }
+
+  if (exchange === 'BYBIT') {
+    const { apiKey, apiSecret } = credentials || {};
+    if (!apiKey || !apiSecret) return { ok: false, error: 'Bybit API Key & Secret tidak tersedia.' };
+    const baseUrl = useTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
+    const norm = normalizeExchangeSymbol({
+      exchange: 'BYBIT',
+      symbol,
+      binanceSymbol,
+      marketType: isSpot ? 'SPOT' : 'PERP',
+    });
+    const timestamp = await getSyncedBybitTimestamp(baseUrl);
+    const recvWindow = '5000';
+    const bodyStr = JSON.stringify({
+      category: isSpot ? 'spot' : 'linear',
+      symbol: norm.exchangeSymbol,
+      orderId: String(orderId),
+      ...(isSpot && isAlgoOrder ? { orderFilter: 'StopOrder' } : {}),
+    });
+    const sig = crypto
+      .createHmac('sha256', apiSecret.trim())
+      .update(timestamp + apiKey.trim() + recvWindow + bodyStr)
+      .digest('hex');
+    const res = await fetchJsonWithTimeout(
+      `${baseUrl}/v5/order/cancel`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-BAPI-API-KEY': apiKey.trim(),
+          'X-BAPI-TIMESTAMP': timestamp,
+          'X-BAPI-RECV-WINDOW': recvWindow,
+          'X-BAPI-SIGN': sig,
+        },
+        body: bodyStr,
+      },
+      4500,
+      true
+    );
+    // 110001 = Order not exists or too late to cancel (idempotent success)
+    if ((res.ok && res.data?.retCode === 0) || res.data?.retCode === 110001) {
+      return {
+        ok: true,
+        exchange: 'BYBIT',
+        orderId: String(orderId),
+        alreadyClosed: res.data?.retCode === 110001,
+      };
+    }
+    return {
+      ok: false,
+      error: `Bybit Cancel Rejected: ${res.data?.retMsg || res.error || 'Unknown error'}`,
+    };
+  }
+
+  if (exchange === 'OKX') {
+    const { apiKey, apiSecret, passphrase } = credentials || {};
+    if (!apiKey || !apiSecret || !passphrase) {
+      return { ok: false, error: 'OKX API Key, Secret & Passphrase tidak tersedia.' };
+    }
+    const norm = normalizeExchangeSymbol({
+      exchange: 'OKX',
+      symbol,
+      binanceSymbol,
+      marketType: isSpot ? 'SPOT' : 'PERP',
+    });
+    const timestamp = new Date().toISOString();
+    const cancelPath = isAlgoOrder ? '/api/v5/trade/cancel-algos' : '/api/v5/trade/cancel-order';
+    const bodyStr = JSON.stringify(
+      isAlgoOrder
+        ? [{ algoId: String(orderId), instId: norm.exchangeSymbol }]
+        : { instId: norm.exchangeSymbol, ordId: String(orderId) }
+    );
+    const sig = crypto
+      .createHmac('sha256', apiSecret.trim())
+      .update(`${timestamp}POST${cancelPath}${bodyStr}`)
+      .digest('base64');
+    const headers = {
+      'Content-Type': 'application/json',
+      'OK-ACCESS-KEY': apiKey.trim(),
+      'OK-ACCESS-SIGN': sig,
+      'OK-ACCESS-TIMESTAMP': timestamp,
+      'OK-ACCESS-PASSPHRASE': passphrase.trim(),
+    };
+    if (useTestnet) headers['x-simulated-trading'] = '1';
+    const res = await fetchJsonWithTimeout(
+      `https://www.okx.com${cancelPath}`,
+      { method: 'POST', headers, body: bodyStr },
+      4500,
+      true
+    );
+    const sCode = String(res.data?.data?.[0]?.sCode || '');
+    // 51400 / 51401 = Order already filled/canceled
+    if ((res.ok && res.data?.code === '0') || sCode === '51400' || sCode === '51401') {
+      return {
+        ok: true,
+        exchange: 'OKX',
+        orderId: String(orderId),
+        alreadyClosed: sCode === '51400' || sCode === '51401',
+      };
+    }
+    return {
+      ok: false,
+      error: `OKX Cancel Rejected: ${res.data?.data?.[0]?.sMsg || res.data?.msg || res.error || 'Unknown error'}`,
+    };
+  }
+
+  if (exchange === 'HYPERLIQUID') {
+    const hlExchangeUrl = useTestnet
+      ? 'https://api.hyperliquid-testnet.xyz/exchange'
+      : 'https://api.hyperliquid.xyz/exchange';
+
+    let signedCancel = payload.hlSignedCancel;
+    if (!signedCancel) {
+      if (!credentials?.agentPrivateKey) {
+        return {
+          ok: false,
+          error:
+            'Cancel order Hyperliquid memerlukan Hyperliquid Agent Private Key (di menu Wallets & API) atau tanda tangan cancel EIP-712.',
+        };
+      }
+      const assetMeta = await resolveHyperliquidAssetMetaServer(symbol, Boolean(useTestnet));
+      if (!assetMeta) {
+        return {
+          ok: false,
+          error: `Aset '${symbol}' tidak ditemukan pada universe Hyperliquid L1 untuk pembatalan order.`,
+        };
+      }
+      let cancelAction;
+      try {
+        cancelAction = buildHyperliquidCancelAction({
+          assetIndex: assetMeta.index,
+          orderId,
+        });
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : 'Order ID Hyperliquid tidak valid.' };
+      }
+      signedCancel = signHyperliquidActionWithPrivateKey({
+        action: cancelAction,
+        nonce: Date.now(),
+        privateKey: credentials.agentPrivateKey,
+        useTestnet: Boolean(useTestnet),
+      });
+    }
+
+    const res = await fetchJsonWithTimeout(
+      hlExchangeUrl,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: signedCancel.action,
+          nonce: signedCancel.nonce,
+          signature: signedCancel.signature,
+          ...(signedCancel.vaultAddress ? { vaultAddress: signedCancel.vaultAddress } : {}),
+        }),
+      },
+      4500,
+      true
+    );
+
+    const firstStatus = Array.isArray(res.data?.response?.data?.statuses)
+      ? res.data.response.data.statuses[0]
+      : null;
+    const errText =
+      firstStatus && typeof firstStatus === 'object' && firstStatus.error
+        ? String(firstStatus.error)
+        : '';
+    const isAlreadyClosed =
+      /never placed|already canceled|already filled|unknown/i.test(errText);
+
+    if ((res.ok && res.data?.status === 'ok' && !errText) || isAlreadyClosed) {
+      return {
+        ok: true,
+        exchange: 'HYPERLIQUID',
+        orderId: String(orderId),
+        alreadyClosed: isAlreadyClosed,
+      };
+    }
+
+    return {
+      ok: false,
+      error: `Hyperliquid Cancel Rejected: ${errText || res.error || 'Unknown error'}`,
+    };
+  }
+
+  return { ok: false, error: `Cancel order belum didukung untuk venue ${exchange}.` };
+}
+
+/**
+ * 5C. Query Live Order Fill Status from Exchange (#49)
+ * Allows confirming when a resting Post-Only limit order actually fills before arming exchange stops.
+ */
+export async function fetchRealOrderStatus(payload = {}) {
+  const { exchange, symbol, binanceSymbol, orderId, marketType, venueMode, credentials, useTestnet = false } = payload;
+  if (!exchange || !symbol || !orderId) {
+    return { ok: false, error: 'Parameter status order tidak lengkap.' };
+  }
+  const isSpot = marketType === 'SPOT' || venueMode === 'SPOT';
+
+  if (exchange === 'BINANCE') {
+    const { apiKey, apiSecret } = credentials || {};
+    if (!apiKey || !apiSecret) return { ok: false, error: 'Binance API Key & Secret tidak tersedia.' };
+    const baseUrl = isSpot
+      ? useTestnet
+        ? 'https://testnet.binance.vision'
+        : 'https://api.binance.com'
+      : useTestnet
+        ? 'https://testnet.binancefuture.com'
+        : 'https://fapi.binance.com';
+    const norm = normalizeExchangeSymbol({
+      exchange: 'BINANCE',
+      symbol,
+      binanceSymbol: isSpot ? undefined : binanceSymbol,
+      marketType: isSpot ? 'SPOT' : 'PERP',
+    });
+    const ts = await getSyncedBinanceTimestamp(baseUrl, !isSpot);
+    const params = new URLSearchParams({
+      symbol: norm.exchangeSymbol,
+      orderId: String(orderId),
+      recvWindow: '10000',
+      timestamp: String(ts),
+    });
+    const q = params.toString();
+    const sig = crypto.createHmac('sha256', apiSecret.trim()).update(q).digest('hex');
+    const path = isSpot ? '/api/v3/order' : '/fapi/v1/order';
+    const res = await fetchJsonWithTimeout(
+      `${baseUrl}${path}?${q}&signature=${sig}`,
+      { method: 'GET', headers: { 'X-MBX-APIKEY': apiKey.trim() } },
+      4500,
+      true
+    );
+    if (!res.ok || res.data?.code) {
+      return { ok: false, error: res.data?.msg || res.error || 'Failed to query Binance order status.' };
+    }
+    const status = String(res.data?.status || 'NEW').toUpperCase();
+    const rawFilled = Number(res.data?.executedQty || 0);
+    const rawAvg =
+      Number(res.data?.avgPrice || 0) ||
+      (rawFilled > 0 && Number(res.data?.cummulativeQuoteQty || 0) > 0
+        ? Number(res.data.cummulativeQuoteQty) / rawFilled
+        : Number(res.data?.price || 0));
+    return {
+      ok: true,
+      exchange: 'BINANCE',
+      orderId: String(orderId),
+      status,
+      orderState:
+        status === 'FILLED'
+          ? 'FILLED'
+          : status === 'CANCELED' || status === 'EXPIRED' || status === 'REJECTED'
+            ? 'CANCELED'
+            : rawFilled > 0
+              ? 'PARTIALLY_FILLED'
+              : 'RESTING',
+      filledQty: Number((rawFilled / (norm.qtyScale || 1)).toFixed(8)),
+      executedPrice: Number((rawAvg / (norm.priceScale || 1)).toFixed(10)),
+    };
+  }
+
+  if (exchange === 'BYBIT') {
+    const { apiKey, apiSecret } = credentials || {};
+    if (!apiKey || !apiSecret) return { ok: false, error: 'Bybit API Key & Secret tidak tersedia.' };
+    const baseUrl = useTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
+    const norm = normalizeExchangeSymbol({
+      exchange: 'BYBIT',
+      symbol,
+      binanceSymbol,
+      marketType: isSpot ? 'SPOT' : 'PERP',
+    });
+    const timestamp = await getSyncedBybitTimestamp(baseUrl);
+    const recvWindow = '5000';
+    const qs = `category=${isSpot ? 'spot' : 'linear'}&symbol=${encodeURIComponent(norm.exchangeSymbol)}&orderId=${encodeURIComponent(String(orderId))}`;
+    const sig = crypto
+      .createHmac('sha256', apiSecret.trim())
+      .update(timestamp + apiKey.trim() + recvWindow + qs)
+      .digest('hex');
+    const res = await fetchJsonWithTimeout(
+      `${baseUrl}/v5/order/realtime?${qs}`,
+      {
+        method: 'GET',
+        headers: {
+          'X-BAPI-API-KEY': apiKey.trim(),
+          'X-BAPI-TIMESTAMP': timestamp,
+          'X-BAPI-RECV-WINDOW': recvWindow,
+          'X-BAPI-SIGN': sig,
+        },
+      },
+      4500,
+      true
+    );
+    let row = res.data?.result?.list?.[0];
+    // Bybit removes filled/canceled orders from /v5/order/realtime -> fall back to /v5/order/history!
+    if ((!res.ok || res.data?.retCode !== 0 || !row)) {
+      const histTs = await getSyncedBybitTimestamp(baseUrl);
+      const histSig = crypto
+        .createHmac('sha256', apiSecret.trim())
+        .update(histTs + apiKey.trim() + recvWindow + qs)
+        .digest('hex');
+      const histRes = await fetchJsonWithTimeout(
+        `${baseUrl}/v5/order/history?${qs}`,
+        {
+          method: 'GET',
+          headers: {
+            'X-BAPI-API-KEY': apiKey.trim(),
+            'X-BAPI-TIMESTAMP': histTs,
+            'X-BAPI-RECV-WINDOW': recvWindow,
+            'X-BAPI-SIGN': histSig,
+          },
+        },
+        4500,
+        true
+      );
+      if (histRes.ok && histRes.data?.retCode === 0) {
+        row = histRes.data?.result?.list?.[0];
+      }
+    }
+    if (!row) {
+      return { ok: false, error: res.data?.retMsg || res.error || 'Bybit order not found.' };
+    }
+    const status = String(row.orderStatus || 'New').toUpperCase();
+    const rawFilled = Number(row.cumExecQty || 0);
+    const rawAvg = Number(row.avgPrice || row.price || 0);
+    return {
+      ok: true,
+      exchange: 'BYBIT',
+      orderId: String(orderId),
+      status,
+      orderState:
+        status === 'FILLED'
+          ? 'FILLED'
+          : status === 'CANCELLED' || status === 'REJECTED' || status === 'DEACTIVATED'
+            ? 'CANCELED'
+            : rawFilled > 0
+              ? 'PARTIALLY_FILLED'
+              : 'RESTING',
+      filledQty: Number((rawFilled / (norm.qtyScale || 1)).toFixed(8)),
+      executedPrice: Number((rawAvg / (norm.priceScale || 1)).toFixed(10)),
+    };
+  }
+
+  if (exchange === 'OKX') {
+    const { apiKey, apiSecret, passphrase } = credentials || {};
+    if (!apiKey || !apiSecret || !passphrase) return { ok: false, error: 'OKX credentials tidak lengkap.' };
+    const norm = normalizeExchangeSymbol({
+      exchange: 'OKX',
+      symbol,
+      binanceSymbol,
+      marketType: isSpot ? 'SPOT' : 'PERP',
+    });
+    const okxSpec = !isSpot
+      ? await fetchExchangeInstrumentSpec({
+          exchange: 'OKX',
+          exchangeSymbol: norm.exchangeSymbol,
+          useTestnet: Boolean(useTestnet),
+          marketType: 'PERP',
+          fetchJson: fetchJsonWithTimeout,
+        })
+      : null;
+    const timestamp = new Date().toISOString();
+    const path = `/api/v5/trade/order?instId=${encodeURIComponent(norm.exchangeSymbol)}&ordId=${encodeURIComponent(String(orderId))}`;
+    const sig = crypto.createHmac('sha256', apiSecret.trim()).update(`${timestamp}GET${path}`).digest('base64');
+    const headers = {
+      'OK-ACCESS-KEY': apiKey.trim(),
+      'OK-ACCESS-SIGN': sig,
+      'OK-ACCESS-TIMESTAMP': timestamp,
+      'OK-ACCESS-PASSPHRASE': passphrase.trim(),
+    };
+    if (useTestnet) headers['x-simulated-trading'] = '1';
+    const res = await fetchJsonWithTimeout(`https://www.okx.com${path}`, { method: 'GET', headers }, 4500, true);
+    const row = res.data?.data?.[0];
+    if (!res.ok || res.data?.code !== '0' || !row) {
+      return { ok: false, error: res.data?.msg || res.error || 'OKX order not found.' };
+    }
+    const st = String(row.state || 'live').toLowerCase();
+    const rawFillContracts = Number(row.accFillSz || 0);
+    const ctVal = !isSpot && okxSpec?.ctVal ? Number(okxSpec.ctVal) : 1;
+    const coins = rawFillContracts * ctVal;
+    const rawAvg = Number(row.avgPx || row.px || 0);
+    return {
+      ok: true,
+      exchange: 'OKX',
+      orderId: String(orderId),
+      status: st.toUpperCase(),
+      orderState:
+        st === 'filled'
+          ? 'FILLED'
+          : st === 'canceled'
+            ? 'CANCELED'
+            : coins > 0
+              ? 'PARTIALLY_FILLED'
+              : 'RESTING',
+      filledQty: Number((coins / (norm.qtyScale || 1)).toFixed(8)),
+      executedPrice: Number((rawAvg / (norm.priceScale || 1)).toFixed(10)),
+    };
+  }
+
+  if (exchange === 'HYPERLIQUID') {
+    const userAddr = String(credentials?.walletAddress || '').trim();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(userAddr)) {
+      return { ok: false, error: 'Alamat wallet EVM Hyperliquid tidak tersedia.' };
+    }
+    const oidNum = Number(orderId);
+    if (!Number.isSafeInteger(oidNum) || oidNum <= 0) {
+      return { ok: false, error: `Order ID Hyperliquid (${orderId}) tidak valid.` };
+    }
+    const hlInfoUrl = useTestnet
+      ? 'https://api.hyperliquid-testnet.xyz/info'
+      : 'https://api.hyperliquid.xyz/info';
+    const res = await fetchJsonWithTimeout(
+      hlInfoUrl,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'orderStatus', user: userAddr, oid: oidNum }),
+      },
+      4500,
+      true
+    );
+    if (!res.ok || !res.data) {
+      return { ok: false, error: res.error || 'Failed to query Hyperliquid order status.' };
+    }
+    if (res.data.status === 'unknownOid') {
+      return {
+        ok: true,
+        exchange: 'HYPERLIQUID',
+        orderId: String(orderId),
+        status: 'UNKNOWN_OID',
+        orderState: 'CANCELED',
+        filledQty: 0,
+        executedPrice: 0,
+      };
+    }
+    const orderWrap = res.data.order || {};
+    const orderObj = orderWrap.order || {};
+    const hlStatus = String(orderWrap.status || 'open').toLowerCase();
+    const origSz = Number(orderObj.origSz || 0);
+    const remSz = Number(orderObj.sz || 0);
+    const filledQty = origSz > 0 ? Math.max(0, Number((origSz - remSz).toFixed(8))) : 0;
+    const limitPx = Number(orderObj.limitPx || 0);
+    const isCanceled = /cancel|reject|expired|deleted/i.test(hlStatus);
+    const isFilled = hlStatus === 'filled' || (origSz > 0 && remSz <= 0 && !isCanceled);
+    return {
+      ok: true,
+      exchange: 'HYPERLIQUID',
+      orderId: String(orderId),
+      status: hlStatus.toUpperCase(),
+      orderState: isFilled
+        ? 'FILLED'
+        : isCanceled
+          ? 'CANCELED'
+          : filledQty > 0
+            ? 'PARTIALLY_FILLED'
+            : 'RESTING',
+      filledQty,
+      executedPrice: limitPx,
+    };
+  }
+
+  return { ok: false, error: `Query order status belum didukung untuk ${exchange}.` };
+}
+
+/**
+ * 5D. Fetch Live Open Exchange Positions for Reconciliation (#49)
+ */
+export async function fetchRealOpenPositions(payload = {}) {
+  const { providerId, credentials, useTestnet = false } = payload;
+  if (!providerId || !credentials) {
+    return { ok: false, positions: [], error: 'Provider & credentials wajib diisi.' };
+  }
+
+  if (providerId === 'binance_api') {
+    const { apiKey, apiSecret } = credentials;
+    if (!apiKey || !apiSecret) return { ok: false, positions: [], error: 'Binance credentials kosong.' };
+    const baseUrl = useTestnet ? 'https://testnet.binancefuture.com' : 'https://fapi.binance.com';
+    const ts = await getSyncedBinanceTimestamp(baseUrl, true);
+    const q = `recvWindow=10000&timestamp=${ts}`;
+    const sig = crypto.createHmac('sha256', apiSecret.trim()).update(q).digest('hex');
+    const res = await fetchJsonWithTimeout(
+      `${baseUrl}/fapi/v2/positionRisk?${q}&signature=${sig}`,
+      { method: 'GET', headers: { 'X-MBX-APIKEY': apiKey.trim() } },
+      4800,
+      true
+    );
+    if (!res.ok || !Array.isArray(res.data)) {
+      // Spot-only Binance keys return -2015 on /fapi/v2/positionRisk -> gracefully report zero Futures positions
+      if (res.data?.code === -2015) {
+        return { ok: true, positions: [], note: 'Spot-only API key (no Futures positions)' };
+      }
+      return { ok: false, positions: [], error: res.data?.msg || res.error || 'Failed to fetch Binance positions.' };
+    }
+    const open = res.data
+      .filter((p) => Math.abs(parseFloat(p?.positionAmt || '0')) > 0)
+      .map((p) => {
+        const amt = parseFloat(p.positionAmt);
+        const entryPrice = parseFloat(p.entryPrice || '0');
+        const markPrice = parseFloat(p.markPrice || String(entryPrice));
+        const rawSym = String(p.symbol || '');
+        const base = rawSym.replace(/USDT$/i, '');
+        const sym = base.startsWith('1000') ? `k${base.slice(4)}-PERP` : `${base}-PERP`;
+        return {
+          exchange: 'BINANCE',
+          symbol: sym,
+          side: amt >= 0 ? 'LONG' : 'SHORT',
+          executedQty: Math.abs(amt),
+          entryPrice,
+          currentPrice: markPrice,
+          sizeUsd: Number((Math.abs(amt) * entryPrice).toFixed(2)),
+          leverage: Math.max(1, Number(p.leverage || 1)),
+          unrealizedPnlUsd: Number(parseFloat(p.unRealizedProfit || '0').toFixed(2)),
+          venueMode: 'FUTURES',
+        };
+      });
+    return { ok: true, positions: open };
+  }
+
+  if (providerId === 'bybit_api') {
+    const { apiKey, apiSecret } = credentials;
+    if (!apiKey || !apiSecret) return { ok: false, positions: [], error: 'Bybit credentials kosong.' };
+    const baseUrl = useTestnet ? 'https://api-testnet.bybit.com' : 'https://api.bybit.com';
+    const ts = await getSyncedBybitTimestamp(baseUrl);
+    const recvWindow = '5000';
+    const qs = 'category=linear&settleCoin=USDT';
+    const sig = crypto.createHmac('sha256', apiSecret.trim()).update(ts + apiKey.trim() + recvWindow + qs).digest('hex');
+    const res = await fetchJsonWithTimeout(
+      `${baseUrl}/v5/position/list?${qs}`,
+      {
+        method: 'GET',
+        headers: {
+          'X-BAPI-API-KEY': apiKey.trim(),
+          'X-BAPI-TIMESTAMP': ts,
+          'X-BAPI-RECV-WINDOW': recvWindow,
+          'X-BAPI-SIGN': sig,
+        },
+      },
+      4800,
+      true
+    );
+    const list = res.data?.result?.list;
+    if (!res.ok || res.data?.retCode !== 0 || !Array.isArray(list)) {
+      return { ok: false, positions: [], error: res.data?.retMsg || res.error || 'Failed to fetch Bybit positions.' };
+    }
+    const open = list
+      .filter((p) => parseFloat(p?.size || '0') > 0)
+      .map((p) => {
+        const qty = parseFloat(p.size);
+        const entryPrice = parseFloat(p.avgPrice || '0');
+        const markPrice = parseFloat(p.markPrice || String(entryPrice));
+        const base = String(p.symbol || '').replace(/USDT$/i, '');
+        const sym = base.startsWith('1000') ? `k${base.slice(4)}-PERP` : `${base}-PERP`;
+        return {
+          exchange: 'BYBIT',
+          symbol: sym,
+          side: p.side === 'Sell' ? 'SHORT' : 'LONG',
+          executedQty: qty,
+          entryPrice,
+          currentPrice: markPrice,
+          sizeUsd: Number((qty * entryPrice).toFixed(2)),
+          leverage: Math.max(1, Number(p.leverage || 1)),
+          unrealizedPnlUsd: Number(parseFloat(p.unrealisedPnl || '0').toFixed(2)),
+          venueMode: 'FUTURES',
+        };
+      });
+    return { ok: true, positions: open };
+  }
+
+  if (providerId === 'okx_api') {
+    const { apiKey, apiSecret, passphrase } = credentials;
+    if (!apiKey || !apiSecret || !passphrase) return { ok: false, positions: [], error: 'OKX credentials kosong.' };
+    const ts = new Date().toISOString();
+    const path = '/api/v5/account/positions?instType=SWAP';
+    const sig = crypto.createHmac('sha256', apiSecret.trim()).update(`${ts}GET${path}`).digest('base64');
+    const headers = {
+      'OK-ACCESS-KEY': apiKey.trim(),
+      'OK-ACCESS-SIGN': sig,
+      'OK-ACCESS-TIMESTAMP': ts,
+      'OK-ACCESS-PASSPHRASE': passphrase.trim(),
+    };
+    if (useTestnet) headers['x-simulated-trading'] = '1';
+    const res = await fetchJsonWithTimeout(`https://www.okx.com${path}`, { method: 'GET', headers }, 4800, true);
+    if (!res.ok || res.data?.code !== '0' || !Array.isArray(res.data?.data)) {
+      return { ok: false, positions: [], error: res.data?.msg || res.error || 'Failed to fetch OKX positions.' };
+    }
+    const open = res.data.data
+      .filter((p) => Math.abs(parseFloat(p?.pos || '0')) > 0)
+      .map((p) => {
+        const contracts = parseFloat(p.pos);
+        const entryPrice = parseFloat(p.avgPx || '0');
+        const markPrice = parseFloat(p.markPx || String(entryPrice));
+        const notional = parseFloat(p.notionalUsd || '0');
+        const base = String(p.instId || '').replace(/-USDT-SWAP$/i, '');
+        return {
+          exchange: 'OKX',
+          symbol: `${base}-PERP`,
+          side: contracts >= 0 ? 'LONG' : 'SHORT',
+          executedQty: entryPrice > 0 && notional > 0 ? Number((notional / entryPrice).toFixed(8)) : Math.abs(contracts),
+          entryPrice,
+          currentPrice: markPrice,
+          sizeUsd: Number(notional.toFixed(2)),
+          leverage: Math.max(1, Number(p.lever || 1)),
+          unrealizedPnlUsd: Number(parseFloat(p.upl || '0').toFixed(2)),
+          venueMode: 'FUTURES',
+        };
+      });
+    return { ok: true, positions: open };
+  }
+
+  if (providerId === 'hyperliquid_agent' || providerId === 'trust') {
+    const userAddr = String(credentials?.walletAddress || '').trim();
+    if (!/^0x[a-fA-F0-9]{40}$/.test(userAddr)) {
+      return { ok: false, positions: [], error: 'Alamat wallet EVM Hyperliquid tidak valid.' };
+    }
+    const hlInfoUrl = useTestnet
+      ? 'https://api.hyperliquid-testnet.xyz/info'
+      : 'https://api.hyperliquid.xyz/info';
+    const res = await fetchJsonWithTimeout(
+      hlInfoUrl,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'clearinghouseState', user: userAddr }),
+      },
+      4800,
+      true
+    );
+    if (!res.ok || !res.data) {
+      return { ok: false, positions: [], error: res.error || 'Failed to fetch Hyperliquid positions.' };
+    }
+    const hlAssetsLive = cachedSnapshot?.hlAssets || lastGoodHlAssets || {};
+    const open = (res.data?.assetPositions || [])
+      .map((ap) => ap?.position)
+      .filter((p) => p && Math.abs(parseFloat(p.szi || '0')) > 0)
+      .map((p) => {
+        const szi = parseFloat(p.szi);
+        const coin = String(p.coin || '').trim();
+        const entryPrice = parseFloat(p.entryPx || '0');
+        const positionValue = Math.abs(parseFloat(p.positionValue || '0'));
+        const liveMark =
+          Number(hlAssetsLive[coin]?.price || 0) ||
+          (Math.abs(szi) > 0 && positionValue > 0 ? positionValue / Math.abs(szi) : entryPrice);
+        const levVal = Number(p.leverage?.value || 1);
+        return {
+          exchange: 'HYPERLIQUID',
+          symbol: `${coin}-PERP`,
+          side: szi >= 0 ? 'LONG' : 'SHORT',
+          executedQty: Math.abs(szi),
+          entryPrice,
+          currentPrice: Number(liveMark.toFixed(8)),
+          sizeUsd: Number((positionValue > 0 ? positionValue : Math.abs(szi) * entryPrice).toFixed(2)),
+          leverage: Math.max(1, Number.isFinite(levVal) ? levVal : 1),
+          unrealizedPnlUsd: Number(parseFloat(p.unrealizedPnl || '0').toFixed(2)),
+          venueMode: 'FUTURES',
+        };
+      });
+    return { ok: true, positions: open };
+  }
+
+  return { ok: true, positions: [] };
+}
+
+/**
+ * 5E. Unified Multi-Exchange Health & Configuration Parity Status
+ * Priority order: #1 HYPERLIQUID -> #2 BINANCE -> #3 BYBIT -> #4 OKX
+ */
+export async function getAllExchangesConfigStatus(useTestnet = false) {
+  const probeVenue = async (spec) => {
+    const t0 = Date.now();
+    const res = await fetchJsonWithTimeout(spec.url, spec.opts || {}, 4000, true);
+    const latencyMs = Date.now() - t0;
+    return {
+      priority: spec.priority,
+      tier: spec.tier,
+      exchange: spec.exchange,
+      providerId: spec.providerId,
+      label: spec.label,
+      reachable: Boolean(res.ok),
+      latencyMs,
+      transport: res.transport || 'DIRECT_TLS',
+      useTestnet: Boolean(useTestnet),
+      error: res.ok ? undefined : res.error || 'Unreachable',
+      capabilities: spec.capabilities,
+    };
+  };
+
+  const hlUrl = useTestnet
+    ? 'https://api.hyperliquid-testnet.xyz/info'
+    : 'https://api.hyperliquid.xyz/info';
+  const binFuturesUrl = useTestnet
+    ? 'https://testnet.binancefuture.com/fapi/v1/time'
+    : 'https://fapi.binance.com/fapi/v1/time';
+  const binSpotUrl = useTestnet
+    ? 'https://testnet.binance.vision/api/v3/time'
+    : 'https://api.binance.com/api/v3/time';
+  const bybitUrl = useTestnet
+    ? 'https://api-testnet.bybit.com/v5/market/time'
+    : 'https://api.bybit.com/v5/market/time';
+  const okxUrl = 'https://www.okx.com/api/v5/public/time';
+
+  const [hlStatus, binFutRes, binSpotRes, bybitStatus, okxStatus] = await Promise.all([
+    probeVenue({
+      priority: 1,
+      tier: 'PRIMARY',
+      exchange: 'HYPERLIQUID',
+      providerId: 'hyperliquid_agent',
+      label: 'Hyperliquid L1 Perpetuals',
+      url: hlUrl,
+      opts: {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'meta' }),
+      },
+      capabilities: {
+        futures: true,
+        spot: false,
+        leverageSync: true,
+        postOnlyMaker: true,
+        protectiveStop: true,
+        cancelOrder: true,
+        orderStatus: true,
+        positionsReconcile: true,
+        serverTimeSync: true,
+        unattendedAutonomous: true,
+        autonomousSigningMode: 'AGENT_PRIVATE_KEY_EIP712_OR_EXTENSION',
+      },
+    }),
+    (async () => {
+      const t0 = Date.now();
+      const res = await fetchJsonWithTimeout(binFuturesUrl, {}, 4000, true);
+      return { res, latencyMs: Date.now() - t0 };
+    })(),
+    (async () => {
+      const t0 = Date.now();
+      const res = await fetchJsonWithTimeout(binSpotUrl, {}, 4000, true);
+      return { res, latencyMs: Date.now() - t0 };
+    })(),
+    probeVenue({
+      priority: 3,
+      tier: 'SECONDARY',
+      exchange: 'BYBIT',
+      providerId: 'bybit_api',
+      label: 'Bybit V5 Unified Trading',
+      url: bybitUrl,
+      capabilities: {
+        futures: true,
+        spot: true,
+        leverageSync: true,
+        postOnlyMaker: true,
+        protectiveStop: true,
+        cancelOrder: true,
+        orderStatus: true,
+        positionsReconcile: true,
+        serverTimeSync: true,
+        unattendedAutonomous: true,
+        autonomousSigningMode: 'HMAC_SHA256',
+      },
+    }),
+    probeVenue({
+      priority: 4,
+      tier: 'SECONDARY',
+      exchange: 'OKX',
+      providerId: 'okx_api',
+      label: 'OKX V5 Multi-Asset',
+      url: okxUrl,
+      capabilities: {
+        futures: true,
+        spot: true,
+        leverageSync: true,
+        postOnlyMaker: true,
+        protectiveStop: true,
+        cancelOrder: true,
+        orderStatus: true,
+        positionsReconcile: true,
+        serverTimeSync: true,
+        unattendedAutonomous: true,
+        autonomousSigningMode: 'HMAC_SHA256_PASSPHRASE',
+      },
+    }),
+  ]);
+
+  const binanceStatus = {
+    priority: 2,
+    tier: 'PRIMARY',
+    exchange: 'BINANCE',
+    providerId: 'binance_api',
+    label: 'Binance USDT-M Futures & Spot',
+    reachable: Boolean(binFutRes.res.ok || binSpotRes.res.ok),
+    futuresReachable: Boolean(binFutRes.res.ok),
+    spotReachable: Boolean(binSpotRes.res.ok),
+    latencyMs: Math.min(binFutRes.latencyMs, binSpotRes.latencyMs),
+    transport: binFutRes.res.transport || binSpotRes.res.transport || 'DIRECT_TLS',
+    useTestnet: Boolean(useTestnet),
+    error:
+      binFutRes.res.ok || binSpotRes.res.ok
+        ? undefined
+        : binFutRes.res.error || binSpotRes.res.error || 'Unreachable',
+    capabilities: {
+      futures: true,
+      spot: true,
+      leverageSync: true,
+      postOnlyMaker: true,
+      protectiveStop: true,
+      cancelOrder: true,
+      orderStatus: true,
+      positionsReconcile: true,
+      serverTimeSync: true,
+      unattendedAutonomous: true,
+      autonomousSigningMode: 'HMAC_SHA256',
+    },
+  };
+
+  const exchanges = [hlStatus, binanceStatus, bybitStatus, okxStatus];
+  const allReachable = exchanges.every((e) => e.reachable);
+  return {
+    ok: true,
+    priorityOrder: ['HYPERLIQUID', 'BINANCE', 'BYBIT', 'OKX'],
+    primaryExchanges: ['HYPERLIQUID', 'BINANCE'],
+    allReachable,
+    reachableCount: exchanges.filter((e) => e.reachable).length,
+    totalCount: exchanges.length,
+    useTestnet: Boolean(useTestnet),
+    timestamp: new Date().toISOString(),
+    exchanges,
   };
 }
 
@@ -3923,13 +5022,7 @@ async function fetchLiveBloombergRssItems(hlAssets, nowStr) {
 
           const isBear = bearWords.test(textCombined) && !bullWords.test(headline);
           const isBull = bullWords.test(textCombined) && !isBear;
-          const sentiment = isBear
-            ? 'BEARISH'
-            : isBull
-              ? 'BULLISH'
-              : (hlAssets.BTC?.change24h ?? 0) >= 0
-                ? 'BULLISH'
-                : 'BEARISH';
+          const sentiment = isBear ? 'BEARISH' : isBull ? 'BULLISH' : 'NEUTRAL';
 
           const affectedAssets = [];
           for (const rule of tickerRegexMap) {
@@ -4123,6 +5216,12 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
     return { status: 200, payload: getRlsSecuritySummary() };
   }
 
+  if (pathname === '/api/exchanges/status' && method === 'GET') {
+    const useTestnet = searchParams.get('testnet') === '1' || searchParams.get('testnet') === 'true';
+    const status = await getAllExchangesConfigStatus(useTestnet);
+    return { status: 200, payload: status };
+  }
+
   if (pathname === '/api/account/ping-venue' && method === 'POST') {
     const body = await readBody();
     const providerId = body?.providerId || 'binance_api';
@@ -4221,9 +5320,27 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
     return { status: 200, payload: result };
   }
 
+  if (pathname === '/api/account/positions' && method === 'POST') {
+    const body = await readBody();
+    const result = await fetchRealOpenPositions(body);
+    return { status: 200, payload: result };
+  }
+
   if (pathname === '/api/execute/order' && method === 'POST') {
     const body = await readBody();
     const result = await executeRealExchangeOrder(body);
+    return { status: 200, payload: result };
+  }
+
+  if (pathname === '/api/execute/cancel' && method === 'POST') {
+    const body = await readBody();
+    const result = await cancelRealExchangeOrder(body);
+    return { status: 200, payload: result };
+  }
+
+  if (pathname === '/api/execute/order-status' && method === 'POST') {
+    const body = await readBody();
+    const result = await fetchRealOrderStatus(body);
     return { status: 200, payload: result };
   }
 

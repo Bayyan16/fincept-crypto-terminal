@@ -17,6 +17,21 @@ export function buildHyperliquidOrderAction(params: {
   szDecimals?: number;
   makerOnly?: boolean;
 }): Record<string, unknown>;
+export function buildHyperliquidLeverageAction(params: {
+  assetIndex: number;
+  leverage: number;
+  isCross?: boolean;
+}): Record<string, unknown>;
+export function buildHyperliquidCancelAction(params: {
+  assetIndex: number;
+  orderId: number | string;
+}): Record<string, unknown>;
+export function hashHyperliquidTypedData(
+  action: Record<string, unknown>,
+  nonce: number,
+  useTestnet?: boolean,
+  vaultAddress?: string | null
+): { digest: string; connectionId: string };
 export function buildHyperliquidEip712TypedData(
   action: Record<string, unknown>,
   nonce: number,

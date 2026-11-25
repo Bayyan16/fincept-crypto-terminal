@@ -6,6 +6,10 @@ import type {
   WalletConnectionState,
 } from '../src/types/terminal';
 
+export const EXCHANGE_PRIORITY_ORDER: readonly ExchangeId[];
+
+export function hasHyperliquidAgentPrivateKey(wallet: WalletConnectionState | undefined): boolean;
+
 export function hasRealWalletCredentials(wallet: WalletConnectionState | undefined): boolean;
 
 export function isWalletReadyForRealExecution(
@@ -16,7 +20,8 @@ export function isWalletReadyForRealExecution(
 export function resolveReadyRealWalletForExchange(
   exchange: ExchangeId,
   wallets: WalletConnectionState[],
-  useTestnet?: boolean
+  useTestnet?: boolean,
+  options?: { requireAutonomousKey?: boolean }
 ): WalletConnectionState | null;
 
 export function getWalletMarketCapabilities(wallet: WalletConnectionState | undefined): {
@@ -33,6 +38,7 @@ export function resolveExecutableRealVenue(params: {
   useTestnet?: boolean;
   preferredMarketType?: 'PERP' | 'SPOT' | null;
   preferredExchange?: ExchangeId | null;
+  isAutonomous?: boolean;
 }):
   | {
       ok: true;
@@ -50,6 +56,7 @@ export function resolveExecutableRealVenue(params: {
 export function computeSafeAutonomousRealOrderSizeUsd(params: {
   requestedSizeUsd: number;
   availableUsd: number;
+  committedMarginUsd?: number;
   verifiedReal?: boolean;
   marketType?: MarketType;
   leverage?: number;

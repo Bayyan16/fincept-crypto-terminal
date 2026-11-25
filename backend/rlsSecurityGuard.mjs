@@ -685,6 +685,13 @@ export function enforceRlsOrderExecutionGuard(payload = {}, liveMarkPrice = 0) {
       }
       pendingNonceCommits.push({ key: nonceKey, ts: nowMs });
     }
+  } else if (exchange === 'HYPERLIQUID' && !hlSignedAction && credentials?.agentPrivateKey) {
+    const pk = String(credentials.agentPrivateKey || '').trim();
+    if (!EVM_PRIVATE_KEY_REGEX.test(pk) || /^0x?0+$/i.test(pk)) {
+      const err = '[RLS AGENT KEY GUARD] Hyperliquid Agent Private Key tidak valid (wajib 64 karakter hex 32-byte non-zero).';
+      recordRlsAuditEvent({ action: 'EXECUTE_ORDER', policy: 'RLS_AGENT_KEY_VALIDATION', allowed: false, rlsOwnerId, exchange, symbol, reason: err });
+      return { ok: false, policy: 'RLS_AGENT_KEY_VALIDATION', rlsOwnerId, error: err };
+    }
   }
 
   if ((exchange === 'JUPITER' || exchange === 'DEXSCREENER') && solanaSignedTx !== undefined) {

@@ -200,8 +200,14 @@ export function resolveOwningWalletForExchange(
   const phantomWallet = wallets.find((w) => w.id === 'phantom');
 
   if (exchange === 'HYPERLIQUID') {
+    const hlHasAgentKey = Boolean(
+      hlAgentWallet?.connected &&
+        unsealCredentialSecret(hlAgentWallet.credentials?.agentPrivateKey).trim()
+    );
+    if (hlHasAgentKey && hlAgentWallet?.verifiedReal) return hlAgentWallet;
     if (trustWallet?.connected && trustWallet.verifiedReal) return trustWallet;
     if (hlAgentWallet?.connected && hlAgentWallet.verifiedReal) return hlAgentWallet;
+    if (hlHasAgentKey) return hlAgentWallet;
     return trustWallet?.connected ? trustWallet : hlAgentWallet;
   }
   if (exchange === 'JUPITER') {

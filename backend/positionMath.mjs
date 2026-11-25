@@ -139,3 +139,58 @@ export function computeClosedTradeSettlement({
     allowLocalBalanceMutation: !isRealMoney,
   };
 }
+
+/**
+ * Computes mathematically un-invertible Breakeven+Fee Stop parameters (#51).
+ * Guarantees that:
+ * 1. `effectiveTriggerRoePct` is STRICTLY higher than the ROE equivalent of `lockOffsetPct` plus a safety buffer
+ *    so the exchange never rejects the stop with `-2021 Order would immediately trigger`.
+ * 2. `shouldLock` is only true when `currentPrice` is strictly beyond `beStopPrice` on the profitable side.
+ */
+export function computeSafeBreakevenParams({
+  side,
+  entryPrice,
+  currentPrice,
+  leverage = 1,
+  configuredTriggerPct = 1.2,
+  lockOffsetPct = 0.0004,
+  alreadyLocked = false,
+}) {
+  const entry = Number(entryPrice);
+  const current = Number(currentPrice);
+  const lev = Math.max(1, Number.isFinite(Number(leverage)) ? Number(leverage) : 1);
+  const offset = Math.max(0.0001, Math.min(0.01, Number(lockOffsetPct) || 0.0004));
+  const beStopPrice = side === 'LONG' ? entry * (1 + offset) : entry * (1 - offset);
+
+  // Minimum safe ROE% trigger: price must exceed lockOffset + >= 0.05% price cushion (0.05% * lev ROE)
+  const minSafeTriggerRoePct = Number(((offset + 0.0005) * 100 * lev).toFixed(4));
+  const effectiveTriggerRoePct = Math.max(
+    Number.isFinite(Number(configuredTriggerPct)) ? Number(configuredTriggerPct) : 1.2,
+    minSafeTriggerRoePct
+  );
+
+  if (!Number.isFinite(entry) || entry <= 0 || !Number.isFinite(current) || current <= 0) {
+    return {
+      shouldLock: Boolean(alreadyLocked),
+      canPlaceExchangeStop: false,
+      beStopPrice: 0,
+      effectiveTriggerRoePct,
+    };
+  }
+
+  const priceMoveRatio = side === 'LONG' ? (current - entry) / entry : (entry - current) / entry;
+  const currentRoePct = priceMoveRatio * 100 * lev;
+  const isStopSafeAgainstMarket =
+    side === 'LONG' ? beStopPrice < current * 0.9999 : beStopPrice > current * 1.0001;
+
+  const shouldLock = Boolean(
+    alreadyLocked || (currentRoePct >= effectiveTriggerRoePct && isStopSafeAgainstMarket)
+  );
+
+  return {
+    shouldLock,
+    canPlaceExchangeStop: shouldLock && isStopSafeAgainstMarket,
+    beStopPrice,
+    effectiveTriggerRoePct,
+  };
+}

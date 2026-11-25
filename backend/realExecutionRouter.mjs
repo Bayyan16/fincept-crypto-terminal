@@ -13,10 +13,25 @@
 
 export const MIN_SINGLE_ORDER_USD = 10;
 
-const EXECUTABLE_REAL_EXCHANGES = new Set(['BINANCE', 'BYBIT', 'OKX', 'HYPERLIQUID']);
+// Canonical exchange priority order: Hyperliquid & Binance first, followed by Bybit & OKX
+export const EXCHANGE_PRIORITY_ORDER = ['HYPERLIQUID', 'BINANCE', 'BYBIT', 'OKX'];
+
+const EXECUTABLE_REAL_EXCHANGES = new Set(EXCHANGE_PRIORITY_ORDER);
+const HL_AGENT_PK_RE = /^(0x)?[a-fA-F0-9]{64}$/;
 
 function hasNonEmptyCredential(val) {
   return typeof val === 'string' && val.trim().length > 0;
+}
+
+/**
+ * Checks whether a Hyperliquid wallet row holds a valid 32-byte Agent Private Key
+ * enabling unattended server-side EIP-712 signing (no interactive browser popup needed).
+ */
+export function hasHyperliquidAgentPrivateKey(wallet) {
+  const pk = String(wallet?.credentials?.agentPrivateKey || '').trim();
+  if (!pk) return false;
+  if (pk.startsWith('fincept-rls-sess:')) return pk.length > 24;
+  return HL_AGENT_PK_RE.test(pk) && !/^0x?0+$/i.test(pk);
 }
 
 /**
@@ -65,19 +80,29 @@ export function isWalletReadyForRealExecution(wallet, useTestnet = false) {
 /**
  * Maps an ExchangeId to its best ready real-money wallet row.
  */
-export function resolveReadyRealWalletForExchange(exchange, wallets = [], useTestnet = false) {
+export function resolveReadyRealWalletForExchange(
+  exchange,
+  wallets = [],
+  useTestnet = false,
+  { requireAutonomousKey = false } = {}
+) {
   if (!EXECUTABLE_REAL_EXCHANGES.has(exchange)) return null;
   if (exchange === 'HYPERLIQUID') {
     const trust = wallets.find((w) => w.id === 'trust');
     const hlAgent = wallets.find((w) => w.id === 'hyperliquid_agent');
-    if (trust && isWalletReadyForRealExecution(trust, useTestnet).ok && trust.verifiedReal) {
-      return trust;
+    const hlAgentReady = Boolean(hlAgent && isWalletReadyForRealExecution(hlAgent, useTestnet).ok);
+    const hlAgentHasKey = hlAgentReady && hasHyperliquidAgentPrivateKey(hlAgent);
+    const trustReady = Boolean(trust && isWalletReadyForRealExecution(trust, useTestnet).ok);
+
+    if (requireAutonomousKey) {
+      return hlAgentHasKey ? hlAgent : null;
     }
-    if (hlAgent && isWalletReadyForRealExecution(hlAgent, useTestnet).ok && hlAgent.verifiedReal) {
-      return hlAgent;
-    }
-    if (trust && isWalletReadyForRealExecution(trust, useTestnet).ok) return trust;
-    if (hlAgent && isWalletReadyForRealExecution(hlAgent, useTestnet).ok) return hlAgent;
+    if (hlAgentHasKey && hlAgent.verifiedReal) return hlAgent;
+    if (trustReady && trust.verifiedReal) return trust;
+    if (hlAgentReady && hlAgent.verifiedReal) return hlAgent;
+    if (hlAgentHasKey) return hlAgent;
+    if (trustReady) return trust;
+    if (hlAgentReady) return hlAgent;
     return null;
   }
   const map = {
@@ -193,6 +218,7 @@ export function resolveExecutableRealVenue({
   useTestnet = false,
   preferredMarketType = null,
   preferredExchange = null,
+  isAutonomous = false,
 }) {
   if (!market) {
     return { ok: false, error: 'Market tidak valid.' };
@@ -223,8 +249,8 @@ export function resolveExecutableRealVenue({
       }
     }
   }
-  // Fallback across any connected CEX if market metadata only listed DEX exchanges for a standard major
-  for (const fallbackEx of ['BINANCE', 'BYBIT', 'OKX', 'HYPERLIQUID']) {
+  // Fallback in strict canonical priority order: Hyperliquid -> Binance -> Bybit -> OKX
+  for (const fallbackEx of EXCHANGE_PRIORITY_ORDER) {
     if (
       !candidateExchanges.includes(fallbackEx) &&
       market.marketType !== 'DEX_POOL' &&
@@ -237,15 +263,30 @@ export function resolveExecutableRealVenue({
 
   let envMismatchError = null;
   let spotShortBlockedError = null;
+  let interactivePopupBlockedError = null;
 
   for (const ex of candidateExchanges) {
-    const wallet = resolveReadyRealWalletForExchange(ex, wallets, useTestnet);
+    // (#51 + HL Autonomous Parity): Hyperliquid browser extension signing requires interactive popup,
+    // EXCEPT when a valid Hyperliquid Agent Private Key is configured for unattended server-side EIP-712 signing!
+    const wallet = resolveReadyRealWalletForExchange(ex, wallets, useTestnet, {
+      requireAutonomousKey: Boolean(isAutonomous && ex === 'HYPERLIQUID'),
+    });
     if (!wallet) {
+      if (isAutonomous && ex === 'HYPERLIQUID') {
+        const hlAnyReady = resolveReadyRealWalletForExchange('HYPERLIQUID', wallets, useTestnet, {
+          requireAutonomousKey: false,
+        });
+        if (hlAnyReady) {
+          interactivePopupBlockedError =
+            'Hyperliquid tanpa Agent Private Key memerlukan konfirmasi popup ekstensi EVM sehingga tidak dapat dieksekusi otomatis tanpa pengawasan (isi Hyperliquid Agent Private Key di menu Wallets & API untuk Auto-Hunter unattended, atau hubungkan Binance / Bybit / OKX API).';
+          continue;
+        }
+      }
       // Track if a wallet exists for this exchange but is mismatched on Testnet/Mainnet
       const map = { BINANCE: 'binance_api', BYBIT: 'bybit_api', OKX: 'okx_api' };
       const rawW =
         ex === 'HYPERLIQUID'
-          ? wallets.find((w) => (w.id === 'trust' || w.id === 'hyperliquid_agent') && w.verifiedReal)
+          ? wallets.find((w) => (w.id === 'hyperliquid_agent' || w.id === 'trust') && w.verifiedReal)
           : wallets.find((w) => w.id === map[ex]);
       if (rawW && isWalletReadyForRealExecution(rawW, useTestnet).reason === 'ENV_MISMATCH') {
         envMismatchError = `[RLS ENV MISMATCH] ${rawW.name} terverifikasi pada ${
@@ -313,6 +354,7 @@ export function resolveExecutableRealVenue({
     error:
       spotShortBlockedError ||
       envMismatchError ||
+      interactivePopupBlockedError ||
       `Belum ada wallet real (${useTestnet ? 'TESTNET' : 'MAINNET'}) yang aktif & terverifikasi untuk mengeksekusi ${side} ${market.symbol}. Hubungkan Binance / Bybit / OKX / Hyperliquid di menu Wallets & API.`,
   };
 }
@@ -326,12 +368,14 @@ export function resolveExecutableRealVenue({
 export function computeSafeAutonomousRealOrderSizeUsd({
   requestedSizeUsd,
   availableUsd,
+  committedMarginUsd = 0,
   verifiedReal = false,
   marketType = 'PERP',
   leverage = 1,
 }) {
   const req = Math.max(MIN_SINGLE_ORDER_USD, Number(requestedSizeUsd) || MIN_SINGLE_ORDER_USD);
   const avail = Number(availableUsd);
+  const committed = Math.max(0, Number(committedMarginUsd) || 0);
   const effLev = marketType === 'SPOT' ? 1 : Math.max(1, Math.min(20, Number(leverage) || 1));
 
   if (!verifiedReal || !Number.isFinite(avail) || avail <= 0) {
@@ -346,13 +390,15 @@ export function computeSafeAutonomousRealOrderSizeUsd({
     return { ok: true, sizeUsd: Number(req.toFixed(2)) };
   }
 
+  // Subtract margin already committed to open real positions on the same wallet (#51)
+  const freeUsd = Number(Math.max(0, avail - committed).toFixed(2));
   const safetyBuffer = marketType === 'SPOT' ? 0.9 : 0.85;
-  const maxSafeNotional = Number((avail * effLev * safetyBuffer).toFixed(2));
+  const maxSafeNotional = Number((freeUsd * effLev * safetyBuffer).toFixed(2));
   if (maxSafeNotional < MIN_SINGLE_ORDER_USD) {
     return {
       ok: false,
       sizeUsd: 0,
-      error: `Saldo tersedia ($${avail.toFixed(2)} @ ${effLev}x -> maks aman $${maxSafeNotional.toFixed(2)}) di bawah batas minimum order $${MIN_SINGLE_ORDER_USD}.`,
+      error: `Margin bebas tersisa ($${freeUsd.toFixed(2)} dari $${avail.toFixed(2)}, terpakai $${committed.toFixed(2)} @ ${effLev}x -> maks aman $${maxSafeNotional.toFixed(2)}) di bawah batas minimum order $${MIN_SINGLE_ORDER_USD}.`,
     };
   }
 

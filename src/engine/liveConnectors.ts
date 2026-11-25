@@ -520,6 +520,37 @@ export function mergeDynamicAllCryptoMarkets(
   realDexPools?: DexScreenerPoolItem[],
   realOnChainTrades?: WhaleTransaction[]
 ): MarketPair[] {
+  const nowMs = Date.now();
+  // Helper: sum ONLY verified directional on-chain whale trades (never fabricate whale flow from change24h!)
+  const computeRealCoinWhaleDelta = (symbol: string, baseAsset: string): { netFlow: number; tradeCount: number } => {
+    const cleanBase = baseAsset.replace(/^k(?=[A-Z]{2,})/, '').toUpperCase();
+    const coinTrades = (realOnChainTrades || []).filter((t) => {
+      if (!t || t.isDirectionalWhaleTrade === false) return false;
+      if (t.direction !== 'BULLISH' && t.direction !== 'BEARISH') return false;
+      if (t.tokenSymbol === 'USDC' || t.symbol === 'USDC-BRIDGE') return false;
+      const tTok = String(t.tokenSymbol || '').replace(/^k(?=[A-Z]{2,})/, '').toUpperCase();
+      return (
+        t.symbol === symbol ||
+        tTok === cleanBase ||
+        t.symbol.toUpperCase().startsWith(`${cleanBase}-`) ||
+        t.symbol.toUpperCase().startsWith(`${cleanBase} /`)
+      );
+    });
+    const netFlow = Math.round(
+      coinTrades.reduce((acc, t) => acc + (t.direction === 'BULLISH' ? t.sizeUsd : -t.sizeUsd), 0)
+    );
+    return { netFlow, tradeCount: coinTrades.length };
+  };
+
+  const classifyRealWhaleBias = (netFlow: number, hasReal: boolean): MarketPair['whaleBias'] => {
+    if (!hasReal) return 'NEUTRAL';
+    if (netFlow >= 250_000) return 'STRONG LONG';
+    if (netFlow >= 25_000) return 'ACCUMULATING';
+    if (netFlow <= -250_000) return 'STRONG SHORT';
+    if (netFlow <= -25_000) return 'DISTRIBUTING';
+    return 'NEUTRAL';
+  };
+
   const updatedExisting = prevMarkets.map((m) => {
     const hlData = hlAssets[m.hlCoin] || hlAssets[m.baseAsset];
     const sector = m.sector || classifyCoinSector(m.baseAsset, m.cmcRank);
@@ -528,35 +559,9 @@ export function mergeDynamicAllCryptoMarkets(
     }
 
     const matchingPool = realDexPools?.find((p) => p.symbol.startsWith(m.baseAsset));
-    const coinTrades = (realOnChainTrades || []).filter(
-      (t) =>
-        (t.symbol === m.symbol || t.symbol.startsWith(m.baseAsset)) &&
-        t.tokenSymbol !== 'USDC'
-    );
-    const liveWhaleDelta = coinTrades.reduce(
-      (acc, t) => acc + (t.direction === 'BULLISH' ? t.sizeUsd : -t.sizeUsd),
-      0
-    );
-    const liveVol = hlData.volume24hUsd > 0 ? hlData.volume24hUsd : m.volume24hUsd;
-    const changeTilt = Math.max(-2.2, Math.min(2.2, (hlData.change24h || 0) / 1.6));
-    const obiTilt = m.obiScore * 1.35;
-    const structuralFlow = Math.round(liveVol * 0.0045 * (changeTilt * 0.65 + obiTilt * 0.35));
-    const blendedWhaleNetFlow =
-      coinTrades.length > 0
-        ? Math.round(structuralFlow * 0.75 + liveWhaleDelta * 1.5)
-        : structuralFlow !== 0
-          ? structuralFlow
-          : m.whaleNetFlow1hUsd;
-    const updatedWhaleBias: MarketPair['whaleBias'] =
-      blendedWhaleNetFlow > 10_000_000
-        ? 'STRONG LONG'
-        : blendedWhaleNetFlow > 1_500_000
-          ? 'ACCUMULATING'
-          : blendedWhaleNetFlow < -8_000_000
-            ? 'STRONG SHORT'
-            : blendedWhaleNetFlow < -1_200_000
-              ? 'DISTRIBUTING'
-              : 'NEUTRAL';
+    const { netFlow: realWhaleDelta, tradeCount } = computeRealCoinWhaleDelta(m.symbol, m.baseAsset);
+    const hasRealWhaleFlow = tradeCount > 0;
+    const updatedWhaleBias = classifyRealWhaleBias(realWhaleDelta, hasRealWhaleFlow);
 
     return {
       ...m,
@@ -571,8 +576,14 @@ export function mergeDynamicAllCryptoMarkets(
       dexPoolTvlUsd: matchingPool
         ? matchingPool.liquidityTvlUsd
         : Math.round(hlData.openInterestUsd * 0.18),
-      whaleNetFlow1hUsd: blendedWhaleNetFlow,
+      // Never retain hardcoded seed OBI/CVD/whaleFlow once live data syncs unless backed by real L2/candles/trades!
+      obiScore: m.hasRealOrderbook ? m.obiScore : 0,
+      cvdDelta15mUsd: m.hasRealCandles ? m.cvdDelta15mUsd : 0,
+      whaleNetFlow1hUsd: hasRealWhaleFlow ? realWhaleDelta : 0,
       whaleBias: updatedWhaleBias,
+      isLiveSynced: true,
+      hasRealWhaleFlow,
+      lastSyncedAt: nowMs,
     };
   });
 
@@ -602,12 +613,11 @@ export function mergeDynamicAllCryptoMarkets(
     existingHlCoins.add(cleanBase.toUpperCase());
     existingHlCoins.add(rawCoin.toUpperCase());
 
-    const vol = Math.max(50_000, asset.volume24hUsd || 500_000);
-    const oi = Math.max(25_000, asset.openInterestUsd || Math.round(vol * 0.32));
+    const vol = Math.max(0, Number(asset.volume24hUsd || 0));
+    const oi = Math.max(0, Number(asset.openInterestUsd || 0));
     const change = Number(asset.change24h || 0);
-    const estWhaleFlow = Math.round(
-      vol * 0.035 * (change >= 0 ? 1 : -1) * Math.min(2.5, Math.max(0.4, Math.abs(change) / 3))
-    );
+    const { netFlow: realWhaleDelta, tradeCount } = computeRealCoinWhaleDelta(symbol, cleanBase);
+    const hasRealWhaleFlow = tradeCount > 0;
     const sector = classifyCoinSector(rawCoin);
 
     dynamicDiscovered.push({
@@ -629,33 +639,30 @@ export function mergeDynamicAllCryptoMarkets(
       low24h: asset.low24h || Number((asset.price * 0.975).toPrecision(5)),
       volume24hUsd: vol,
       openInterestUsd: oi,
-      fundingRate: asset.fundingRate ?? 0.0085,
-      spreadBps: vol >= 50_000_000 ? 0.45 : vol >= 5_000_000 ? 0.75 : vol >= 1_000_000 ? 1.25 : 2.1,
-      depthPlusMinusHalfPctUsd: Math.max(850_000, Math.round(oi * 0.06)),
-      dexPoolTvlUsd: Math.max(1_200_000, Math.round(oi * 0.18)),
+      fundingRate: asset.fundingRate ?? 0,
+      spreadBps: vol >= 50_000_000 ? 0.5 : vol >= 5_000_000 ? 1.0 : vol >= 1_000_000 ? 2.0 : 4.0,
+      depthPlusMinusHalfPctUsd: Math.round(oi * 0.06),
+      dexPoolTvlUsd: Math.round(oi * 0.18),
       liquidityScore:
         vol >= 20_000_000
           ? 94
           : vol >= 5_000_000
-            ? 90
+            ? 88
             : vol >= 1_000_000
-              ? 86
+              ? 80
               : vol >= 250_000
-                ? 82
-                : 76,
-      obiScore: Number(Math.max(-0.58, Math.min(0.58, change / 14)).toFixed(2)),
-      cvdDelta15mUsd: Math.round(estWhaleFlow * 0.55),
-      whaleNetFlow1hUsd: estWhaleFlow,
-      whaleBias:
-        estWhaleFlow >= 1_500_000
-          ? 'STRONG LONG'
-          : estWhaleFlow >= 250_000
-            ? 'ACCUMULATING'
-            : estWhaleFlow <= -1_500_000
-              ? 'STRONG SHORT'
-              : estWhaleFlow <= -250_000
-                ? 'DISTRIBUTING'
-                : 'NEUTRAL',
+                ? 70
+                : 55,
+      // Zero synthetic OBI/CVD/WhaleFlow: remain 0 until real L2 book, real candles, or real whale trades arrive!
+      obiScore: 0,
+      cvdDelta15mUsd: 0,
+      whaleNetFlow1hUsd: hasRealWhaleFlow ? realWhaleDelta : 0,
+      whaleBias: classifyRealWhaleBias(realWhaleDelta, hasRealWhaleFlow),
+      isLiveSynced: true,
+      hasRealOrderbook: false,
+      hasRealCandles: false,
+      hasRealWhaleFlow,
+      lastSyncedAt: nowMs,
     });
   });
 
@@ -935,10 +942,8 @@ export function buildAggregatedOrderbook(pair: MarketPair): OrderbookState {
         : obiPercent <= -22
           ? 'BEARISH_ABSORPTION'
           : 'NONE',
-    spoofingAlert:
-      Math.random() > 0.84
-        ? `Canceled $1.9M fake ask wall on ${pair.primaryExchange} (<420ms) — Bullish trap cleared`
-        : null,
+    spoofingAlert: null,
+    isLiveBook: false,
   };
 }
 
@@ -1259,6 +1264,9 @@ export async function fetchBackendRealOrderbook(
           depthHalfPctUsd: data.depthHalfPctUsd,
           absorptionDetected: data.absorptionDetected || 'NONE',
           spoofingAlert: null,
+          isLiveBook: true,
+          primaryVenue: data.primaryVenue,
+          venueBooks: data.venueBooks,
         };
       }
       return null;
@@ -1332,6 +1340,16 @@ export async function fetchBackendRealOrderbook(
                 ? 'BEARISH_ABSORPTION'
                 : 'NONE',
             spoofingAlert: null,
+            isLiveBook: true,
+            primaryVenue: 'HYPERLIQUID',
+            venueBooks: {
+              HYPERLIQUID: {
+                bestBid: bids[0].price,
+                bestAsk: asks[0].price,
+                spreadBps,
+                obiPercent,
+              },
+            },
           };
         }
       }

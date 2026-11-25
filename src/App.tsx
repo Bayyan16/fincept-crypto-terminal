@@ -45,6 +45,7 @@ import {
   computeClosedTradeSettlement,
   computeDailyRealizedPnlUsd,
   computePositionPnl,
+  computeSafeBreakevenParams,
   evaluateDailyDrawdownCircuitBreaker,
   getUtcTradingDayKey,
 } from '../backend/positionMath.mjs';
@@ -65,8 +66,11 @@ import {
 import { MultiAgentForumPanel } from './components/MultiAgentForumPanel';
 import { VaultSettlementCourier3DViz } from './components/VaultSettlementCourier3DViz';
 import {
+  cancelRealOrderOnVenue,
   connectBrowserExtensionWallet,
   executeRealOrderOnVenue,
+  fetchRealExchangePositions,
+  fetchRealOrderStatusOnVenue,
   FLEXIBLE_EVM_NETWORKS,
   loadSavedWallets,
   saveWalletsToVault,
@@ -203,6 +207,7 @@ export function App({
   const candleReqSeqRef = useRef<number>(0);
   const activePriceRef = useRef<number>(INITIAL_MARKETS[0].price);
   const hasLiveSnapshotRef = useRef<boolean>(false);
+  const lastLiveSnapshotAtRef = useRef<number>(0);
   const initialStopSubmittedIdsRef = useRef<Set<string>>(new Set());
   const beStopSubmittedIdsRef = useRef<Set<string>>(new Set());
   const closingPositionIdsRef = useRef<Set<string>>(new Set());
@@ -288,12 +293,12 @@ export function App({
   const [circuitBreakerTriggered, setCircuitBreakerTriggered] = useState<boolean>(false);
   const [isExecutingOrder, setIsExecutingOrder] = useState<boolean>(false);
 
-  // Autonomous Agent Settings
+  // Autonomous Agent Settings (Calibrated for Real-Money Safety #51: BE trigger strictly > lock offset + cushion, realistic scratch cap)
   const [agentAutonomousEnabled, setAgentAutonomousEnabled] = useState(true);
   const [makerOnlyMode, setMakerOnlyMode] = useState(true);
-  const [autoBreakevenTriggerPct, setAutoBreakevenTriggerPct] = useState(0.06);
+  const [autoBreakevenTriggerPct, setAutoBreakevenTriggerPct] = useState(1.2);
   const [autoTakeProfitTriggerPct, setAutoTakeProfitTriggerPct] = useState(50);
-  const [maxMicroLossScratchPct, setMaxMicroLossScratchPct] = useState(-0.04);
+  const [maxMicroLossScratchPct, setMaxMicroLossScratchPct] = useState(-2.5);
   const [minLiquidityScoreGate, setMinLiquidityScoreGate] = useState(65);
   const [maxConcurrentPositions, setMaxConcurrentPositions] = useState<number>(3);
   const [autoDirectHotWalletSettle, setAutoDirectHotWalletSettle] = useState<boolean>(true);
@@ -673,6 +678,7 @@ export function App({
                   : m.low24h,
               cvdDelta15mUsd:
                 typeof res.recentCvd15m === 'number' ? res.recentCvd15m : m.cvdDelta15mUsd,
+              hasRealCandles: true,
             };
           })
         );
@@ -737,6 +743,7 @@ export function App({
 
       if (snap.ok && snap.hlAssets) {
         hasLiveSnapshotRef.current = true;
+        lastLiveSnapshotAtRef.current = Date.now();
         setLiveFeedMode({
           hyperliquid: 'LIVE',
           binance: 'LIVE',
@@ -943,6 +950,7 @@ export function App({
                   ...m,
                   spreadBps: realBook.spreadBps,
                   obiScore: Number((realBook.obiPercent / 100).toFixed(2)),
+                  hasRealOrderbook: true,
                   depthPlusMinusHalfPctUsd:
                     realBook.depthHalfPctUsd && realBook.depthHalfPctUsd > 0
                       ? realBook.depthHalfPctUsd
@@ -972,19 +980,55 @@ export function App({
       stage === 'INITIAL'
         ? Boolean(pos.initialStopOrderId || pos.stopOrderId)
         : Boolean(pos.stopOrderId);
-    if (!pos.isRealMoney || alreadyHasOrder || trackerRef.current.has(pos.id)) return;
+    // Never attach an exchange stop to an unfilled resting Post-Only order (#49)
+    if (!pos.isRealMoney || pos.orderState === 'RESTING' || alreadyHasOrder || trackerRef.current.has(pos.id)) return;
     if (!Number.isFinite(targetStopPrice) || targetStopPrice <= 0) return;
 
+    // Guard against inverted stop price that would trigger `-2021 Order would immediately trigger` (#51)
+    if (
+      (pos.side === 'LONG' && targetStopPrice >= pos.currentPrice * 0.9999) ||
+      (pos.side === 'SHORT' && targetStopPrice <= pos.currentPrice * 1.0001)
+    ) {
+      return;
+    }
+
     trackerRef.current.add(pos.id);
-    const matchedMkt = markets.find((m) => m.symbol === pos.symbol);
+    const matchedMkt = marketsRef.current.find((m) => m.symbol === pos.symbol);
     const rawBase = pos.symbol.split('-')[0];
     const fallbackBinSym = /^k[A-Z]{2,}$/.test(rawBase)
       ? `1000${rawBase.slice(1)}USDT`
       : `${rawBase.toUpperCase()}USDT`;
+    const binSym = matchedMkt?.binanceSymbol || fallbackBinSym;
+    const useTestnetEnv = executionEnv === 'EXCHANGE_TESTNET';
+
+    // CRITICAL (#50): Cancel-before-replace! Cancel existing initial stop before placing BREAKEVEN_STOP
+    // so Spot balance is unlocked and Futures never accumulates duplicate/rejected closePosition stops.
+    if (stage === 'BREAKEVEN' && pos.initialStopOrderId) {
+      const cancelRes = await cancelRealOrderOnVenue({
+        exchange: pos.exchange,
+        symbol: pos.symbol,
+        binanceSymbol: binSym,
+        orderId: pos.initialStopOrderId,
+        isAlgoOrder: pos.exchange === 'OKX' || (pos.exchange === 'BYBIT' && pos.venueMode === 'SPOT'),
+        marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
+        venueMode: pos.venueMode,
+        wallets,
+        useTestnet: useTestnetEnv,
+        rowOwnerScope: pos.rlsOwnerScope,
+      });
+      if (!cancelRes.ok) {
+        setTimeout(() => trackerRef.current.delete(pos.id), 15_000);
+        setCommandFeedback(
+          `[BREAKEVEN CANCEL FAILED] Gagal membatalkan SL awal #${pos.initialStopOrderId} di ${pos.exchange}: ${cancelRes.error}`
+        );
+        return;
+      }
+    }
+
     const stopRes = await executeRealOrderOnVenue({
       exchange: pos.exchange,
       symbol: pos.symbol,
-      binanceSymbol: matchedMkt?.binanceSymbol || fallbackBinSym,
+      binanceSymbol: binSym,
       side: pos.side,
       orderPurpose: 'BREAKEVEN_STOP',
       sizeUsd: pos.sizeUsd,
@@ -994,7 +1038,7 @@ export function App({
       marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
       venueMode: pos.venueMode,
       wallets,
-      useTestnet: executionEnv === 'EXCHANGE_TESTNET',
+      useTestnet: useTestnetEnv,
       rowOwnerScope: pos.rlsOwnerScope,
     });
     if (stopRes.ok && stopRes.orderId) {
@@ -1003,7 +1047,7 @@ export function App({
           p.id === pos.id
             ? stage === 'INITIAL'
               ? { ...p, initialStopOrderId: stopRes.orderId }
-              : { ...p, stopOrderId: stopRes.orderId, breakevenLocked: true }
+              : { ...p, initialStopOrderId: undefined, stopOrderId: stopRes.orderId, breakevenLocked: true }
             : p
         )
       );
@@ -1021,7 +1065,7 @@ export function App({
     }
   };
 
-  // 4. Clock, Mark-to-Market & Deep Position Intelligence Loop (1000ms — Pure Functional State Update)
+  // 4. Clock, Mark-to-Market & Deep Position Intelligence Loop (1000ms — Stable Interval via Refs #51)
   useEffect(() => {
     const timer = setInterval(() => {
       const now = new Date();
@@ -1032,11 +1076,25 @@ export function App({
         )}:${String(now.getSeconds()).padStart(2, '0')} LIVE`
       );
 
+      const liveMarkets = marketsRef.current;
+      const liveWhaleTxs = whaleTxsRef.current;
+
       // Pure functional updater preserves any queued async additions, removals, or stopOrderId updates
       setPositions((prevPos) =>
         prevPos.map((pos) => {
-          const mkt = markets.find((m) => m.symbol === pos.symbol);
+          const mkt = liveMarkets.find((m) => m.symbol === pos.symbol);
           const curPrice = mkt ? mkt.price : pos.currentPrice;
+
+          // Resting Post-Only order has not filled yet: keep PnL at 0 until fill confirmation (#49)
+          if (pos.isRealMoney && pos.orderState === 'RESTING') {
+            return {
+              ...pos,
+              currentPrice: curPrice,
+              unrealizedPnlPct: 0,
+              unrealizedPnlUsd: 0,
+            };
+          }
+
           const pnlCalc = computePositionPnl({
             side: pos.side,
             entryPrice: pos.entryPrice,
@@ -1049,10 +1107,18 @@ export function App({
           const pnlUsd = pnlCalc.pnlUsd;
           const peak = Math.max(pos.peakPnlPct, pnlPct);
 
-          const shouldLockBe = pos.breakevenLocked || pnlPct >= autoBreakevenTriggerPct;
-          const bePrice = formatSmartPrice(
-            pos.side === 'LONG' ? pos.entryPrice * 1.0004 : pos.entryPrice * 0.9996
-          );
+          // Mathematically safe un-invertible Breakeven Stop check (#51)
+          const beCheck = computeSafeBreakevenParams({
+            side: pos.side,
+            entryPrice: pos.entryPrice,
+            currentPrice: curPrice,
+            leverage: pos.leverage,
+            configuredTriggerPct: autoBreakevenTriggerPct,
+            lockOffsetPct: 0.0004,
+            alreadyLocked: pos.breakevenLocked,
+          });
+          const shouldLockBe = beCheck.shouldLock;
+          const bePrice = formatSmartPrice(beCheck.beStopPrice);
 
           const updatedBase: AgentPosition = {
             ...pos,
@@ -1061,13 +1127,13 @@ export function App({
             unrealizedPnlUsd: pnlUsd,
             peakPnlPct: peak,
             breakevenLocked: shouldLockBe,
-            stopLossPrice: shouldLockBe ? bePrice : pos.stopLossPrice,
+            stopLossPrice: shouldLockBe && beCheck.canPlaceExchangeStop ? bePrice : pos.stopLossPrice,
           };
 
           const deepEval = evaluateActivePositionDeepIntelligence(
             updatedBase,
             mkt,
-            whaleTxs,
+            liveWhaleTxs,
             autoTakeProfitTriggerPct,
             maxMicroLossScratchPct
           );
@@ -1087,12 +1153,63 @@ export function App({
 
     return () => clearInterval(timer);
   }, [
-    markets,
-    whaleTxs,
     autoBreakevenTriggerPct,
     autoTakeProfitTriggerPct,
     maxMicroLossScratchPct,
   ]);
+
+  // 4-FILL. Poll Resting Post-Only Orders to Confirm Real Exchange Fill Before Arming Stop-Loss (#49)
+  useEffect(() => {
+    const restingReal = positions.filter(
+      (p) => p.isRealMoney && p.orderState === 'RESTING' && Boolean(p.orderId)
+    );
+    if (restingReal.length === 0) return;
+    let mounted = true;
+    const pollFills = async () => {
+      for (const pos of restingReal) {
+        if (!mounted) return;
+        const mkt = marketsRef.current.find((m) => m.symbol === pos.symbol);
+        const st = await fetchRealOrderStatusOnVenue({
+          exchange: pos.exchange,
+          symbol: pos.symbol,
+          binanceSymbol: mkt?.binanceSymbol,
+          orderId: pos.orderId!,
+          marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
+          venueMode: pos.venueMode,
+          wallets,
+          useTestnet: executionEnv === 'EXCHANGE_TESTNET',
+        });
+        if (!mounted || !st.ok) continue;
+        if (st.orderState === 'CANCELED') {
+          setPositions((prev) => prev.filter((p) => p.id !== pos.id));
+          setCommandFeedback(`[ORDER CANCELED/EXPIRED] Resting Post-Only ${pos.symbol} (#${pos.orderId}) dibatalkan di ${pos.exchange}.`);
+        } else if (st.orderState === 'FILLED' || (st.orderState === 'PARTIALLY_FILLED' && (st.filledQty || 0) > 0)) {
+          const confirmedQty = st.filledQty && st.filledQty > 0 ? st.filledQty : pos.requestedQty || pos.executedQty;
+          const confirmedPx = st.executedPrice && st.executedPrice > 0 ? st.executedPrice : pos.entryPrice;
+          setPositions((prev) =>
+            prev.map((p) =>
+              p.id === pos.id
+                ? {
+                    ...p,
+                    orderState: st.orderState === 'FILLED' ? 'FILLED' : 'PARTIALLY_FILLED',
+                    filledQty: confirmedQty,
+                    executedQty: confirmedQty,
+                    entryPrice: confirmedPx,
+                    statusReason: `[${executionEnv} ${p.venueMode || 'FUTURES'} #${p.orderId}] FILLED @ $${confirmedPx.toLocaleString()} — Protective SL Armed`,
+                  }
+                : p
+            )
+          );
+          setCommandFeedback(`✓ Resting Maker Order ${pos.symbol} (#${pos.orderId}) TERISI (${confirmedQty}) @ $${confirmedPx} — Stop-Loss aktif!`);
+        }
+      }
+    };
+    const timer = setInterval(pollFills, 4000);
+    return () => {
+      mounted = false;
+      clearInterval(timer);
+    };
+  }, [positions, wallets, executionEnv]);
 
   // 4A. Committed-State Automated Execution Dispatcher (BREAKEVEN_STOP + Auto-TP/Scratch Exits)
   // React 18 batching-safe & guarded by in-flight locks (`beStopSubmittedIdsRef` & `closingPositionIdsRef`)
@@ -1100,8 +1217,10 @@ export function App({
     let dispatchedAutoClose = false;
     for (const pos of positions) {
       if (closingPositionIdsRef.current.has(pos.id)) continue;
+      // Do NOT arm exchange stop-losses or trigger market exits for unfilled resting Post-Only orders (#49)
+      if (pos.isRealMoney && pos.orderState === 'RESTING') continue;
 
-      // 1) Immediately submit initial protective exchange stop-loss on entry (independent of breakevenLocked)
+      // 1) Immediately submit initial protective exchange stop-loss on confirmed fill (independent of breakevenLocked)
       if (
         pos.isRealMoney &&
         !pos.breakevenLocked &&
@@ -1113,20 +1232,26 @@ export function App({
         void dispatchRealProtectiveStop(pos, pos.stopLossPrice, 'INITIAL');
       }
 
-      // 2) Upgrade exchange stop-loss to Breakeven+Fee once autoBreakevenTriggerPct activates
+      // 2) Upgrade exchange stop-loss to Breakeven+Fee once safe BE trigger activates (#50 + #51)
       if (
         pos.isRealMoney &&
         pos.breakevenLocked &&
         !pos.stopOrderId &&
         !beStopSubmittedIdsRef.current.has(pos.id)
       ) {
-        const bePrice =
-          pos.stopLossPrice && pos.stopLossPrice > 0
-            ? pos.stopLossPrice
-            : formatSmartPrice(
-                pos.side === 'LONG' ? pos.entryPrice * 1.0004 : pos.entryPrice * 0.9996
-              );
-        void dispatchRealProtectiveStop(pos, bePrice, 'BREAKEVEN');
+        const beCheck = computeSafeBreakevenParams({
+          side: pos.side,
+          entryPrice: pos.entryPrice,
+          currentPrice: pos.currentPrice,
+          leverage: pos.leverage,
+          configuredTriggerPct: autoBreakevenTriggerPct,
+          lockOffsetPct: 0.0004,
+          alreadyLocked: true,
+        });
+        if (beCheck.canPlaceExchangeStop) {
+          const bePrice = formatSmartPrice(beCheck.beStopPrice);
+          void dispatchRealProtectiveStop(pos, bePrice, 'BREAKEVEN');
+        }
       }
 
       if (agentAutonomousEnabled && !dispatchedAutoClose) {
@@ -1143,7 +1268,7 @@ export function App({
         }
       }
     }
-  }, [positions, agentAutonomousEnabled, wallets, executionEnv, markets]);
+  }, [positions, agentAutonomousEnabled, wallets, executionEnv, autoBreakevenTriggerPct]);
 
   // 4B. Live Daily Drawdown Circuit Breaker Monitor
   // Halts new manual & autonomous entries when daily net loss exceeds maxDailyDrawdownUsd,
@@ -1307,8 +1432,9 @@ export function App({
     }
 
     // Resolve actual executable real-money venue & Futures/Spot marketType against connected wallets
+    // (#51): Do NOT force SPOT when rawLeverage === 1 so legitimate 1x Futures LONG/SHORT works!
     const preferredMarketType: 'PERP' | 'SPOT' | null =
-      marketTypeOverride === 'SPOT' || rawLeverage === 1
+      marketTypeOverride === 'SPOT'
         ? 'SPOT'
         : marketTypeOverride === 'PERP'
           ? 'PERP'
@@ -1341,13 +1467,18 @@ export function App({
 
     const targetLeverage = resolvedMarketType === 'SPOT' ? 1 : Math.max(1, rawLeverage);
 
-    // Prevent stale cross-coin orderbook quotes when switching symbols rapidly (must be within +/- 5% of targetPair.price)
+    // Prefer exact uncrossed execution-venue best bid/ask (#46) so Post-Only orders never cross another venue's spread
     const isSameAsActive = targetPair.symbol === activePair.symbol;
-    const rawBookPx = isSameAsActive
+    const venueQuote = isSameAsActive ? orderbook.venueBooks?.[resolvedExchange] : undefined;
+    const rawBookPx = venueQuote
       ? side === 'LONG'
-        ? orderbook.bids[0]?.price
-        : orderbook.asks[0]?.price
-      : undefined;
+        ? venueQuote.bestBid
+        : venueQuote.bestAsk
+      : isSameAsActive && orderbook.isLiveBook !== false
+        ? side === 'LONG'
+          ? orderbook.bids[0]?.price
+          : orderbook.asks[0]?.price
+        : undefined;
     const isBookPxValidForPair =
       typeof rawBookPx === 'number' &&
       rawBookPx > 0 &&
@@ -1360,7 +1491,10 @@ export function App({
     ).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
     let realOrderId = `PAPER-${Date.now()}`;
-    let executedQty = Number((effectiveSizeUsd / entry).toFixed(8));
+    let requestedQty = Number((effectiveSizeUsd / entry).toFixed(8));
+    let executedQty = requestedQty;
+    let filledQty = requestedQty;
+    let orderState: 'FILLED' | 'PARTIALLY_FILLED' | 'RESTING' = 'FILLED';
     let executedPrice = entry;
     let resolvedVenueMode: 'FUTURES' | 'SPOT' =
       resolvedMarketType === 'SPOT' ? 'SPOT' : 'FUTURES';
@@ -1412,7 +1546,18 @@ export function App({
         return false;
       }
       realOrderId = execRes.orderId || `LIVE-${Date.now()}`;
-      if (execRes.executedQty && execRes.executedQty > 0) {
+      if (execRes.requestedQty && execRes.requestedQty > 0) {
+        requestedQty = execRes.requestedQty;
+      }
+      if (execRes.orderState) {
+        orderState = execRes.orderState;
+      }
+      if (typeof execRes.filledQty === 'number') {
+        filledQty = execRes.filledQty;
+      }
+      if (orderState === 'RESTING' && filledQty <= 0) {
+        executedQty = 0;
+      } else if (execRes.executedQty && execRes.executedQty > 0) {
         executedQty = execRes.executedQty;
       }
       if (execRes.executedPrice && execRes.executedPrice > 0) {
@@ -1427,7 +1572,7 @@ export function App({
     const finalLeverage = resolvedVenueMode === 'SPOT' ? 1 : targetLeverage;
     const slPriceMoveRatio = Math.max(
       0.004,
-      Math.abs(maxMicroLossScratchPct || 0.95) / (100 * Math.max(1, finalLeverage))
+      Math.abs(maxMicroLossScratchPct || 2.5) / (100 * Math.max(1, finalLeverage))
     );
     const initialProtectiveStop = formatSmartPrice(
       side === 'LONG'
@@ -1435,7 +1580,7 @@ export function App({
         : executedPrice * (1 + slPriceMoveRatio)
     );
     const minTpPriceMoveRatio =
-      Math.max(0.5, autoTakeProfitTriggerPct) / (100 * Math.max(1, finalLeverage));
+      Math.max(1, autoTakeProfitTriggerPct) / (100 * Math.max(1, finalLeverage));
     const tp = formatSmartPrice(
       side === 'LONG'
         ? executedPrice * (1 + minTpPriceMoveRatio * 1.6)
@@ -1455,6 +1600,9 @@ export function App({
         currentPrice: targetPair.price,
         sizeUsd: effectiveSizeUsd,
         executedQty,
+        filledQty,
+        requestedQty,
+        orderState,
         venueMode: resolvedVenueMode,
         leverage: finalLeverage,
         stopLossPrice: initialProtectiveStop,
@@ -1465,19 +1613,26 @@ export function App({
         unrealizedPnlPct: 0,
         peakPnlPct: 0,
         openedAt: timeStr,
-        statusReason: `${
-          isReal ? `[${executionEnv} ${resolvedVenueMode} #${realOrderId}]` : '[PAPER]'
-        } ${makerOnlyMode ? 'Maker Post-Only' : 'Market'} @ $${executedPrice.toLocaleString()} | Protective SL @ $${initialProtectiveStop.toLocaleString()} (Auto-BE @ +${autoBreakevenTriggerPct}%)`,
+        statusReason:
+          isReal && orderState === 'RESTING'
+            ? `[${executionEnv} ${resolvedVenueMode} #${realOrderId}] RESTING POST-ONLY @ $${executedPrice.toLocaleString()} — Menunggu konfirmasi fill sebelum pasang SL`
+            : `${
+                isReal ? `[${executionEnv} ${resolvedVenueMode} #${realOrderId}]` : '[PAPER]'
+              } ${makerOnlyMode ? 'Maker Post-Only' : 'Market'} @ $${executedPrice.toLocaleString()} | Protective SL @ $${initialProtectiveStop.toLocaleString()} (Auto-BE @ +${autoBreakevenTriggerPct}%)`,
       },
       wallets
     );
 
-    const maxModeSlots = isExplicitUserEntry ? maxManualSlots : maxConcurrentPositions;
+    // CRITICAL (#50): NEVER silently slice/drop active real-money positions from tracking state!
     setPositions((prev) => {
       const sameMode = prev.filter(
         (p) => Boolean(p.isRealMoney) === isReal && p.symbol !== targetPair.symbol
       );
       const otherMode = prev.filter((p) => Boolean(p.isRealMoney) !== isReal);
+      if (isReal) {
+        return [newPos, ...sameMode, ...otherMode];
+      }
+      const maxModeSlots = isExplicitUserEntry ? maxManualSlots : maxConcurrentPositions;
       return [newPos, ...sameMode.slice(0, Math.max(0, maxModeSlots - 1)), ...otherMode];
     });
     setBrainDecisions((prev) => [
@@ -1520,20 +1675,26 @@ export function App({
     // an actually connected, env-matched real wallet supporting the signal's BUY/SELL + Futures/Spot mode,
     // and cap autonomous sizing safely within verified real balance.
     if (isRealEnv) {
-      const allCandidates = scanAllMarketMultiAgentCandidates(
+      // CRITICAL (#49): Block autonomous real-money entry until live snapshot is synced and fresh (< 20s old)
+      const snapAgeMs = Date.now() - lastLiveSnapshotAtRef.current;
+      if (!hasLiveSnapshotRef.current || snapAgeMs > 20_000) {
+        setCommandFeedback(
+          '[AUTO-HUNTER STANDBY] Menunggu sinkronisasi data real-time on-chain & bursa yang segar sebelum eksekusi dana asli.'
+        );
+        return false;
+      }
+
+      // CRITICAL (#47 & #48): Require REAL exchange OHLCV candles AND >= 3/4 consensus quorum (NO synthetic candles & NO < 3/4 fallback!)
+      const orderedCandidates = scanAllMarketMultiAgentCandidates(
         marketsRef.current,
         modePositions,
         lastClosedSymbol,
         minLiquidityScoreGate,
         orderSizeUsdInput,
         verifiedNewsRef.current,
-        candlesMapRef.current
+        candlesMapRef.current,
+        { requireRealCandles: true, requireConsensusQuorum: true }
       );
-      const preferredMarketType: 'SPOT' | null = leverageInput === 1 ? 'SPOT' : null;
-      const orderedCandidates = [
-        ...allCandidates.filter((c) => (c.alignedAgentsCount ?? 4) >= 3),
-        ...allCandidates.filter((c) => (c.alignedAgentsCount ?? 4) < 3),
-      ];
 
       let chosen: {
         candidate: (typeof orderedCandidates)[number];
@@ -1542,25 +1703,45 @@ export function App({
         leverage: number;
         sizeUsd: number;
       } | null = null;
-      let lastSkipReason: string | null = null;
+      let lastSkipReason: string | null =
+        orderedCandidates.length === 0
+          ? 'Belum ada kandidat dengan candle OHLCV asli + konsensus >= 3/4 agent bebas Veto.'
+          : null;
 
       for (const cand of orderedCandidates) {
         if (entryInFlightSymbolsRef.current.has(cand.market.symbol)) continue;
+        if (!cand.market.isLiveSynced) {
+          lastSkipReason = `${cand.market.symbol} belum tersinkronisasi harga live.`;
+          continue;
+        }
         const venueRes = resolveExecutableRealVenue({
           market: cand.market,
           side: cand.side,
           wallets,
           useTestnet,
-          preferredMarketType,
+          preferredMarketType: null,
+          isAutonomous: true,
         });
         if (!venueRes.ok) {
           lastSkipReason = venueRes.error;
           continue;
         }
+        // Compute committed margin already tied up in open real positions on this exchange (#51)
+        const committedMarginUsd = modePositions
+          .filter((p) => p.exchange === venueRes.exchange)
+          .reduce(
+            (sum, p) =>
+              sum +
+              (p.venueMode === 'SPOT'
+                ? p.sizeUsd
+                : p.sizeUsd / Math.max(1, p.leverage || 1)),
+            0
+          );
         const effLev = venueRes.marketType === 'SPOT' ? 1 : cand.recommendedLeverage;
         const safeSizing = computeSafeAutonomousRealOrderSizeUsd({
           requestedSizeUsd: cand.recommendedSizeUsd,
           availableUsd: venueRes.availableUsd,
+          committedMarginUsd,
           verifiedReal: venueRes.wallet.verifiedReal,
           marketType: venueRes.marketType,
           leverage: effLev,
@@ -1569,8 +1750,52 @@ export function App({
           lastSkipReason = safeSizing.error || null;
           continue;
         }
+
+        // Pre-Entry Live L2 Orderbook + Full 4-Agent Consensus Verification (#46, #47, #48)
+        const liveCandles =
+          candlesMapRef.current[`${cand.market.symbol}_15m`] ||
+          candlesMapRef.current[`${cand.market.symbol}_5m`] ||
+          candlesMapRef.current[`${cand.market.symbol}_1h`] ||
+          candlesMapRef.current[cand.market.hlCoin];
+        const liveBook = await fetchBackendRealOrderbook(cand.market.hlCoin, cand.market.binanceSymbol);
+        if (!liveBook || !liveBook.bids.length || !liveBook.asks.length || liveBook.bids[0].price >= liveBook.asks[0].price) {
+          lastSkipReason = `${cand.market.symbol} orderbook L2 live tidak valid/belum tersedia.`;
+          continue;
+        }
+        const verifiedPair: MarketPair = {
+          ...cand.market,
+          spreadBps: liveBook.spreadBps,
+          obiScore: Number((liveBook.obiPercent / 100).toFixed(2)),
+          hasRealOrderbook: true,
+          hasRealCandles: true,
+        };
+        const fullConsensus = runMultiAgentForumConsensus(
+          verifiedPair,
+          liveBook,
+          whaleTxsRef.current,
+          liveCandles,
+          verifiedNewsRef.current,
+          whalePositions,
+          safeSizing.sizeUsd
+        );
+        if (
+          fullConsensus.hasVeto ||
+          fullConsensus.alignedAgentsCount < 3 ||
+          fullConsensus.checklistPassedCount < 6 ||
+          (fullConsensus.finalVerdict !== 'STRONG_LONG' && fullConsensus.finalVerdict !== 'STRONG_SHORT')
+        ) {
+          lastSkipReason = `${cand.market.symbol} ditahan oleh 4-Agent Forum (${fullConsensus.finalVerdict}, ${fullConsensus.alignedAgentsCount}/4 agent, ${fullConsensus.checklistPassedCount}/8 checklist).`;
+          continue;
+        }
+        const finalSide: 'LONG' | 'SHORT' =
+          fullConsensus.finalVerdict === 'STRONG_LONG' ? 'LONG' : 'SHORT';
+        if (venueRes.marketType === 'SPOT' && finalSide === 'SHORT') {
+          lastSkipReason = `${venueRes.exchange} Spot tidak mendukung SHORT ${cand.market.symbol}.`;
+          continue;
+        }
+
         chosen = {
-          candidate: cand,
+          candidate: { ...cand, market: verifiedPair, side: finalSide },
           exchange: venueRes.exchange,
           marketType: venueRes.marketType,
           leverage: effLev,
@@ -1774,11 +1999,58 @@ export function App({
     // STRICT ISOLATION: Only send exchange close orders for positions actually opened with real money (never for paper positions!)
     if (pos.isRealMoney) {
       setIsExecutingOrder(true);
-      const matchedMkt = markets.find((m) => m.symbol === pos.symbol);
+      const matchedMkt = marketsRef.current.find((m) => m.symbol === pos.symbol);
       const rawBase = pos.symbol.split('-')[0];
       const fallbackBinSym = /^k[A-Z]{2,}$/.test(rawBase)
         ? `1000${rawBase.slice(1)}USDT`
         : `${rawBase.toUpperCase()}USDT`;
+      const binSym = matchedMkt?.binanceSymbol || fallbackBinSym;
+      const useTestnetEnv = executionEnv === 'EXCHANGE_TESTNET';
+
+      // Case A (#49): Unfilled resting Post-Only order -> CANCEL limit order on exchange (do NOT send Market close!)
+      if (pos.orderState === 'RESTING' && pos.orderId) {
+        const cancelLimitRes = await cancelRealOrderOnVenue({
+          exchange: pos.exchange,
+          symbol: pos.symbol,
+          binanceSymbol: binSym,
+          orderId: pos.orderId,
+          isAlgoOrder: false,
+          marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
+          venueMode: pos.venueMode,
+          wallets,
+          useTestnet: useTestnetEnv,
+          rowOwnerScope: pos.rlsOwnerScope,
+        });
+        setIsExecutingOrder(false);
+        if (!cancelLimitRes.ok) {
+          setCommandFeedback(`[CANCEL RESTING FAILED] ${pos.symbol}: ${cancelLimitRes.error}`);
+          return { ok: false, error: cancelLimitRes.error };
+        }
+        setPositions((prev) => prev.filter((p) => p.id !== pos.id));
+        setCommandFeedback(`✓ Resting Post-Only Order ${pos.symbol} (#${pos.orderId}) dibatalkan di ${pos.exchange}.`);
+        return { ok: true, orderId: pos.orderId };
+      }
+
+      // Case B (#50): Cancel-Before-Close! Cancel any active initial/breakeven Stop-Loss orders first
+      // so Spot balance is unlocked and Futures never retains orphaned conditional stops.
+      const stopIdsToCancel = [pos.stopOrderId, pos.initialStopOrderId].filter(
+        (id): id is string => Boolean(id)
+      );
+      for (const stopId of stopIdsToCancel) {
+        await cancelRealOrderOnVenue({
+          exchange: pos.exchange,
+          symbol: pos.symbol,
+          binanceSymbol: binSym,
+          orderId: stopId,
+          isAlgoOrder: pos.exchange === 'OKX' || (pos.exchange === 'BYBIT' && pos.venueMode === 'SPOT'),
+          marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
+          venueMode: pos.venueMode,
+          wallets,
+          useTestnet: useTestnetEnv,
+          rowOwnerScope: pos.rlsOwnerScope,
+        });
+      }
+
       const closeQty =
         pos.executedQty && pos.executedQty > 0
           ? pos.executedQty
@@ -1788,7 +2060,7 @@ export function App({
       const closeRes = await executeRealOrderOnVenue({
         exchange: pos.exchange,
         symbol: pos.symbol,
-        binanceSymbol: matchedMkt?.binanceSymbol || fallbackBinSym,
+        binanceSymbol: binSym,
         side: pos.side,
         orderPurpose: 'SCRATCH_EXIT',
         sizeUsd: pos.sizeUsd,
@@ -1797,7 +2069,7 @@ export function App({
         marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
         venueMode: pos.venueMode,
         wallets,
-        useTestnet: executionEnv === 'EXCHANGE_TESTNET',
+        useTestnet: useTestnetEnv,
         rowOwnerScope: pos.rlsOwnerScope,
       });
       setIsExecutingOrder(false);
@@ -1968,6 +2240,86 @@ export function App({
         : `Closed ${pos.symbol} (${closedItem.exitType}): ${finalPnlPct}% — Auto-Hunter scanning replacement...`
     );
     return { ok: true, orderId: realCloseOrderId, executedPrice: realClosePrice };
+  };
+
+  // Safe Execution Environment Switcher (#49):
+  // Always disarm AUTO-AGENT when entering EXCHANGE_TESTNET or REAL_MAINNET (requires explicit arming!)
+  // and automatically reconcile any live open positions from connected CEX accounts.
+  const handleSwitchExecutionEnv = (nextEnv: ExecutionEnvironment) => {
+    setExecutionEnv(nextEnv);
+    if (nextEnv !== 'PAPER_SANDBOX') {
+      setAgentAutonomousEnabled(false);
+      const useTestnetTarget = nextEnv === 'EXCHANGE_TESTNET';
+      setCommandFeedback(
+        `🛡️ Beralih ke ${nextEnv}: AUTO-AGENT dinonaktifkan otomatis untuk keamanan. Periksa wallet & posisi lalu aktifkan AUTO-AGENT secara eksplisit bila siap.`
+      );
+      const seenHlAddrs = new Set<string>();
+      const reconcilableWallets = wallets.filter((w) => {
+        if (!w.connected || !w.verifiedReal) return false;
+        if (Boolean(w.credentials?.useTestnet) !== useTestnetTarget) return false;
+        if (w.id === 'hyperliquid_agent' || w.id === 'trust') {
+          const addr = String(w.credentials?.walletAddress || '').trim().toLowerCase();
+          if (!/^0x[a-f0-9]{40}$/.test(addr) || seenHlAddrs.has(addr)) return false;
+          seenHlAddrs.add(addr);
+          return true;
+        }
+        return w.id === 'binance_api' || w.id === 'bybit_api' || w.id === 'okx_api';
+      });
+      for (const w of reconcilableWallets) {
+        void fetchRealExchangePositions(w, useTestnetTarget).then((res) => {
+          if (!res.ok || !res.positions.length) return;
+          setPositions((prev) => {
+            const next = [...prev];
+            for (const exPos of res.positions) {
+              const exists = next.some(
+                (p) => p.isRealMoney && p.exchange === exPos.exchange && p.symbol === exPos.symbol
+              );
+              if (!exists && exPos.entryPrice > 0 && exPos.executedQty > 0) {
+                const slRatio = Math.max(0.005, Math.abs(maxMicroLossScratchPct) / (100 * Math.max(1, exPos.leverage)));
+                const synced: AgentPosition = stampPositionWithRls(
+                  {
+                    id: `pos-sync-${exPos.exchange}-${exPos.symbol}-${Date.now()}`,
+                    orderId: `SYNC-${exPos.exchange}`,
+                    isRealMoney: true,
+                    symbol: exPos.symbol,
+                    side: exPos.side,
+                    marketType: 'PERP',
+                    exchange: exPos.exchange,
+                    entryPrice: exPos.entryPrice,
+                    currentPrice: exPos.currentPrice,
+                    sizeUsd: exPos.sizeUsd,
+                    executedQty: exPos.executedQty,
+                    filledQty: exPos.executedQty,
+                    requestedQty: exPos.executedQty,
+                    orderState: 'FILLED',
+                    venueMode: 'FUTURES',
+                    leverage: exPos.leverage,
+                    stopLossPrice: formatSmartPrice(
+                      exPos.side === 'LONG' ? exPos.entryPrice * (1 - slRatio) : exPos.entryPrice * (1 + slRatio)
+                    ),
+                    takeProfitPrice: formatSmartPrice(
+                      exPos.side === 'LONG'
+                        ? exPos.entryPrice * (1 + Math.max(1, autoTakeProfitTriggerPct) / (100 * exPos.leverage))
+                        : exPos.entryPrice * (1 - Math.max(1, autoTakeProfitTriggerPct) / (100 * exPos.leverage))
+                    ),
+                    breakevenLocked: false,
+                    executionMode: 'POST_ONLY_MAKER',
+                    unrealizedPnlUsd: exPos.unrealizedPnlUsd,
+                    unrealizedPnlPct: 0,
+                    peakPnlPct: 0,
+                    openedAt: 'SYNCED',
+                    statusReason: `[EXCHANGE RECONCILED] Posisi aktif di ${exPos.exchange} disinkronkan otomatis.`,
+                  },
+                  wallets
+                );
+                next.unshift(synced);
+              }
+            }
+            return next;
+          });
+        });
+      }
+    }
   };
 
   const handleEmergencyFlattenAll = async () => {
@@ -2469,7 +2821,7 @@ export function App({
             ).map((env) => (
               <button
                 key={env.id}
-                onClick={() => setExecutionEnv(env.id)}
+                onClick={() => handleSwitchExecutionEnv(env.id)}
                 className={`px-2 py-0.5 font-extrabold transition-colors whitespace-nowrap ${
                   executionEnv === env.id
                     ? env.id === 'REAL_MAINNET'
@@ -3375,6 +3727,7 @@ export function App({
 
                       <MultiAgentForumPanel
                         consensus={forumConsensus}
+                        activeMarket={activePair}
                         verifiedNews={verifiedNews}
                         topOpportunities={topMultiAgentOpportunities}
                         positionAudits={positionAudits}
@@ -4511,6 +4864,7 @@ export function App({
             {/* 2. Unified 4-Agent Consensus Forum + Twin 3D Visualizers (War-Room & Vault Courier Side-by-Side) */}
             <MultiAgentForumPanel
               consensus={forumConsensus}
+              activeMarket={activePair}
               verifiedNews={verifiedNews}
               topOpportunities={topMultiAgentOpportunities}
               positionAudits={positionAudits}

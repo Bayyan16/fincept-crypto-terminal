@@ -324,6 +324,114 @@ export function buildHyperliquidOrderAction({
 }
 
 /**
+ * Builds a protocol-accurate Hyperliquid L1 leverage sync action (`updateLeverage`).
+ * Canonical key order matches Hyperliquid Python/TS SDK (`type`, `asset`, `isCross`, `leverage`).
+ */
+export function buildHyperliquidLeverageAction({
+  assetIndex,
+  leverage,
+  isCross = true,
+}) {
+  if (!Number.isInteger(assetIndex) || assetIndex < 0) {
+    throw new Error(`Invalid Hyperliquid asset index: ${assetIndex}`);
+  }
+  const lev = Math.max(1, Math.min(100, Math.round(Number(leverage) || 1)));
+  return {
+    type: 'updateLeverage',
+    asset: assetIndex,
+    isCross: Boolean(isCross),
+    leverage: lev,
+  };
+}
+
+/**
+ * Builds a protocol-accurate Hyperliquid L1 cancel action (`cancel`).
+ * Canonical key order matches Hyperliquid Python/TS SDK (`type`, `cancels: [{ a, o }]`).
+ */
+export function buildHyperliquidCancelAction({ assetIndex, orderId }) {
+  if (!Number.isInteger(assetIndex) || assetIndex < 0) {
+    throw new Error(`Invalid Hyperliquid asset index: ${assetIndex}`);
+  }
+  const oid = Number(orderId);
+  if (!Number.isSafeInteger(oid) || oid <= 0) {
+    throw new Error(`Invalid Hyperliquid order id (oid): ${orderId}`);
+  }
+  return {
+    type: 'cancel',
+    cancels: [{ a: assetIndex, o: oid }],
+  };
+}
+
+function hexToBytes32(hex) {
+  const clean = String(hex || '').replace(/^0x/i, '').padStart(64, '0');
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) {
+    out[i] = parseInt(clean.slice(i * 2, i * 2 + 2), 16);
+  }
+  return out;
+}
+
+function uint256ToBytes32(val) {
+  const hex = BigInt(val).toString(16).padStart(64, '0');
+  return hexToBytes32(hex);
+}
+
+function concatUint8Arrays(parts) {
+  const total = parts.reduce((sum, p) => sum + p.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const p of parts) {
+    out.set(p, offset);
+    offset += p.length;
+  }
+  return out;
+}
+
+const EIP712_DOMAIN_TYPEHASH = hexToBytes32(
+  keccak256Hex('EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)')
+);
+const EIP712_AGENT_TYPEHASH = hexToBytes32(
+  keccak256Hex('Agent(string source,bytes32 connectionId)')
+);
+const HL_DOMAIN_SEPARATOR = hexToBytes32(
+  keccak256Hex(
+    concatUint8Arrays([
+      EIP712_DOMAIN_TYPEHASH,
+      hexToBytes32(keccak256Hex('Exchange')),
+      hexToBytes32(keccak256Hex('1')),
+      uint256ToBytes32(1337),
+      new Uint8Array(32), // verifyingContract = 0x0000000000000000000000000000000000000000
+    ])
+  )
+);
+
+/**
+ * Computes the exact EIP-712 signing digest (keccak256(0x1901 || domainSeparator || structHash))
+ * for Hyperliquid L1 Phantom Agent typed data. Works in both Node.js and browser environments.
+ */
+export function hashHyperliquidTypedData(action, nonce, useTestnet = false, vaultAddress = null) {
+  const connectionId = computeHyperliquidActionHash(action, nonce, vaultAddress);
+  const sourceHash = hexToBytes32(keccak256Hex(useTestnet ? 'b' : 'a'));
+  const structHash = hexToBytes32(
+    keccak256Hex(
+      concatUint8Arrays([
+        EIP712_AGENT_TYPEHASH,
+        sourceHash,
+        hexToBytes32(connectionId),
+      ])
+    )
+  );
+  const digest = keccak256Hex(
+    concatUint8Arrays([
+      new Uint8Array([0x19, 0x01]),
+      HL_DOMAIN_SEPARATOR,
+      structHash,
+    ])
+  );
+  return { digest, connectionId };
+}
+
+/**
  * Builds Hyperliquid L1 Phantom Agent EIP-712 typed data (official chainId: 1337).
  */
 export function buildHyperliquidEip712TypedData(action, nonce, useTestnet = false, vaultAddress = null) {
