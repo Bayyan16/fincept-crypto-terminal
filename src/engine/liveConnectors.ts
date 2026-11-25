@@ -1244,13 +1244,14 @@ export async function fetchBackendRealSnapshot(): Promise<{
 
 export async function fetchBackendRealOrderbook(
   hlCoin: string,
-  binanceSymbol: string
-): Promise<(OrderbookState & { depthHalfPctUsd?: number }) | null> {
+  binanceSymbol: string,
+  useTestnet = false
+): Promise<(OrderbookState & { depthHalfPctUsd?: number; useTestnet?: boolean }) | null> {
   try {
     const res = await fetch(
       `${API_BASE}/api/live/orderbook?hlCoin=${encodeURIComponent(hlCoin)}&binanceSymbol=${encodeURIComponent(
         binanceSymbol
-      )}`
+      )}&testnet=${useTestnet ? '1' : '0'}`
     );
     if (res.ok) {
       const data = await res.json();
@@ -1267,6 +1268,7 @@ export async function fetchBackendRealOrderbook(
           isLiveBook: true,
           primaryVenue: data.primaryVenue,
           venueBooks: data.venueBooks,
+          useTestnet: Boolean(data.useTestnet),
         };
       }
       return null;
@@ -1282,7 +1284,10 @@ export async function fetchBackendRealOrderbook(
   }
 
   try {
-    const hlBookRes = await fetch('https://api.hyperliquid.xyz/info', {
+    const hlFallbackUrl = useTestnet
+      ? 'https://api.hyperliquid-testnet.xyz/info'
+      : 'https://api.hyperliquid.xyz/info';
+    const hlBookRes = await fetch(hlFallbackUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type: 'l2Book', coin: safeHlCoin }),

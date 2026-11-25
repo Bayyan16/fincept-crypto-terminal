@@ -931,13 +931,15 @@ export function App({
     };
   }, []);
 
-  // 3. Live Merged L2 Orderbook Sync from Backend (/api/live/orderbook)
+  // 3. Live Merged L2 Orderbook Sync from Backend (/api/live/orderbook, 1:1 Testnet/Mainnet aware)
   useEffect(() => {
     let mounted = true;
+    const isTestnetBook = executionEnv === 'EXCHANGE_TESTNET';
     const syncOrderbook = async () => {
       const realBook = await fetchBackendRealOrderbook(
         activePair.hlCoin,
-        activePair.binanceSymbol
+        activePair.binanceSymbol,
+        isTestnetBook
       );
       if (!mounted) return;
       if (realBook && realBook.bids.length > 0 && realBook.asks.length > 0) {
@@ -967,7 +969,7 @@ export function App({
       mounted = false;
       clearInterval(timer);
     };
-  }, [activePair.symbol, activePair.hlCoin, activePair.binanceSymbol]);
+  }, [activePair.symbol, activePair.hlCoin, activePair.binanceSymbol, executionEnv]);
 
   const dispatchRealProtectiveStop = async (
     pos: AgentPosition,
@@ -1135,7 +1137,8 @@ export function App({
             mkt,
             liveWhaleTxs,
             autoTakeProfitTriggerPct,
-            maxMicroLossScratchPct
+            maxMicroLossScratchPct,
+            verifiedNewsRef.current
           );
 
           return {
@@ -1467,23 +1470,32 @@ export function App({
 
     const targetLeverage = resolvedMarketType === 'SPOT' ? 1 : Math.max(1, rawLeverage);
 
-    // Prefer exact uncrossed execution-venue best bid/ask (#46) so Post-Only orders never cross another venue's spread
+    // Prefer exact uncrossed execution-venue best bid/ask (#46 + 1:1 Testnet parity)
+    // Fetch live environment-matched L2 book before placing Real/Testnet orders so Testnet Post-Only & SL match Testnet prices 1:1!
     const isSameAsActive = targetPair.symbol === activePair.symbol;
-    const venueQuote = isSameAsActive ? orderbook.venueBooks?.[resolvedExchange] : undefined;
+    const freshExecBook = isReal
+      ? await fetchBackendRealOrderbook(targetPair.hlCoin, targetPair.binanceSymbol, useTestnet)
+      : null;
+    const effectiveBook = freshExecBook || (isSameAsActive ? orderbook : null);
+    const venueQuote = effectiveBook?.venueBooks?.[resolvedExchange];
     const rawBookPx = venueQuote
       ? side === 'LONG'
         ? venueQuote.bestBid
         : venueQuote.bestAsk
-      : isSameAsActive && orderbook.isLiveBook !== false
+      : effectiveBook && effectiveBook.isLiveBook !== false
         ? side === 'LONG'
-          ? orderbook.bids[0]?.price
-          : orderbook.asks[0]?.price
+          ? effectiveBook.bids[0]?.price
+          : effectiveBook.asks[0]?.price
         : undefined;
+    const effectiveRefMarkPx =
+      venueQuote && venueQuote.bestBid > 0 && venueQuote.bestAsk > 0
+        ? (venueQuote.bestBid + venueQuote.bestAsk) / 2
+        : targetPair.price;
     const isBookPxValidForPair =
       typeof rawBookPx === 'number' &&
       rawBookPx > 0 &&
-      Math.abs(rawBookPx - targetPair.price) / Math.max(0.0000001, targetPair.price) <= 0.05;
-    const entry = formatSmartPrice(isBookPxValidForPair ? rawBookPx! : targetPair.price);
+      Math.abs(rawBookPx - effectiveRefMarkPx) / Math.max(0.0000001, effectiveRefMarkPx) <= 0.05;
+    const entry = formatSmartPrice(isBookPxValidForPair ? rawBookPx! : effectiveRefMarkPx);
 
     const now = new Date();
     const timeStr = `${String(now.getHours()).padStart(2, '0')}:${String(
@@ -1519,7 +1531,7 @@ export function App({
           makerOnly: makerOnlyMode,
           marketType: resolvedMarketType,
           venueMode: resolvedVenueMode,
-          refMarkPrice: targetPair.price,
+          refMarkPrice: effectiveRefMarkPx,
           wallets,
           useTestnet,
         });
@@ -1757,7 +1769,11 @@ export function App({
           candlesMapRef.current[`${cand.market.symbol}_5m`] ||
           candlesMapRef.current[`${cand.market.symbol}_1h`] ||
           candlesMapRef.current[cand.market.hlCoin];
-        const liveBook = await fetchBackendRealOrderbook(cand.market.hlCoin, cand.market.binanceSymbol);
+        const liveBook = await fetchBackendRealOrderbook(
+          cand.market.hlCoin,
+          cand.market.binanceSymbol,
+          useTestnet
+        );
         if (!liveBook || !liveBook.bids.length || !liveBook.asks.length || liveBook.bids[0].price >= liveBook.asks[0].price) {
           lastSkipReason = `${cand.market.symbol} orderbook L2 live tidak valid/belum tersedia.`;
           continue;

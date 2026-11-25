@@ -117,7 +117,7 @@ export default defineConfig({
               res.end(result.payload);
               return;
             }
-            res.setHeader('Content-Type', 'application/json');
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
             res.statusCode = result.status;
             res.end(JSON.stringify(result.payload));
             return;

@@ -426,7 +426,8 @@ export function evaluateActivePositionDeepIntelligence(
   market: MarketPair | undefined,
   recentWhales: WhaleTransaction[],
   autoTakeProfitTriggerPct = 50,
-  maxMicroLossScratchPct = -0.95
+  maxMicroLossScratchPct = -0.95,
+  verifiedNews: VerifiedNewsItem[] = []
 ): DeepPositionEvaluation {
   if (!market) {
     return {
@@ -472,7 +473,7 @@ export function evaluateActivePositionDeepIntelligence(
     )
   );
 
-  // 3. Market Sentiment & Crowd Funding Regime Analysis
+  // 3. Market Sentiment, Crowd Funding Regime & Live Breaking News Impact
   const signedChange24h = market.change24h * dirSign;
   // Healthy funding: not overly crowded against us
   const fundingHealth =
@@ -481,8 +482,31 @@ export function evaluateActivePositionDeepIntelligence(
       : !isLong && market.fundingRate > -0.015
         ? 12
         : -8;
+
+  // Live verified news sentiment (Bloomberg/CoinDesk >= 90% credibility) aligned with position side
+  const posBase = String(market.baseAsset || pos.symbol.split('-')[0] || '').toUpperCase();
+  let newsDelta = 0;
+  if (Array.isArray(verifiedNews) && verifiedNews.length > 0) {
+    let bullW = 0;
+    let bearW = 0;
+    for (const item of verifiedNews) {
+      if (!item || item.credibilityScore < 90) continue;
+      const assets = Array.isArray(item.affectedAssets)
+        ? item.affectedAssets.map((a) => String(a).toUpperCase())
+        : [];
+      const isDirect = assets.includes(posBase);
+      const isMacro = assets.includes('ALL') || assets.includes('BTC') || assets.includes('ETH');
+      if (!isDirect && !isMacro) continue;
+      const weight = (isDirect ? 2.4 : 0.7) * (Math.max(50, item.impactScore || 80) / 100);
+      if (item.sentiment === 'BULLISH') bullW += weight;
+      else if (item.sentiment === 'BEARISH') bearW += weight;
+    }
+    const netNews = (bullW - bearW) * dirSign; // positive = news supports our position, negative = news opposes us
+    newsDelta = Math.max(-24, Math.min(24, netNews * 5.5));
+  }
+
   const sentimentScore = Math.round(
-    Math.max(15, Math.min(98, 56 + signedChange24h * 6.5 + fundingHealth))
+    Math.max(12, Math.min(98, 56 + signedChange24h * 6.5 + fundingHealth + newsDelta))
   );
 
   const compositeScore = Math.round(

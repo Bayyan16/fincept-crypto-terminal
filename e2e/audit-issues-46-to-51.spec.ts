@@ -275,4 +275,83 @@ test.describe('Issues #46-#51 End-to-End Real-Money Integrity & Automation Contr
     await expect(page.getByTestId('wallet-ping-hyperliquid_agent')).toBeVisible();
     await expect(page.getByTestId('wallet-modal-unified-equity')).toBeVisible();
   });
+
+  test('TESTNET 1:1 PARITY & LIVE NEWS SENTIMENT: Dedicated Testnet L2 orderbook, 4/4 Testnet venues online, and breaking news integrated into position defense', async ({
+    request,
+    page,
+  }) => {
+    const readyRes = await request.get('/api/testnet/readiness?hlCoin=BTC&binanceSymbol=BTCUSDT');
+    expect(readyRes.status()).toBe(200);
+    const ready = await readyRes.json();
+    expect(ready.ok).toBe(true);
+    expect(ready.parityMode).toBe('1:1_IDENTICAL_EXECUTION_PIPELINE');
+    expect(ready.testnetExchanges.allReachable).toBe(true);
+    expect(ready.orderbookComparison.testnetUncrossed).toBe(true);
+    expect(ready.orderbookComparison.testnetMid).toBeGreaterThan(0);
+    expect(ready.sharedPipelineChecks.dedicatedTestnetL2Orderbook).toBe(true);
+    expect(ready.sharedPipelineChecks.sameLiveNewsSentimentFeed).toBe(true);
+    expect(ready.liveNewsTelemetry.total).toBeGreaterThan(0);
+
+    await page.goto('/pro/', { waitUntil: 'domcontentloaded' });
+    const newsDefense = await page.evaluate(async () => {
+      const skills: any = await import('/src/engine/agentSkills.ts');
+      const mkt = {
+        symbol: 'BTC-PERP',
+        baseAsset: 'BTC',
+        obiScore: 0,
+        cvdDelta15mUsd: 0,
+        depthPlusMinusHalfPctUsd: 5_000_000,
+        whaleNetFlow1hUsd: 0,
+        change24h: -0.5,
+        fundingRate: 0.005,
+      };
+      const posLong = {
+        id: 'pos-news-1',
+        symbol: 'BTC-PERP',
+        side: 'LONG',
+        entryPrice: 60000,
+        currentPrice: 59700,
+        sizeUsd: 500,
+        leverage: 5,
+        unrealizedPnlPct: -2.0,
+        unrealizedPnlUsd: -10,
+        peakPnlPct: 0,
+      };
+      const bearishNews = [
+        {
+          id: 'n1',
+          timestamp: 'LIVE',
+          source: 'BLOOMBERG CRYPTO WIRE',
+          category: 'ETF_INSTITUTIONAL',
+          headline: 'Bitcoin ETFs Set for Worst Month as Outflows Near $5 Billion',
+          summary: 'Heavy institutional outflows',
+          affectedAssets: ['BTC'],
+          sentiment: 'BEARISH',
+          credibilityScore: 99,
+          impactScore: 95,
+          verificationProof: 'Bloomberg RSS',
+        },
+        {
+          id: 'n2',
+          timestamp: 'LIVE',
+          source: 'COINDESK',
+          category: 'MACRO_FED',
+          headline: 'Bitcoin and Ether plunge as selloff resumes',
+          summary: 'Broad crypto selloff',
+          affectedAssets: ['BTC', 'ETH'],
+          sentiment: 'BEARISH',
+          credibilityScore: 97,
+          impactScore: 92,
+          verificationProof: 'CoinDesk RSS',
+        },
+      ];
+      const withoutNews = skills.evaluateActivePositionDeepIntelligence(posLong, mkt, [], 15, -2.5, []);
+      const withBearNews = skills.evaluateActivePositionDeepIntelligence(posLong, mkt, [], 15, -2.5, bearishNews);
+      return {
+        sentimentWithoutNews: withoutNews.sentimentScore,
+        sentimentWithBearNews: withBearNews.sentimentScore,
+      };
+    });
+    expect(newsDefense.sentimentWithBearNews).toBeLessThan(newsDefense.sentimentWithoutNews - 10);
+  });
 });

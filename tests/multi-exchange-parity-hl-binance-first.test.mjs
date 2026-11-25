@@ -22,6 +22,7 @@ import {
   executeRealExchangeOrder,
   fetchRealOpenPositions,
   fetchRealOrderStatus,
+  getRealAggregatedOrderbook,
   verifyAndFetchAccountBalance,
 } from '../backend/exchangeGateway.mjs';
 import { clearInstrumentSpecCache } from '../backend/exchangeInstruments.mjs';
@@ -478,6 +479,54 @@ test('Priority #3 Bybit & #4 OKX: full verify parity (chainBalances + capabiliti
     assert.equal(okxVerify.spotEnabled, true);
     assert.equal(okxVerify.balanceUsd, 4820.1);
     assert.ok(Array.isArray(okxVerify.chainBalances) && okxVerify.chainBalances.length === 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Testnet 1:1 Parity: getRealAggregatedOrderbook(coin, sym, true) routes exclusively to Testnet L2 endpoints without colliding with Mainnet cache', async () => {
+  const originalFetch = globalThis.fetch;
+  const hitUrls = [];
+
+  globalThis.fetch = async (url) => {
+    const u = String(url);
+    hitUrls.push(u);
+    if (u.includes('api.hyperliquid-testnet.xyz/info')) {
+      return mockJsonResponse({
+        levels: [
+          [{ px: '58590.0', sz: '2.5' }],
+          [{ px: '58592.0', sz: '2.4' }],
+        ],
+      });
+    }
+    if (u.includes('testnet.binancefuture.com/fapi/v1/depth')) {
+      return mockJsonResponse({
+        bids: [['58589.5', '1.8']],
+        asks: [['58592.5', '1.9']],
+      });
+    }
+    if (u.includes('api-testnet.bybit.com/v5/market/orderbook')) {
+      return mockJsonResponse({
+        retCode: 0,
+        result: { b: [['58589.0', '1.5']], a: [['58593.0', '1.5']] },
+      });
+    }
+    return mockJsonResponse({}, 404);
+  };
+
+  try {
+    const testBook = await getRealAggregatedOrderbook('TESTBTC', 'TESTBTCUSDT', true);
+    assert.equal(testBook.ok, true);
+    assert.equal(testBook.useTestnet, true);
+    assert.equal(testBook.primaryVenue, 'HYPERLIQUID');
+    assert.equal(testBook.bids[0].price, 58590);
+    assert.equal(testBook.asks[0].price, 58592);
+    assert.ok(testBook.bids[0].price < testBook.asks[0].price);
+    assert.ok(hitUrls.some((u) => u.includes('api.hyperliquid-testnet.xyz/info')));
+    assert.ok(hitUrls.some((u) => u.includes('testnet.binancefuture.com/fapi/v1/depth')));
+    assert.ok(hitUrls.some((u) => u.includes('api-testnet.bybit.com/v5/market/orderbook')));
+    assert.ok(!hitUrls.some((u) => u.includes('api.hyperliquid.xyz/info')));
+    assert.ok(!hitUrls.some((u) => u.includes('fapi.binance.com/fapi/v1/depth')));
   } finally {
     globalThis.fetch = originalFetch;
   }
