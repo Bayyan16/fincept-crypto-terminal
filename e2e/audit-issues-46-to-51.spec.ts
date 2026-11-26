@@ -408,4 +408,101 @@ test.describe('Issues #46-#51 End-to-End Real-Money Integrity & Automation Contr
     expect(swapJson.swapTransaction.length).toBeGreaterThan(200);
     expect(swapJson.expectedOutQty).toBeGreaterThan(0);
   });
+
+  test('SHARP TECHNICAL ANALYSIS (NO 1-CANDLE COUNTER-TREND WHIPSAW) & SHARP TRAILING PROFIT-LOCK / CUT-LOSS', async ({
+    page,
+  }) => {
+    await page.goto('/pro/', { waitUntil: 'domcontentloaded' });
+    const evalRes = await page.evaluate(async () => {
+      const forum: any = await import('/src/engine/multiAgentForum.ts');
+      const skills: any = await import('/src/engine/agentSkills.ts');
+
+      // 1. Construct a strong downtrend (60 falling bars) ending in ONE single tiny green bounce candle.
+      // Sharp TA MUST NOT flip to LONG on 1 counter-trend green candle!
+      const now = Date.now();
+      const bearCandles = [];
+      let px = 120;
+      for (let i = 0; i < 60; i++) {
+        const open = px;
+        const close = i === 59 ? px * 1.002 : px * 0.996;
+        bearCandles.push({
+          time: now - (60 - i) * 900_000,
+          label: `${i}`,
+          open,
+          high: Math.max(open, close) * 1.001,
+          low: Math.min(open, close) * 0.999,
+          close,
+          volume: 1000,
+          cvd: -50000,
+        });
+        px = close;
+      }
+      const taSnap = forum.computeTechnicalAnalysisSnapshot(
+        { symbol: 'SOL-PERP', baseAsset: 'SOL', price: px, obiScore: -0.25 },
+        bearCandles
+      );
+
+      // 2. Sharp Trailing Profit-Lock: Trade peaked at +15% ROE and retraced to +9% while OB/Whale turned bearish -> AUTO_TAKE_PROFIT_NOW
+      const weakMkt = {
+        symbol: 'SOL-PERP',
+        baseAsset: 'SOL',
+        obiScore: -0.45,
+        cvdDelta15mUsd: -2_000_000,
+        depthPlusMinusHalfPctUsd: 4_000_000,
+        whaleNetFlow1hUsd: -5_000_000,
+        change24h: -2.0,
+        fundingRate: 0.01,
+      };
+      const trailingEval = skills.evaluateActivePositionDeepIntelligence(
+        {
+          id: 'pos-trail-1',
+          symbol: 'SOL-PERP',
+          side: 'LONG',
+          entryPrice: 70,
+          currentPrice: 71.26,
+          sizeUsd: 28,
+          leverage: 5,
+          unrealizedPnlPct: 9.0,
+          unrealizedPnlUsd: 0.5,
+          peakPnlPct: 15.0,
+        },
+        weakMkt,
+        [],
+        16,
+        -5.5,
+        []
+      );
+
+      // 3. Sharp Cut-Loss on Multi-Pillar Invalidation at -2.2% ROE (before hitting -5.5% hard stop!)
+      const cutEval = skills.evaluateActivePositionDeepIntelligence(
+        {
+          id: 'pos-cut-1',
+          symbol: 'SOL-PERP',
+          side: 'LONG',
+          entryPrice: 70,
+          currentPrice: 69.69,
+          sizeUsd: 28,
+          leverage: 5,
+          unrealizedPnlPct: -2.2,
+          unrealizedPnlUsd: -0.12,
+          peakPnlPct: 0.3,
+        },
+        weakMkt,
+        [],
+        16,
+        -5.5,
+        []
+      );
+
+      return {
+        counterTrendSide: taSnap.recommendedSide,
+        trailingDecision: trailingEval.decision,
+        cutDecision: cutEval.decision,
+      };
+    });
+
+    expect(evalRes.counterTrendSide).not.toBe('LONG');
+    expect(evalRes.trailingDecision).toBe('AUTO_TAKE_PROFIT_NOW');
+    expect(evalRes.cutDecision).toBe('AUTO_CUT_INVALIDATED');
+  });
 });

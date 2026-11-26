@@ -13,6 +13,86 @@
 
 export const MIN_SINGLE_ORDER_USD = 10;
 
+/**
+ * Dynamic Balance-Tiered Position Limit & Micro-Capital Growth Policy:
+ * - Equity < $10 (e.g. $8 micro Futures): STRICTLY MAX 1 position, safe 5x cap, 70% margin util (30% liq buffer)
+ * - Equity $10 – $49.99: STRICTLY MAX 1 position, 5x cap, 65% margin util
+ * - Equity $50 – $99.99: MAX 2 concurrent positions, 6x cap, 40% margin util/slot
+ * - Equity >= $100: MAX 3 concurrent positions, 6x cap, 28% margin util/slot
+ */
+export function computeBalanceTieredPositionPolicy(equityUsd) {
+  const eq = Number.isFinite(Number(equityUsd)) ? Math.max(0, Number(equityUsd)) : 0;
+  if (eq < 10) {
+    return {
+      tier: 'MICRO_UNDER_10',
+      tierLabel: 'MICRO (<$10 • MAX 1 POS)',
+      maxPositions: 1,
+      maxLeverage: 5,
+      perSlotMarginFraction: 0.70,
+      recommendedTpPct: 16,
+      recommendedSlPct: -5.5,
+      recommendedBePct: 3.5,
+      nextTierUsd: 50,
+    };
+  }
+  if (eq < 50) {
+    return {
+      tier: 'STARTER_10_TO_49',
+      tierLabel: 'STARTER ($10–$49 • MAX 1 POS)',
+      maxPositions: 1,
+      maxLeverage: 5,
+      perSlotMarginFraction: 0.65,
+      recommendedTpPct: 18,
+      recommendedSlPct: -5.0,
+      recommendedBePct: 3.5,
+      nextTierUsd: 50,
+    };
+  }
+  if (eq < 100) {
+    return {
+      tier: 'GROWTH_50_TO_99',
+      tierLabel: 'GROWTH ($50–$99 • MAX 2 POS)',
+      maxPositions: 2,
+      maxLeverage: 6,
+      perSlotMarginFraction: 0.40,
+      recommendedTpPct: 20,
+      recommendedSlPct: -4.5,
+      recommendedBePct: 3.0,
+      nextTierUsd: 100,
+    };
+  }
+  return {
+    tier: 'SCALE_100_PLUS',
+    tierLabel: 'SCALE ($100+ • MAX 3 POS)',
+    maxPositions: 3,
+    maxLeverage: 6,
+    perSlotMarginFraction: 0.28,
+    recommendedTpPct: 22,
+    recommendedSlPct: -4.0,
+    recommendedBePct: 2.5,
+    nextTierUsd: null,
+  };
+}
+
+/**
+ * Estimates venue minimum notional (USD) so micro-capital accounts ($8 Binance Futures)
+ * automatically skip $100-minNotional pairs (BTCUSDT) and select liquid $5-minNotional pairs.
+ */
+export function estimateVenueMinNotionalUsd(exchange, symbol = '') {
+  const base = String(symbol || '')
+    .split('-')[0]
+    .split('/')[0]
+    .replace(/^k(?=[A-Z]{2,})/, '')
+    .toUpperCase();
+  if (exchange === 'BINANCE') {
+    if (base === 'BTC') return 100;
+    if (base === 'ETH') return 20;
+    return 5.5;
+  }
+  if (exchange === 'HYPERLIQUID') return 10;
+  return 5.5;
+}
+
 // Canonical exchange priority order: Hyperliquid & Binance first, followed by Bybit & OKX
 export const EXCHANGE_PRIORITY_ORDER = ['HYPERLIQUID', 'BINANCE', 'BYBIT', 'OKX'];
 
@@ -355,11 +435,11 @@ export function resolveExecutableRealVenue({
     }
 
     // Requested FUTURES (PERP):
-    // 1) If Futures is supported AND (either not Binance or Futures has >= $10 margin OR Spot doesn't exclusively hold funds)
+    // 1) If Futures is supported AND (either not Binance or Futures has >= $2 margin — supports micro $8 Binance Futures wallets!)
     const binanceOnlySpotFunded =
       wallet.id === 'binance_api' &&
       caps.supportsSpot &&
-      caps.availableFuturesUsd < MIN_SINGLE_ORDER_USD &&
+      caps.availableFuturesUsd < 2 &&
       caps.availableSpotUsd >= MIN_SINGLE_ORDER_USD;
 
     if (caps.supportsFutures && !binanceOnlySpotFunded) {
@@ -412,6 +492,7 @@ export function computeSafeAutonomousRealOrderSizeUsd({
   verifiedReal = false,
   marketType = 'PERP',
   leverage = 1,
+  applyBalanceTierCap = false,
 }) {
   const req = Math.max(MIN_SINGLE_ORDER_USD, Number(requestedSizeUsd) || MIN_SINGLE_ORDER_USD);
   const avail = Number(availableUsd);
@@ -432,7 +513,13 @@ export function computeSafeAutonomousRealOrderSizeUsd({
 
   // Subtract margin already committed to open real positions on the same wallet (#51)
   const freeUsd = Number(Math.max(0, avail - committed).toFixed(2));
-  const safetyBuffer = marketType === 'SPOT' ? 0.9 : 0.85;
+  const tierPolicy = applyBalanceTierCap ? computeBalanceTieredPositionPolicy(avail) : null;
+  const safetyBuffer =
+    marketType === 'SPOT'
+      ? 0.9
+      : tierPolicy
+        ? tierPolicy.perSlotMarginFraction
+        : 0.85;
   const maxSafeNotional = Number((freeUsd * effLev * safetyBuffer).toFixed(2));
   if (maxSafeNotional < MIN_SINGLE_ORDER_USD) {
     return {

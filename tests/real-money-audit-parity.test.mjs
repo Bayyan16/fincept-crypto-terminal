@@ -6,6 +6,9 @@ import {
   resolveRecordExecutionEnv,
 } from '../backend/positionMath.mjs';
 import {
+  computeBalanceTieredPositionPolicy,
+  computeSafeAutonomousRealOrderSizeUsd,
+  estimateVenueMinNotionalUsd,
   getWalletMarketCapabilities,
   resolveExecutableRealVenue,
 } from '../backend/realExecutionRouter.mjs';
@@ -358,4 +361,80 @@ test('Phantom Balance Verification sums SOL + SPL USDC + SPL USDT cleanly', asyn
   } finally {
     globalThis.fetch = origFetch;
   }
+});
+
+test('Balance-Tiered Position Policy (<$10 => 1 Pos, $50 => 2 Pos, $100+ => 3 Pos) & $8 Binance Futures Micro-Capital Routing', () => {
+  // Exact balance tier verification
+  const micro8 = computeBalanceTieredPositionPolicy(8);
+  assert.equal(micro8.maxPositions, 1);
+  assert.equal(micro8.tier, 'MICRO_UNDER_10');
+  assert.equal(micro8.maxLeverage, 5);
+  assert.equal(micro8.nextTierUsd, 50);
+
+  const starter35 = computeBalanceTieredPositionPolicy(35);
+  assert.equal(starter35.maxPositions, 1);
+  assert.equal(starter35.tier, 'STARTER_10_TO_49');
+
+  const growth50 = computeBalanceTieredPositionPolicy(50);
+  assert.equal(growth50.maxPositions, 2);
+  assert.equal(growth50.tier, 'GROWTH_50_TO_99');
+  assert.equal(growth50.nextTierUsd, 100);
+
+  const growth99 = computeBalanceTieredPositionPolicy(99.99);
+  assert.equal(growth99.maxPositions, 2);
+
+  const scale100 = computeBalanceTieredPositionPolicy(100);
+  assert.equal(scale100.maxPositions, 3);
+  assert.equal(scale100.tier, 'SCALE_100_PLUS');
+  assert.equal(scale100.nextTierUsd, null);
+
+  // $8 Binance Futures wallet MUST route to FUTURES (never misrouted to Spot even if Spot holds $20!)
+  const binanceMicroWallet = {
+    id: 'binance_api',
+    name: 'Binance Futures & Spot',
+    connected: true,
+    verifiedReal: true,
+    autoSignEnabled: true,
+    balanceUsd: 28,
+    futuresEnabled: true,
+    spotEnabled: true,
+    futuresBalanceUsd: 8,
+    spotBalanceUsd: 20,
+    credentials: { apiKey: 'microKey12345', apiSecret: 'microSec12345', useTestnet: false },
+  };
+  const solMarket = {
+    symbol: 'SOL-PERP',
+    baseAsset: 'SOL',
+    marketType: 'PERP',
+    primaryExchange: 'BINANCE',
+    supportedExchanges: ['BINANCE', 'HYPERLIQUID'],
+    price: 71,
+  };
+  const routed = resolveExecutableRealVenue({
+    market: solMarket,
+    side: 'SHORT',
+    wallets: [binanceMicroWallet],
+    useTestnet: false,
+    isAutonomous: true,
+  });
+  assert.equal(routed.ok, true);
+  assert.equal(routed.exchange, 'BINANCE');
+  assert.equal(routed.venueMode, 'FUTURES');
+  assert.equal(routed.availableUsd, 8);
+
+  // Safe tiered sizing for $8 @ 5x = $8 * 0.70 * 5 = $28 notional (keeps 30% = $2.40 liquidation buffer)
+  const microSize = computeSafeAutonomousRealOrderSizeUsd({
+    requestedSizeUsd: 500,
+    availableUsd: 8,
+    verifiedReal: true,
+    marketType: 'PERP',
+    leverage: 5,
+    applyBalanceTierCap: true,
+  });
+  assert.equal(microSize.ok, true);
+  assert.equal(microSize.sizeUsd, 28);
+
+  // MinNotional filter: $28 notional cleanly trades SOL/DOGE/XRP ($5.50) and skips BTC ($100)
+  assert.ok(microSize.sizeUsd >= estimateVenueMinNotionalUsd('BINANCE', 'SOL-PERP'));
+  assert.ok(microSize.sizeUsd < estimateVenueMinNotionalUsd('BINANCE', 'BTC-PERP'));
 });

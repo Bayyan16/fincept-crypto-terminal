@@ -494,7 +494,52 @@ export function computeTechnicalAnalysisSnapshot(
     structureLabel = 'BEARISH CHoCH + SUPPLY REJECTION';
   }
 
-  // Immediate Price Action Impulse (prevents shorting a green support bounce or longing a red resistance rejection)
+  // 6. Institutional Multi-Factor Sharpness Filters: VWAP, ADX(14) Trend Strength, Relative Volume (RVOL) & MACD Slope
+  const vwapSlice = series.slice(-48);
+  let vwapPv = 0;
+  let vwapVol = 0;
+  for (const c of vwapSlice) {
+    const typicalPx = (c.high + c.low + c.close) / 3;
+    const v = Math.max(0, Number(c.volume) || 0);
+    vwapPv += typicalPx * v;
+    vwapVol += v;
+  }
+  const vwapPrice = vwapVol > 0 ? vwapPv / vwapVol : ema20;
+  const aboveVwap = lastPrice > vwapPrice * 1.0005;
+  const belowVwap = lastPrice < vwapPrice * 0.9995;
+
+  // ADX(14) Trend Strength: avoids whipsaw entries in flat choppy ranges (< 16)
+  let adx14 = 20;
+  if (series.length >= 16) {
+    let plusDmSum = 0;
+    let minusDmSum = 0;
+    let trSum = 0;
+    const startIdx = Math.max(1, series.length - 14);
+    for (let i = startIdx; i < series.length; i++) {
+      const cur = series[i];
+      const prev = series[i - 1];
+      const upMove = cur.high - prev.high;
+      const downMove = prev.low - cur.low;
+      plusDmSum += upMove > downMove && upMove > 0 ? upMove : 0;
+      minusDmSum += downMove > upMove && downMove > 0 ? downMove : 0;
+      trSum += Math.max(cur.high - cur.low, Math.abs(cur.high - prev.close), Math.abs(cur.low - prev.close));
+    }
+    if (trSum > 0) {
+      const plusDi = (plusDmSum / trSum) * 100;
+      const minusDi = (minusDmSum / trSum) * 100;
+      const diSum = plusDi + minusDi;
+      adx14 = diSum > 0 ? Number(((Math.abs(plusDi - minusDi) / diSum) * 100).toFixed(1)) : 12;
+    }
+  }
+
+  // Relative Volume (RVOL): confirms institutional breakout/breakdown participation
+  const volSlice = series.slice(-22, -2).map((c) => Math.max(0, Number(c.volume) || 0));
+  const avgVol20 = volSlice.length > 0 ? volSlice.reduce((a, b) => a + b, 0) / volSlice.length : 0;
+  const recentVol2 =
+    series.slice(-2).reduce((a, c) => a + Math.max(0, Number(c.volume) || 0), 0) / 2;
+  const rvol = avgVol20 > 0 ? Number((recentVol2 / avgVol20).toFixed(2)) : 1;
+
+  // Immediate Price Action Impulse (confirmation factor, NEVER overrides full counter-trend structure!)
   const lastBar = series[series.length - 1];
   const prevBar1 = series[Math.max(0, series.length - 2)];
   const prevBar2 = series[Math.max(0, series.length - 3)];
@@ -505,50 +550,68 @@ export function computeTechnicalAnalysisSnapshot(
   const isRedBreakdownImpulse =
     lastBar.close < prevBar1.close && lastBar.close <= lastBar.open;
 
-  // Composite Technical Score (0 - 100, where >55 is Bullish, <45 is Bearish, mapped to directional conviction)
+  // Composite Sharp Multi-Factor Technical Score (0 - 100; >= 59 LONG, <= 41 SHORT, else WAIT)
   let bullPoints = 50;
-  if (emaAlignment === 'BULLISH_STACK') bullPoints += 12;
+  if (emaAlignment === 'BULLISH_STACK') bullPoints += 14;
   else if (emaAlignment === 'GOLDEN_CROSS') bullPoints += 9;
-  else if (emaAlignment === 'BEARISH_STACK') bullPoints -= 12;
+  else if (emaAlignment === 'BEARISH_STACK') bullPoints -= 14;
   else if (emaAlignment === 'DEATH_CROSS') bullPoints -= 9;
 
-  if (isGreenBounceImpulse) bullPoints += 18;
-  else if (isRedBreakdownImpulse) bullPoints -= 18;
+  if (priceActionStructure === 'BULLISH_BOS_HH_HL') bullPoints += 11;
+  else if (priceActionStructure === 'BULLISH_CHOCH_REVERSAL') bullPoints += 7;
+  else if (priceActionStructure === 'BEARISH_BOS_LH_LL') bullPoints -= 11;
+  else if (priceActionStructure === 'BEARISH_CHOCH_REVERSAL') bullPoints -= 7;
 
-  if (priceActionStructure === 'BULLISH_BOS_HH_HL') bullPoints += 10;
-  else if (priceActionStructure === 'BULLISH_CHOCH_REVERSAL') bullPoints += 8;
-  else if (priceActionStructure === 'BEARISH_BOS_LH_LL') bullPoints -= 10;
-  else if (priceActionStructure === 'BEARISH_CHOCH_REVERSAL') bullPoints -= 8;
+  // VWAP institutional control
+  if (aboveVwap) bullPoints += 6;
+  else if (belowVwap) bullPoints -= 6;
 
-  if (histogram > 0 && (macdState === 'BULLISH_CROSS' || macdState === 'BULLISH_EXPANSION')) bullPoints += 6;
-  else if (histogram < 0) bullPoints -= 6;
+  // MACD direction + histogram slope acceleration
+  const macdAcceleratingUp = histogram > 0 && histogram >= prevHistogram;
+  const macdAcceleratingDown = histogram < 0 && histogram <= prevHistogram;
+  if (macdState === 'BULLISH_CROSS' || macdAcceleratingUp) bullPoints += 7;
+  else if (histogram > 0) bullPoints += 3;
+  else if (macdState === 'BEARISH_CROSS' || macdAcceleratingDown) bullPoints -= 7;
+  else if (histogram < 0) bullPoints -= 3;
 
-  if (rsiState === 'BULLISH_MOMENTUM' || rsiState === 'OVERSOLD_BOUNCE') bullPoints += 6;
-  else if (rsiState === 'BEARISH_MOMENTUM' || rsiState === 'OVERBOUGHT_EXHAUSTION') bullPoints -= 6;
+  // RSI sweet-spot momentum (rewards healthy momentum, penalizes chasing extremes)
+  if (rsi14 >= 52 && rsi14 <= 68) bullPoints += 6;
+  else if (rsi14 <= 34 && isGreenBounceImpulse) bullPoints += 7; // oversold bounce confirmation
+  else if (rsi14 <= 48 && rsi14 >= 32) bullPoints -= 6;
+  else if (rsi14 >= 66 && isRedBreakdownImpulse) bullPoints -= 7; // overbought rejection confirmation
+
+  // Price action impulse + Relative Volume (RVOL) confirmation
+  const volBoost = rvol >= 1.3 ? 4 : rvol >= 1.05 ? 2 : 0;
+  if (isGreenBounceImpulse) bullPoints += 7 + volBoost;
+  else if (isRedBreakdownImpulse) bullPoints -= 7 + volBoost;
 
   if (pair.obiScore >= 0.15) bullPoints += 4;
   else if (pair.obiScore <= -0.15) bullPoints -= 4;
 
-  const recommendedSide: 'LONG' | 'SHORT' | 'WAIT' =
-    isGreenBounceImpulse
-      ? 'LONG'
-      : isRedBreakdownImpulse
-        ? 'SHORT'
-        : bullPoints >= 55
-          ? 'LONG'
-          : bullPoints <= 45
-            ? 'SHORT'
-            : 'WAIT';
+  // Dampen choppy/sideways regime (ADX < 14) toward neutral so agent refuses low-quality chop!
+  if (adx14 < 14) {
+    bullPoints = 50 + (bullPoints - 50) * 0.55;
+  }
 
-  const directionalConviction = Math.min(
-    99,
-    Math.max(54, Math.round(52 + Math.abs(bullPoints - 50) * 1.05))
-  );
+  // Anti-Chase Overextension Veto: never buy directly into resistance ceiling at RSI >= 74,
+  // and never short directly into support floor at RSI <= 26!
+  const overextendedLongTrap = rsi14 >= 74 && distanceToResistancePct <= 0.7;
+  const overextendedShortTrap = rsi14 <= 26 && distanceToSupportPct <= 0.7;
 
-  const summary = `${structureLabel} | ${emaAlignmentLabel} | RSI(14): ${rsi14} | MACD: ${macdState.replace(
+  let recommendedSide: 'LONG' | 'SHORT' | 'WAIT' =
+    bullPoints >= 59 ? 'LONG' : bullPoints <= 41 ? 'SHORT' : 'WAIT';
+  if (recommendedSide === 'LONG' && overextendedLongTrap) recommendedSide = 'WAIT';
+  if (recommendedSide === 'SHORT' && overextendedShortTrap) recommendedSide = 'WAIT';
+
+  const directionalConviction =
+    recommendedSide === 'WAIT'
+      ? 50
+      : Math.min(99, Math.max(58, Math.round(52 + Math.abs(bullPoints - 50) * 1.05 + (adx14 >= 22 ? 4 : 0))));
+
+  const summary = `${structureLabel} | ${emaAlignmentLabel} | VWAP $${formatSmartPrice(vwapPrice).toLocaleString()} | ADX(14): ${adx14} | RVOL: ${rvol}x | RSI(14): ${rsi14} | MACD: ${macdState.replace(
     /_/g,
     ' '
-  )} | BB %B: ${bbPercentB} | Key Support S1 $${support1.toLocaleString()} / Resistance R1 $${resistance1.toLocaleString()}`;
+  )} | S1 $${support1.toLocaleString()} / R1 $${resistance1.toLocaleString()}`;
 
   return {
     symbol: pair.symbol,

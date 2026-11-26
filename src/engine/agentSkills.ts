@@ -254,16 +254,19 @@ export function scanAllMarketMultiAgentCandidates(
     const directionalAgreement = Math.max(longVotes, shortVotes);
 
     const rsiExhaustionVeto =
-      hasRealCandles && ((side === 'LONG' && ta.rsi14 >= 88) || (side === 'SHORT' && ta.rsi14 <= 12));
+      hasRealCandles && ((side === 'LONG' && ta.rsi14 >= 78) || (side === 'SHORT' && ta.rsi14 <= 22));
+    const taUnconfirmedVeto = Boolean(options.requireConsensusQuorum && taSide !== side);
     const liquidityVeto = m.spreadBps > 45 || m.liquidityScore < safeMinLiqGate;
-    const hasVeto = !hasRealCandles || rsiExhaustionVeto || liquidityVeto;
+    const hasVeto = !hasRealCandles || rsiExhaustionVeto || taUnconfirmedVeto || liquidityVeto;
     const vetoReason = !hasRealCandles
       ? 'No real OHLCV candles loaded'
-      : rsiExhaustionVeto
-        ? `RSI(14) extreme exhaustion (${ta.rsi14})`
-        : liquidityVeto
-          ? `Spread (${m.spreadBps} bps) or liquidity (${m.liquidityScore}) failed gate`
-          : null;
+      : taUnconfirmedVeto
+        ? `Analisa teknikal (Agent 2 = ${taSide}) belum searah dengan ${side}`
+        : rsiExhaustionVeto
+          ? `RSI(14) overextended (${ta.rsi14}) — menghindari chase puncak/dasar`
+          : liquidityVeto
+            ? `Spread (${m.spreadBps} bps) or liquidity (${m.liquidityScore}) failed gate`
+            : null;
 
     // Agent 4 (Arbiter) aligns ONLY if not vetoed and >= 2 independent agents agree on direction
     const arbiterAligned = !hasVeto && directionalAgreement >= 2 && liquiditySafety >= 70;
@@ -524,18 +527,22 @@ export function evaluateActivePositionDeepIntelligence(
           ? 'NEUTRAL CONSOLIDATION'
           : 'ORDERFLOW INVALIDATED';
 
-  // Decision Tree: Floating Loss vs Profit Management
+  // Decision Tree: Floating Loss vs Sharp Asymmetric Profit Management
   if (pos.unrealizedPnlPct < 0) {
     const scratchThreshold =
       Number.isFinite(maxMicroLossScratchPct) && maxMicroLossScratchPct < 0
         ? maxMicroLossScratchPct
-        : -0.95;
-    // Check if Orderbook + On-Chain Whales + Sentiment have broken down OR configured micro-loss cap reached
-    if (
-      compositeScore < 42 ||
-      (orderbookDefenseScore < 38 && whaleConvictionScore < 40) ||
-      pos.unrealizedPnlPct <= scratchThreshold
-    ) {
+        : -3.5;
+    // Sharp Cut-Loss:
+    // 1) Hard cap reached (unrealizedPnlPct <= scratchThreshold), OR
+    // 2) Clear multi-pillar invalidation (Orderbook + Whale + Breaking News) once beyond minor noise (-1.2% ROE)
+    const hardStopHit = pos.unrealizedPnlPct <= scratchThreshold;
+    const deepInvalidation =
+      pos.unrealizedPnlPct <= -1.2 &&
+      (compositeScore < 42 ||
+        (orderbookDefenseScore < 38 && whaleConvictionScore < 40) ||
+        (sentimentScore < 38 && orderbookDefenseScore < 46));
+    if (hardStopHit || deepInvalidation) {
       return {
         decision: 'AUTO_CUT_INVALIDATED',
         orderbookDefenseScore,
@@ -543,7 +550,9 @@ export function evaluateActivePositionDeepIntelligence(
         sentimentScore,
         compositeScore,
         marketSentimentLabel,
-        reason: `AUTO-CUT TRIGGERED: Pertahanan Orderbook (${orderbookDefenseScore}/100) & Konviksi Whale (${whaleConvictionScore}/100) patah. Menutup posisi otomatis untuk memroteksi modal.`,
+        reason: hardStopHit
+          ? `AUTO CUT-LOSS (${pos.unrealizedPnlPct}% <= batas ${scratchThreshold}%): Menutup posisi instan untuk melindungi saldo modal & mencegah drawdown besar.`
+          : `AUTO CUT-LOSS INVALIDASI (${pos.unrealizedPnlPct}%): Pertahanan Orderbook (${orderbookDefenseScore}/100), Whale (${whaleConvictionScore}/100) & Sentimen (${sentimentScore}/100) patah. Eksekusi cut loss cepat!`,
       };
     }
 
@@ -561,27 +570,49 @@ export function evaluateActivePositionDeepIntelligence(
 
   // Position is in Profit (unrealizedPnlPct >= 0)
   // Honor user's configured autoTakeProfitTriggerPct (min 1% floor, never override <50% settings to 50%!)
-  const minTpFloorPct = Math.max(1, Number.isFinite(autoTakeProfitTriggerPct) ? autoTakeProfitTriggerPct : 15);
+  const minTpFloorPct = Math.max(1, Number.isFinite(autoTakeProfitTriggerPct) ? autoTakeProfitTriggerPct : 16);
+
+  // Sharp Trailing Profit Protection:
+  // If a real-money / active trade rallied >= +10% ROE (or >= 65% of TP target) and then pulls back sharply
+  // while orderbook/whale/news momentum turns weak (< 50), bank the profit immediately instead of letting a winner turn red!
+  const midPeakProtectionThreshold = Math.min(minTpFloorPct, Math.max(8, minTpFloorPct * 0.65));
+  const hasMidPeakReversal =
+    pos.peakPnlPct >= midPeakProtectionThreshold &&
+    pos.unrealizedPnlPct >= 4.0 &&
+    pos.unrealizedPnlPct <= pos.peakPnlPct * 0.68 &&
+    (compositeScore < 50 || (orderbookDefenseScore < 44 && whaleConvictionScore < 48));
+
+  if (hasMidPeakReversal) {
+    return {
+      decision: 'AUTO_TAKE_PROFIT_NOW',
+      orderbookDefenseScore,
+      whaleConvictionScore,
+      sentimentScore,
+      compositeScore,
+      marketSentimentLabel,
+      reason: `SHARP TRAILING PROFIT-LOCK (+${pos.unrealizedPnlPct}% dari puncak +${pos.peakPnlPct}%): Momentum OB/Whale melemah (${compositeScore}/100). Mengamankan profit riil sebelum reversal!`,
+    };
+  }
 
   // Agent computes an Uncapped Dynamic Target Ratio based on 3-pillar institutional momentum & peak expansion
   const momentumExpansionBonus =
     compositeScore >= 82
-      ? 110
+      ? 45
       : compositeScore >= 72
-        ? 65
-        : compositeScore >= 60
-          ? 32
+        ? 25
+        : compositeScore >= 64
+          ? 12
           : 0;
   const agentDecidedTpRatioPct = Number(
     Math.max(
       minTpFloorPct + momentumExpansionBonus,
-      pos.peakPnlPct >= minTpFloorPct && compositeScore >= 62
-        ? pos.peakPnlPct * 1.18
+      pos.peakPnlPct >= minTpFloorPct && compositeScore >= 66
+        ? pos.peakPnlPct * 1.15
         : minTpFloorPct
     ).toFixed(1)
   );
 
-  // 1) If profit has NOT reached the minimum +50% floor yet: NEVER take profit early; lock Breakeven+Fee and ride toward >= +50%!
+  // 1) If profit has NOT reached the target TP floor yet: lock Breakeven+Fee and ride toward TP!
   if (pos.unrealizedPnlPct < minTpFloorPct) {
     return {
       decision: 'RIDE_PROFIT_TRAIL',
@@ -590,14 +621,14 @@ export function evaluateActivePositionDeepIntelligence(
       sentimentScore,
       compositeScore,
       marketSentimentLabel,
-      reason: `RIDE TO MIN +${minTpFloorPct}% TP (Saat ini +${pos.unrealizedPnlPct}%): Breakeven+Fee terkunci. Agent menahan posisi hingga minimal +${minTpFloorPct}% (Target Keputusan Dinamis Agent: +${agentDecidedTpRatioPct}% / ∞ Tanpa Batas Atas).`,
+      reason: `RIDE TO TP +${minTpFloorPct}% (Saat ini +${pos.unrealizedPnlPct}%): Breakeven+Fee guard aktif. Target dinamis Agent: +${agentDecidedTpRatioPct}% (Trailing Profit-Lock siap aktif bila momentum melemah).`,
     };
   }
 
-  // 2) Profit is >= +50% (minTpFloorPct): Check if Agent decides to let it run uncapped vs lock Take Profit at this ratio
+  // 2) Profit >= minTpFloorPct: bank profit immediately if peak pulls back >= 12%, momentum cools (< 64), or dynamic target reached!
   const hasTrailingPullbackFromPeak =
-    pos.peakPnlPct >= minTpFloorPct + 8 && pos.unrealizedPnlPct <= pos.peakPnlPct * 0.92;
-  const hasMomentumExhaustionAtHighProfit = compositeScore < 60;
+    pos.peakPnlPct >= minTpFloorPct + 3 && pos.unrealizedPnlPct <= pos.peakPnlPct * 0.88;
+  const hasMomentumExhaustionAtHighProfit = compositeScore < 64;
   const hasReachedAgentDecidedRatio =
     pos.unrealizedPnlPct >= agentDecidedTpRatioPct && compositeScore < 78;
 
@@ -613,11 +644,11 @@ export function evaluateActivePositionDeepIntelligence(
       sentimentScore,
       compositeScore,
       marketSentimentLabel,
-      reason: `KEPUTUSAN AGENT TAKE PROFIT (+${pos.unrealizedPnlPct}% >= Min +${minTpFloorPct}%): Rasio optimal Agent (+${agentDecidedTpRatioPct}%) / absorpsi pucuk tercapai. Mengunci profit besar langsung ke Brankas Hot Wallet!`,
+      reason: `AUTO TAKE PROFIT (+${pos.unrealizedPnlPct}% >= Target +${minTpFloorPct}%): Rasio optimal tercapai / puncak mulai terserap (Score ${compositeScore}/100). Mengunci profit langsung ke wallet eksekusi!`,
     };
   }
 
-  // 3) Above +50% and institutional momentum is still expanding strongly -> Uncapped Runner (No Maximum Limit!)
+  // 3) Above target TP and institutional momentum is still surging strongly -> Trail higher!
   return {
     decision: 'RIDE_PROFIT_TRAIL',
     orderbookDefenseScore,
@@ -625,7 +656,7 @@ export function evaluateActivePositionDeepIntelligence(
     sentimentScore,
     compositeScore,
     marketSentimentLabel,
-    reason: `UNCAPPED PROFIT RUNNER (+${pos.unrealizedPnlPct}% >= Min +${minTpFloorPct}%): Orderbook Defense ${orderbookDefenseScore}/100 & Whale Flow ${whaleConvictionScore}/100 masih ekspansif. Agent menunda TP & mengejar rasio +${agentDecidedTpRatioPct}% (Tanpa Batas Maksimal / ∞)!`,
+    reason: `TRAILING PROFIT RUNNER (+${pos.unrealizedPnlPct}% >= Target +${minTpFloorPct}%): Orderbook (${orderbookDefenseScore}/100) & Whale (${whaleConvictionScore}/100) masih kuat. Agent mengerek trailing floor & mengejar +${agentDecidedTpRatioPct}%!`,
   };
 }
 

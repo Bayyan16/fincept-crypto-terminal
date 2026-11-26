@@ -8,6 +8,22 @@ import type {
 
 export const EXCHANGE_PRIORITY_ORDER: readonly ExchangeId[];
 
+export interface BalanceTieredPositionPolicy {
+  tier: 'MICRO_UNDER_10' | 'STARTER_10_TO_49' | 'GROWTH_50_TO_99' | 'SCALE_100_PLUS';
+  tierLabel: string;
+  maxPositions: number;
+  maxLeverage: number;
+  perSlotMarginFraction: number;
+  recommendedTpPct: number;
+  recommendedSlPct: number;
+  recommendedBePct: number;
+  nextTierUsd: number | null;
+}
+
+export function computeBalanceTieredPositionPolicy(equityUsd: number): BalanceTieredPositionPolicy;
+
+export function estimateVenueMinNotionalUsd(exchange: ExchangeId, symbol?: string): number;
+
 export function hasHyperliquidAgentPrivateKey(wallet: WalletConnectionState | undefined): boolean;
 
 export function hasRealWalletCredentials(wallet: WalletConnectionState | undefined): boolean;
@@ -60,6 +76,7 @@ export function computeSafeAutonomousRealOrderSizeUsd(params: {
   verifiedReal?: boolean;
   marketType?: MarketType;
   leverage?: number;
+  applyBalanceTierCap?: boolean;
 }): { ok: boolean; sizeUsd: number; error?: string };
 
 export function computeUnifiedPortfolioEquityUsd(params: {

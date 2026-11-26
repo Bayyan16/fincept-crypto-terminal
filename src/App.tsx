@@ -51,8 +51,10 @@ import {
   resolveRecordExecutionEnv,
 } from '../backend/positionMath.mjs';
 import {
+  computeBalanceTieredPositionPolicy,
   computeSafeAutonomousRealOrderSizeUsd,
   computeUnifiedPortfolioEquityUsd,
+  estimateVenueMinNotionalUsd,
   isWalletReadyForRealExecution,
   resolveExecutableRealVenue,
 } from '../backend/realExecutionRouter.mjs';
@@ -451,6 +453,29 @@ export function App({
   }, [markets, selectedSymbol, customDeskPool]);
 
   const isRealExecutionEnv = executionEnv !== 'PAPER_SANDBOX';
+  const useTestnetActive = executionEnv === 'EXCHANGE_TESTNET';
+  const totalPortfolioEquityUsd = computeUnifiedPortfolioEquityUsd({ wallets, executionEnv });
+  const envVerifiedRealWallets = useMemo(
+    () =>
+      wallets.filter(
+        (w) =>
+          w.connected &&
+          w.verifiedReal &&
+          (typeof w.credentials?.useTestnet !== 'boolean' ||
+            w.credentials.useTestnet === useTestnetActive)
+      ),
+    [wallets, useTestnetActive]
+  );
+  const balanceTierPolicy = useMemo(
+    () => computeBalanceTieredPositionPolicy(totalPortfolioEquityUsd),
+    [totalPortfolioEquityUsd]
+  );
+  // Dynamic Balance-Tiered Max Positions in Testnet/Real when a verified wallet is active:
+  // Equity < $10 (e.g. $8 Binance Futures) => MAX 1 | $10-$49 => MAX 1 | $50-$99 => MAX 2 | >= $100 => MAX 3
+  const effectiveMaxConcurrentPositions =
+    isRealExecutionEnv && envVerifiedRealWallets.length > 0
+      ? Math.min(maxConcurrentPositions, balanceTierPolicy.maxPositions)
+      : maxConcurrentPositions;
 
   // Strict 3-way environment isolation: Paper Sandbox, Exchange Testnet, and Real Mainnet never overlap!
   const envPositions = useMemo(
@@ -1512,16 +1537,19 @@ export function App({
       (p) => resolveRecordExecutionEnv(p) === executionEnv
     );
     const alreadyOpenSameSymbol = liveModePositions.some((p) => p.symbol === targetPair.symbol);
-    const maxManualSlots = Math.max(maxConcurrentPositions, 8);
-    if (!isExplicitUserEntry && !alreadyOpenSameSymbol && liveModePositions.length >= maxConcurrentPositions) {
+    const maxManualSlots =
+      isReal && envVerifiedRealWallets.length > 0
+        ? effectiveMaxConcurrentPositions
+        : Math.max(effectiveMaxConcurrentPositions, 8);
+    if (!isExplicitUserEntry && !alreadyOpenSameSymbol && liveModePositions.length >= effectiveMaxConcurrentPositions) {
       setCommandFeedback(
-        `[MAX ${maxConcurrentPositions} LOW-RISK SLOTS FULL] Tutup / Take Profit salah satu posisi terlebih dahulu untuk menjaga batas risiko <= ${maxConcurrentPositions} posisi.`
+        `[TIER LIMIT • ${balanceTierPolicy.tierLabel}] Maksimal ${effectiveMaxConcurrentPositions} posisi aktif untuk saldo $${totalPortfolioEquityUsd.toFixed(2)}. Tutup / Take Profit posisi aktif terlebih dahulu.`
       );
       return false;
     }
     if (isExplicitUserEntry && !alreadyOpenSameSymbol && liveModePositions.length >= maxManualSlots) {
       setCommandFeedback(
-        `[MAX ${maxManualSlots} POSISI AKTIF TERCAPAI] Tutup salah satu posisi terlebih dahulu sebelum menambah posisi baru.`
+        `[MAX ${maxManualSlots} POSISI AKTIF TERCAPAI${isReal ? ` • ${balanceTierPolicy.tierLabel}` : ''}] Tutup salah satu posisi terlebih dahulu sebelum menambah posisi baru.`
       );
       return false;
     }
@@ -1791,7 +1819,7 @@ export function App({
     const modePositions = positionsRef.current.filter(
       (p) => resolveRecordExecutionEnv(p) === executionEnv
     );
-    if (circuitBreakerTriggered || modePositions.length >= maxConcurrentPositions) return false;
+    if (circuitBreakerTriggered || modePositions.length >= effectiveMaxConcurrentPositions) return false;
 
     // In EXCHANGE_TESTNET / REAL_MAINNET, select the highest-conviction brain candidate that has
     // an actually connected, env-matched real wallet supporting the signal's BUY/SELL + Futures/Spot mode,
@@ -1872,7 +1900,10 @@ export function App({
                 : p.sizeUsd / Math.max(1, p.leverage || 1)),
             0
           );
-        const effLev = venueRes.marketType === 'SPOT' ? 1 : cand.recommendedLeverage;
+        const effLev =
+          venueRes.marketType === 'SPOT'
+            ? 1
+            : Math.min(cand.recommendedLeverage, balanceTierPolicy.maxLeverage);
         const safeSizing = computeSafeAutonomousRealOrderSizeUsd({
           requestedSizeUsd: cand.recommendedSizeUsd,
           availableUsd: venueRes.availableUsd,
@@ -1880,9 +1911,15 @@ export function App({
           verifiedReal: venueRes.wallet.verifiedReal,
           marketType: venueRes.marketType,
           leverage: effLev,
+          applyBalanceTierCap: true,
         });
         if (!safeSizing.ok) {
           lastSkipReason = safeSizing.error || null;
+          continue;
+        }
+        const venueMinNotional = estimateVenueMinNotionalUsd(venueRes.exchange, cand.market.symbol);
+        if (safeSizing.sizeUsd < venueMinNotional) {
+          lastSkipReason = `${cand.market.symbol} memerlukan minNotional $${venueMinNotional} di ${venueRes.exchange} (> ukuran aman $${safeSizing.sizeUsd} untuk saldo $${venueRes.availableUsd.toFixed(2)}) — memilih altcoin likuid yang sesuai.`;
           continue;
         }
 
@@ -2048,13 +2085,13 @@ export function App({
     .map((w) => `${w.id}:${w.verifiedReal ? '1' : '0'}:${w.credentials?.useTestnet ? 'T' : 'M'}`)
     .join('|');
 
-  // Continuous Autonomous Post-TP Hunter Loop: Whenever mode slots < maxConcurrentPositions (3) & Auto-Agent is ON.
-  // Isolated per executionEnv (Paper vs Real) & auto-arms immediately when a real wallet is verified.
+  // Continuous Autonomous Post-TP Hunter Loop: Whenever mode slots < effectiveMaxConcurrentPositions & Auto-Agent is ON.
+  // Isolated per executionEnv (Paper vs Testnet vs Real) & enforces Balance-Tiered Caps (<$10/$50/$100).
   useEffect(() => {
     if (
       !agentAutonomousEnabled ||
       circuitBreakerTriggered ||
-      activeModePositionsCount >= maxConcurrentPositions ||
+      activeModePositionsCount >= effectiveMaxConcurrentPositions ||
       (isRealExecutionEnv && !readyRealVenuesKey)
     ) {
       setHunterCountdownSec(null);
@@ -2093,13 +2130,29 @@ export function App({
     agentAutonomousEnabled,
     circuitBreakerTriggered,
     activeModePositionsCount,
-    maxConcurrentPositions,
+    effectiveMaxConcurrentPositions,
     lastClosedSymbol,
     hunterRetryTick,
     executionEnv,
     isRealExecutionEnv,
     readyRealVenuesKey,
   ]);
+
+  // 4C. Periodic Live Binance Futures / Real-Wallet Profit & Equity Auto-Sync (every 15s in Testnet/Real)
+  // Ensures realized profits on Binance Futures / Hyperliquid automatically reflect in live wallet equity
+  // and dynamically unlock Tier 2 ($50 => Max 2 Pos) & Tier 3 ($100+ => Max 3 Pos) without manual reload!
+  useEffect(() => {
+    if (!isRealExecutionEnv || envVerifiedRealWallets.length === 0) return;
+    const syncLiveWallets = () => {
+      for (const w of envVerifiedRealWallets) {
+        if (w.credentials) {
+          refreshRealWalletBalance(w, useTestnetActive);
+        }
+      }
+    };
+    const timer = setInterval(syncLiveWallets, 15_000);
+    return () => clearInterval(timer);
+  }, [isRealExecutionEnv, useTestnetActive, readyRealVenuesKey]);
 
   const handleScratchOrClosePosition = async (
     pos: AgentPosition,
@@ -2342,9 +2395,11 @@ export function App({
     const isSettledToWallet = autoDirectHotWalletSettle && finalPnlUsd > 0;
 
     if (pos.isRealMoney) {
-      // Never mutate verified real wallet balance locally; refresh authoritative equity from the exchange/blockchain!
+      // Never mutate verified real wallet balance locally; refresh authoritative equity immediately + 2s follow-up
+      // so Binance Futures settled realized USDT profit is guaranteed to appear live in the wallet balance!
       if (owningRealWallet?.credentials) {
         refreshRealWalletBalance(owningRealWallet, posUseTestnet);
+        setTimeout(() => refreshRealWalletBalance(owningRealWallet, posUseTestnet), 2000);
       }
     } else if (isSettledToWallet && settled.allowLocalBalanceMutation) {
       setWallets((prevWallets) => {
@@ -2448,8 +2503,19 @@ export function App({
     if (nextEnv !== 'PAPER_SANDBOX') {
       setAgentAutonomousEnabled(false);
       const useTestnetTarget = nextEnv === 'EXCHANGE_TESTNET';
+      const nextEq = computeUnifiedPortfolioEquityUsd({ wallets, executionEnv: nextEnv });
+      const nextTier = computeBalanceTieredPositionPolicy(nextEq);
+      // Auto-calibrate sharp realistic TP / Cut-Loss / Leverage defaults when transitioning from Paper (+50% demo) to live trading
+      if (autoTakeProfitTriggerPct === 50) {
+        setAutoTakeProfitTriggerPct(nextTier.recommendedTpPct);
+        setMaxMicroLossScratchPct(nextTier.recommendedSlPct);
+        setAutoBreakevenTriggerPct(nextTier.recommendedBePct);
+      }
+      if (nextEq > 0 && nextEq < 50 && leverageInput > nextTier.maxLeverage) {
+        setLeverageInput(nextTier.maxLeverage);
+      }
       setCommandFeedback(
-        `🛡️ Beralih ke ${nextEnv}: AUTO-AGENT dinonaktifkan otomatis untuk keamanan. Periksa wallet & posisi lalu aktifkan AUTO-AGENT secara eksplisit bila siap.`
+        `🛡️ Beralih ke ${nextEnv}: AUTO-AGENT dinonaktifkan otomatis untuk keamanan. Tier Saldo: ${nextTier.tierLabel}${nextEq > 0 ? ` ($${nextEq.toFixed(2)})` : ''}. Aktifkan AUTO-AGENT secara eksplisit bila siap.`
       );
       const seenHlAddrs = new Set<string>();
       const reconcilableWallets = wallets.filter((w) => {
@@ -2935,7 +3001,6 @@ export function App({
   const totalRealizedPnl = envClosedTrades.reduce((acc, c) => acc + c.realizedPnlUsd, 0);
   const connectedWalletsCount = wallets.filter((w) => w.connected).length;
   const verifiedRealCount = wallets.filter((w) => w.verifiedReal).length;
-  const totalPortfolioEquityUsd = computeUnifiedPortfolioEquityUsd({ wallets, executionEnv });
   const trustWalletState = wallets.find((w) => w.id === 'trust') || wallets[0];
   const phantomWalletState = wallets.find((w) => w.id === 'phantom');
   const activeProfileAddress =
@@ -4095,14 +4160,23 @@ export function App({
                 </div>
 
                 <div className="flex flex-wrap items-center justify-between px-3 py-1 bg-[#0B1018] border-b border-[#1E2736] text-[10.5px] gap-2 shrink-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className="text-[#00E5FF] font-extrabold uppercase">
-                      ACTIVE POSITIONS [{executionEnv === 'REAL_MAINNET' ? '🔥 REAL MONEY' : executionEnv === 'EXCHANGE_TESTNET' ? 'TESTNET' : 'PAPER'}] ({envPositions.length}/{maxConcurrentPositions} SLOTS)
+                      ACTIVE POSITIONS [{executionEnv === 'REAL_MAINNET' ? '🔥 REAL MONEY' : executionEnv === 'EXCHANGE_TESTNET' ? 'TESTNET' : 'PAPER'}] ({envPositions.length}/{effectiveMaxConcurrentPositions} SLOTS)
                     </span>
-                    {envPositions.length < maxConcurrentPositions && agentAutonomousEnabled && nextLowRiskCandidate ? (
+                    {isRealExecutionEnv && envVerifiedRealWallets.length > 0 && (
+                      <span
+                        data-testid="balance-tier-badge"
+                        className="px-1.5 py-0.5 bg-[#FF9F1C]/15 border border-[#FF9F1C] text-[#FF9F1C] text-[9.5px] font-extrabold font-mono"
+                      >
+                        {balanceTierPolicy.tierLabel} • LIVE ${totalPortfolioEquityUsd.toFixed(2)}
+                        {balanceTierPolicy.nextTierUsd ? ` → NEXT TIER $${balanceTierPolicy.nextTierUsd}` : ' (MAX TIER)'}
+                      </span>
+                    )}
+                    {envPositions.length < effectiveMaxConcurrentPositions && agentAutonomousEnabled && nextLowRiskCandidate ? (
                       <span className="px-2 py-0.5 bg-[#00E5FF]/15 border border-[#00E5FF] text-[#00E5FF] text-[9.5px] font-extrabold animate-pulse">
                         🤖 POST-TP HUNTER: Analyzing {nextLowRiskCandidate.market.symbol} (Low-Risk{' '}
-                        {nextLowRiskCandidate.lowRiskScore}/100, {nextLowRiskCandidate.recommendedLeverage}x) — Auto-Entry in{' '}
+                        {nextLowRiskCandidate.lowRiskScore}/100, {Math.min(nextLowRiskCandidate.recommendedLeverage, balanceTierPolicy.maxLeverage)}x) — Auto-Entry in{' '}
                         {hunterCountdownSec ?? 3}s...
                       </span>
                     ) : (
@@ -4112,13 +4186,13 @@ export function App({
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    {envPositions.length < maxConcurrentPositions && nextLowRiskCandidate && (
+                    {envPositions.length < effectiveMaxConcurrentPositions && nextLowRiskCandidate && (
                       <button
                         onClick={executeAutonomousLowRiskSlot}
                         className="px-2 py-0.5 bg-[#FF9F1C] hover:bg-[#ffb347] text-black font-extrabold text-[9.5px]"
                         title="Eksekusi instan kandidat risiko terendah untuk mengisi slot kosong"
                       >
-                        ⚡ FILL SLOT #{envPositions.length + 1}/{maxConcurrentPositions} ({nextLowRiskCandidate.market.symbol})
+                        ⚡ FILL SLOT #{envPositions.length + 1}/{effectiveMaxConcurrentPositions} ({nextLowRiskCandidate.market.symbol})
                       </button>
                     )}
                     <span className="font-extrabold mr-1">
@@ -5234,10 +5308,10 @@ export function App({
                   <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#00E5FF]/50">
                     <div className="min-w-0">
                       <div className="font-bold text-[#00E5FF] truncate">
-                        6. Post-TP Continuous Hunter (4x–8x, Max 3 Pos)
+                        6. Balance-Tiered Auto-Hunter (&lt;$50: 1 Pos • $50+: 2 Pos • $100+: 3 Pos)
                       </div>
                       <div className="text-[9.5px] text-[#94A3B8] leading-snug">
-                        Saat posisi ditutup, Agent memindai market & membuka posisi baru berisiko terendah.
+                        Otomatis membatasi posisi aktif sesuai saldo riil ({balanceTierPolicy.tierLabel}; aktif: maks {effectiveMaxConcurrentPositions} pos).
                       </div>
                     </div>
                     <select
@@ -5254,20 +5328,20 @@ export function App({
                   <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#FF9F1C]/50">
                     <div className="min-w-0">
                       <div className="font-bold text-[#FF9F1C] truncate">
-                        7. Min Take Profit (&ge; 50%) &amp; Uncapped Agent Exit (Max: &infin;)
+                        7. Sharp Take Profit Floor (% ROE) &amp; Trailing Uncapped Runner
                       </div>
                       <div className="text-[9.5px] text-[#94A3B8] leading-snug">
-                        Rasio TP minimal +50%, maksimal TANPA BATAS (&infin;) hingga Agent memutuskan rasio TP optimal.
+                        Target TP adaptif (rekomendasi mikro &lt;$50: +16%–+18% dengan Trailing Profit-Lock otomatis).
                       </div>
                     </div>
                     <div className="flex items-center gap-1 shrink-0">
                       <input
                         type="number"
-                        min={50}
-                        step="5"
+                        min={5}
+                        step="1"
                         value={autoTakeProfitTriggerPct}
                         onChange={(e) =>
-                          setAutoTakeProfitTriggerPct(Math.max(50, Number(e.target.value) || 50))
+                          setAutoTakeProfitTriggerPct(Math.max(5, Number(e.target.value) || 16))
                         }
                         className="w-16 px-1.5 py-1 bg-[#0D131E] border border-[#FF9F1C] text-[#FF9F1C] font-extrabold text-right shrink-0"
                       />
