@@ -2198,7 +2198,7 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
       true
     ),
     fetchJsonWithTimeout(
-      `${binFuturesBase}/fapi/v1/depth?symbol=${encodeURIComponent(resolvedBinSymbol)}&limit=20`,
+      `${binFuturesBase}/fapi/v1/depth?symbol=${encodeURIComponent(resolvedBinSymbol)}&limit=50`,
       {},
       2600,
       true
@@ -2206,14 +2206,14 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
     fetchJsonWithTimeout(
       `${bybitBase}/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(
         resolvedBinSymbol
-      )}&limit=20`,
+      )}&limit=50`,
       {},
       2600,
       true
     ),
     !isKBookCoin
       ? fetchJsonWithTimeout(
-          `https://www.okx.com/api/v5/market/books?instId=${encodeURIComponent(okxInstId)}&sz=15`,
+          `https://www.okx.com/api/v5/market/books?instId=${encodeURIComponent(okxInstId)}&sz=40`,
           {},
           2600,
           true
@@ -5528,6 +5528,20 @@ export async function getAllExchangesConfigStatus(useTestnet = false) {
 let cachedBbgRssItems = [];
 let lastBbgRssFetchMs = 0;
 
+export function classifyMacroNewsSentiment(headline, rawDesc = '') {
+  const bullWords =
+    /\b(surge|surges|surging|boom|rise|rises|rising|rally|rallies|gain|gains|record|inflow|inflows|bull|bullish|expand|expands|grow|growth|approve|approved|approval|buy|buys|buying|soar|soars|jump|jumps|launch|launches|adopt|adoption|breakout|outperform|accumulate|accumulation|tops|climb|climbs|climbing|comeback|rebound|rebounds|recover|recovers|recovery)\b/i;
+  const bearWords =
+    /\b(loss|losses|drop|drops|fall|falls|falling|hike|hikes|stress|risk-off|downside risk|systemic risk|pushback|crash|crashes|dump|dumps|hack|hacked|lawsuit|bear|bearish|sell|sells|selling|selloff|sell-off|slump|slumps|fear|warn|warns|warning|liquidat\w*|outflow|outflows|freeze|freezes|frozen|seize|seizes|seized|ban|bans|banned|crackdown|sanction|sanctions|restrict|restrictions|enforcement|arrest|arrested|fraud|anti-laundering|aml|fine|fined|penalty|probe|investigat\w*|subpoena|plunge|plunges|tumble|tumbles|decline|declines|bankrupt\w*|insolven\w*|exploit|breach|theft|stolen|delist|delisted|bleed|bleeding|rout|hammered|squeezed|recession|default)\b/i;
+  const h = String(headline || '');
+  const combined = `${h} ${String(rawDesc || '')}`;
+  const headlineBear = bearWords.test(h);
+  const headlineBull = bullWords.test(h);
+  const isBear = headlineBear || (bearWords.test(combined) && !headlineBull);
+  const isBull = !isBear && (headlineBull || bullWords.test(combined));
+  return isBear ? 'BEARISH' : isBull ? 'BULLISH' : 'NEUTRAL';
+}
+
 async function fetchLiveBloombergRssItems(hlAssets, nowStr) {
   const now = Date.now();
   if (cachedBbgRssItems.length > 0 && now - lastBbgRssFetchMs < 60_000) {
@@ -5556,8 +5570,6 @@ async function fetchLiveBloombergRssItems(hlAssets, nowStr) {
   ];
 
   const items = [];
-  const bullWords = /surge|boom|rise|rally|gain|record|high|inflow|bull|expand|lead|grow|approve|buy|soar|jump|launch/i;
-  const bearWords = /loss|drop|fall|low|hike|stress|risk|pushback|crash|dump|hack|lawsuit|bear|sell|slump|fear|warn|liquidat|outflow/i;
   const cryptoOrMacroRelevanceRegex =
     /\b(crypto|bitcoin|btc|ether|ethereum|eth|solana|sol|hyperliquid|hype|perps|perpetual|xrp|ripple|bnb|doge|cardano|avax|chainlink|sui|ton|polkadot|near|aptos|arbitrum|optimism|bittensor|tao|render|pepe|bonk|shib|aave|uniswap|ondo|pendle|ethena|stablecoin|usdc|usdt|defi|token|blockchain|etf|sec|fed|federal reserve|fomc|interest rate|inflation|cpi|treasury|dollar|dxy|tariff|nvidia|ai|gold)\b/i;
 
@@ -5628,9 +5640,7 @@ async function fetchLiveBloombergRssItems(hlAssets, nowStr) {
             return;
           }
 
-          const isBear = bearWords.test(textCombined) && !bullWords.test(headline);
-          const isBull = bullWords.test(textCombined) && !isBear;
-          const sentiment = isBear ? 'BEARISH' : isBull ? 'BULLISH' : 'NEUTRAL';
+          const sentiment = classifyMacroNewsSentiment(headline, rawDesc);
 
           const affectedAssets = [];
           for (const rule of tickerRegexMap) {

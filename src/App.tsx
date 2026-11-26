@@ -477,6 +477,41 @@ export function App({
       ? Math.min(maxConcurrentPositions, balanceTierPolicy.maxPositions)
       : maxConcurrentPositions;
 
+  // Auto-calibrate micro-capital (<$100) risk controls when a verified real/testnet wallet loads or updates
+  // so an $8 Binance Futures account never sits on paper defaults ($500 order size / $100 daily drawdown).
+  useEffect(() => {
+    if (!isRealExecutionEnv || envVerifiedRealWallets.length === 0) return;
+    if (!(totalPortfolioEquityUsd > 0 && totalPortfolioEquityUsd < 100)) return;
+    const tier = computeBalanceTieredPositionPolicy(totalPortfolioEquityUsd);
+    if (leverageInput > tier.maxLeverage) {
+      setLeverageInput(tier.maxLeverage);
+    }
+    const safeDefaultOrderUsd = Math.max(
+      10,
+      Math.floor(totalPortfolioEquityUsd * tier.perSlotMarginFraction * tier.maxLeverage)
+    );
+    if (orderSizeUsdInput > totalPortfolioEquityUsd * tier.maxLeverage) {
+      setOrderSizeUsdInput(safeDefaultOrderUsd);
+    }
+    const safeDailyStopUsd = Number(Math.max(1.5, totalPortfolioEquityUsd * 0.30).toFixed(2));
+    if (maxDailyDrawdownUsd > totalPortfolioEquityUsd * 0.6) {
+      setMaxDailyDrawdownUsd(safeDailyStopUsd);
+    }
+    if (autoTakeProfitTriggerPct === 50) {
+      setAutoTakeProfitTriggerPct(tier.recommendedTpPct);
+      setMaxMicroLossScratchPct(tier.recommendedSlPct);
+      setAutoBreakevenTriggerPct(tier.recommendedBePct);
+    }
+  }, [
+    isRealExecutionEnv,
+    envVerifiedRealWallets.length,
+    totalPortfolioEquityUsd,
+    leverageInput,
+    orderSizeUsdInput,
+    maxDailyDrawdownUsd,
+    autoTakeProfitTriggerPct,
+  ]);
+
   // Strict 3-way environment isolation: Paper Sandbox, Exchange Testnet, and Real Mainnet never overlap!
   const envPositions = useMemo(
     () => positions.filter((p) => resolveRecordExecutionEnv(p) === executionEnv),
@@ -2505,14 +2540,27 @@ export function App({
       const useTestnetTarget = nextEnv === 'EXCHANGE_TESTNET';
       const nextEq = computeUnifiedPortfolioEquityUsd({ wallets, executionEnv: nextEnv });
       const nextTier = computeBalanceTieredPositionPolicy(nextEq);
-      // Auto-calibrate sharp realistic TP / Cut-Loss / Leverage defaults when transitioning from Paper (+50% demo) to live trading
+      // Auto-calibrate sharp realistic TP / Cut-Loss / Order Size / Daily Drawdown for live account equity (e.g. $8 micro Futures)
       if (autoTakeProfitTriggerPct === 50) {
         setAutoTakeProfitTriggerPct(nextTier.recommendedTpPct);
         setMaxMicroLossScratchPct(nextTier.recommendedSlPct);
         setAutoBreakevenTriggerPct(nextTier.recommendedBePct);
       }
-      if (nextEq > 0 && nextEq < 50 && leverageInput > nextTier.maxLeverage) {
-        setLeverageInput(nextTier.maxLeverage);
+      if (nextEq > 0 && nextEq < 100) {
+        if (leverageInput > nextTier.maxLeverage) {
+          setLeverageInput(nextTier.maxLeverage);
+        }
+        const safeDefaultOrderUsd = Math.max(
+          10,
+          Math.floor(nextEq * nextTier.perSlotMarginFraction * nextTier.maxLeverage)
+        );
+        if (orderSizeUsdInput > nextEq * nextTier.maxLeverage) {
+          setOrderSizeUsdInput(safeDefaultOrderUsd);
+        }
+        const safeDailyStopUsd = Number(Math.max(1.5, nextEq * 0.30).toFixed(2));
+        if (maxDailyDrawdownUsd > nextEq * 0.6) {
+          setMaxDailyDrawdownUsd(safeDailyStopUsd);
+        }
       }
       setCommandFeedback(
         `🛡️ Beralih ke ${nextEnv}: AUTO-AGENT dinonaktifkan otomatis untuk keamanan. Tier Saldo: ${nextTier.tierLabel}${nextEq > 0 ? ` ($${nextEq.toFixed(2)})` : ''}. Aktifkan AUTO-AGENT secara eksplisit bila siap.`

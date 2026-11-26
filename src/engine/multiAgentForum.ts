@@ -890,7 +890,7 @@ export function runMultiAgentForumConsensus(
     specialty: 'Price Action Structure (BOS/CHoCH, Key S/R), EMA 20/50/200, RSI-14, MACD, Bollinger',
     vote: taVoteDir,
     score: ta.taScore,
-    credibilityOrAccuracyPct: Math.min(99, Math.max(84, ta.taScore)),
+    credibilityOrAccuracyPct: taVoteDir === 'WAIT' ? ta.taScore : Math.min(99, Math.max(70, ta.taScore)),
     headline: `${ta.structureLabel} | ${ta.emaAlignmentLabel}`,
     rationale: `Harga $${formatSmartPrice(pair.price).toLocaleString()} berada di antara Support Kunci S1 $${ta.support1.toLocaleString()} (-${ta.distanceToSupportPct}%) & Resistance R1 $${ta.resistance1.toLocaleString()} (+${ta.distanceToResistancePct}%). RSI(14)=${ta.rsi14} (${ta.rsiState.replace(
       /_/g,
@@ -1066,70 +1066,78 @@ export function runMultiAgentForumConsensus(
         ? `RSI(14) berada di zona jenuh ekstrem (${ta.rsi14}); Agent 4 menahan entry untuk mencegah beli di pucuk / jual di dasar.`
         : null;
 
+  // Require Technical Analysis (Agent 2) confirmation before Agent 4 approves directional execution!
+  const taConfirmsDirection = taVoteDir === majoritySide;
   const arbiterVote: SpecialistAgentVote['vote'] = hasVeto
     ? 'VETO'
-    : longCount >= 2 && longCount > shortCount
-      ? 'LONG'
-      : shortCount >= 2 && shortCount > longCount
-        ? 'SHORT'
-        : 'WAIT';
+    : !taConfirmsDirection
+      ? 'WAIT'
+      : longCount >= 2 && longCount > shortCount
+        ? 'LONG'
+        : shortCount >= 2 && shortCount > longCount
+          ? 'SHORT'
+          : 'WAIT';
 
   const precisionScore = Math.round(
     Math.max(
-      60,
+      50,
       Math.min(
         99,
         pair.liquidityScore * 0.35 +
           ta.taScore * 0.3 +
           whale.whaleScore * 0.35 -
-          spreadPenalty
+          spreadPenalty -
+          (taConfirmsDirection ? 0 : 12)
       )
     )
   );
 
+  const prelimAlignedCount = majoritySide === 'LONG' ? longCount : shortCount;
+  const effectiveQuorumCount = arbiterVote === majoritySide ? prelimAlignedCount + 1 : prelimAlignedCount;
+
   const agent4Vote: SpecialistAgentVote = {
     agentId: 'EXECUTION_PRECISION',
     agentName: 'AGENT 4 • EXECUTION PRECISION & RISK ARBITER',
-    badge: 'MIN TP +50% → ∞ UNCAPPED',
-    specialty: 'Multi-Agent Quorum, Min TP >= +50% ROI, Uncapped Dynamic Exit (∞) & Breakeven+Fee Lock',
+    badge: 'SHARP TA QUORUM • TRAILING TP',
+    specialty: 'Multi-Agent Quorum, Mandatory TA Confirmation, Trailing Profit-Lock & Breakeven+Fee Lock',
     vote: arbiterVote,
     score: precisionScore,
     credibilityOrAccuracyPct: precisionScore,
     headline: hasVeto
       ? `VETO GUARD ACTIVE: ${vetoReason}`
-      : `VERIFIED ${majoritySide} SETUP | Entry $${entryPrice.toLocaleString()} • Min TP1 (+50%) $${takeProfit1.toLocaleString()} • Uncapped TP2 (+${Math.round(
-          dynamicUncappedRoiDecimal * 100
-        )}%/∞) $${takeProfit2.toLocaleString()}`,
+      : arbiterVote === 'WAIT'
+        ? `STANDBY / WAIT (${effectiveQuorumCount}/4) — Menunggu Konfirmasi Analisa Teknikal (Agent 2: ${taVoteDir})`
+        : `VERIFIED ${majoritySide} SETUP | Entry $${entryPrice.toLocaleString()} • SL $${stopLossPrice.toLocaleString()} • Target $${takeProfit1.toLocaleString()}`,
     rationale: hasVeto
       ? vetoReason!
-      : `Konsensus forum tercapai (${
-          longCount >= 2 ? longCount + 1 : shortCount + 1
-        }/4 Agent). Rasio Take Profit minimal +50% ($${takeProfit1.toLocaleString()}) dengan maksimal TANPA BATAS (Target Dinamis Agent +${Math.round(
-          dynamicUncappedRoiDecimal * 100
-        )}% @ $${takeProfit2.toLocaleString()}, R:R 1:${riskRewardRatio}).`,
+      : arbiterVote === 'WAIT'
+        ? `Entry ditahan (${effectiveQuorumCount}/4 Agent): Analisa Teknikal (Agent 2 = ${taVoteDir}, ${ta.structureLabel}) belum searah dengan ${majoritySide}. Agent 4 melarang entry melawan struktur teknikal.`
+        : `Konsensus tajam tercapai (${effectiveQuorumCount}/4 Agent termasuk konfirmasi Teknikal Agent 2). Entry $${entryPrice.toLocaleString()} | SL $${stopLossPrice.toLocaleString()} | Target $${takeProfit1.toLocaleString()} (Trailing Runner aktif).`,
     metricsPillars: [
       `Entry Maker: $${entryPrice.toLocaleString()}`,
       `SL Struktur: $${stopLossPrice.toLocaleString()} • BE Lock: $${breakevenLockPrice.toLocaleString()}`,
-      `Min TP1 (+50%): $${takeProfit1.toLocaleString()} • Uncapped TP2 (∞): $${takeProfit2.toLocaleString()}`,
-      `R:R = 1:${riskRewardRatio} (Max TP Unlimited) • Spread ${orderbook.spreadBps} bps`,
+      `Target TP1: $${takeProfit1.toLocaleString()} • Runner TP2: $${takeProfit2.toLocaleString()}`,
+      `R:R = 1:${riskRewardRatio} • Spread ${orderbook.spreadBps} bps`,
     ],
     subSkills: [
       {
         name: 'Skill 4A • 4-Agent Quorum & Veto Guard',
         status: hasVeto
           ? 'VETO ACTIVE'
-          : `${longCount >= 2 ? longCount + 1 : shortCount + 1}/4 Quorum (${majoritySide})`,
-        score: hasVeto ? 65 : Math.min(99, Math.max(88, precisionScore + 2)),
+          : arbiterVote === 'WAIT'
+            ? `WAIT (${effectiveQuorumCount}/4 • TA=${taVoteDir})`
+            : `${effectiveQuorumCount}/4 Quorum (${majoritySide})`,
+        score: hasVeto ? 55 : arbiterVote === 'WAIT' ? 60 : Math.min(99, Math.max(88, precisionScore + 2)),
       },
       {
-        name: 'Skill 4B • Min +50% TP & Uncapped Trail (∞)',
-        status: `Min +50% → Agent Target +${Math.round(dynamicUncappedRoiDecimal * 100)}%/∞ (R:R 1:${riskRewardRatio})`,
-        score: Math.min(99, Math.max(86, precisionScore + 1)),
+        name: 'Skill 4B • Sharp TP & Trailing Profit-Lock',
+        status: `Target TP1 $${takeProfit1.toLocaleString()} (R:R 1:${riskRewardRatio})`,
+        score: Math.min(99, Math.max(75, precisionScore)),
       },
       {
         name: 'Skill 4C • Zero-Slop Breakeven+Fee Shield',
         status: `Maker +0.04% Lock @ $${breakevenLockPrice.toLocaleString()}`,
-        score: Math.min(99, Math.max(90, precisionScore + 3)),
+        score: Math.min(99, Math.max(85, precisionScore + 2)),
       },
     ],
     timestamp: timeStr,
@@ -1152,8 +1160,8 @@ export function runMultiAgentForumConsensus(
       label: '2. Struktur EMA 20 / 50 / 200 Mendukung',
       passed:
         majoritySide === 'LONG'
-          ? ta.price >= ta.ema20 * 0.996 || ta.ema20 >= ta.ema50
-          : ta.price <= ta.ema20 * 1.004 || ta.ema20 <= ta.ema50,
+          ? ta.emaAlignment === 'BULLISH_STACK' || ta.emaAlignment === 'GOLDEN_CROSS'
+          : ta.emaAlignment === 'BEARISH_STACK' || ta.emaAlignment === 'DEATH_CROSS',
       valueText: `${ta.emaAlignmentLabel.split('(')[0].trim()}`,
       agentOwner: 'TECHNICAL_ANALYST',
     },

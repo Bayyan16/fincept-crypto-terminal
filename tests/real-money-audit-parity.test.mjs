@@ -14,6 +14,7 @@ import {
 } from '../backend/realExecutionRouter.mjs';
 import {
   buildJupiterSwapTransaction,
+  classifyMacroNewsSentiment,
   executeRealExchangeOrder,
   verifyAndFetchAccountBalance,
 } from '../backend/exchangeGateway.mjs';
@@ -437,4 +438,35 @@ test('Balance-Tiered Position Policy (<$10 => 1 Pos, $50 => 2 Pos, $100+ => 3 Po
   // MinNotional filter: $28 notional cleanly trades SOL/DOGE/XRP ($5.50) and skips BTC ($100)
   assert.ok(microSize.sizeUsd >= estimateVenueMinNotionalUsd('BINANCE', 'SOL-PERP'));
   assert.ok(microSize.sizeUsd < estimateVenueMinNotionalUsd('BINANCE', 'BTC-PERP'));
+});
+
+test('Macro News Sentiment Classifier accurately flags regulatory freezes/breaches/bleeding as BEARISH and risk-asset rallies as BULLISH', () => {
+  assert.equal(
+    classifyMacroNewsSentiment('Spain gives anti-laundering unit power to freeze crypto accounts without a judge'),
+    'BEARISH'
+  );
+  assert.equal(
+    classifyMacroNewsSentiment("Standard Chartered's Zodia Custody suffers data breach, exposing client information"),
+    'BEARISH'
+  );
+  assert.equal(
+    classifyMacroNewsSentiment('Bitcoin ETFs are bleeding cash and the Fed is unlikely to help'),
+    'BEARISH'
+  );
+  assert.equal(
+    classifyMacroNewsSentiment('Bitcoin Miners Hammered Again as Price Rout Squeezes Margins'),
+    'BEARISH'
+  );
+  assert.equal(
+    classifyMacroNewsSentiment('Bitcoin Tops $60,000 as Risk Assets Rise in Holiday Trading'),
+    'BULLISH'
+  );
+  assert.equal(
+    classifyMacroNewsSentiment('Global Stocks Climb as AI Trade Mounts a Comeback: Markets Wrap'),
+    'BULLISH'
+  );
+  assert.equal(
+    classifyMacroNewsSentiment("Spain's De Cos Set to Succeed Lagarde as ECB President"),
+    'NEUTRAL'
+  );
 });
