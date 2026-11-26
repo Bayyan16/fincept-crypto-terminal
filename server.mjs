@@ -2,6 +2,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createManagedTestnetGateway } from './backend/managedTestnetGateway.mjs';
 import { handleGatewayApiRoute } from './backend/exchangeGateway.mjs';
 import {
   HttpRequestError,
@@ -16,6 +17,7 @@ const __dirname = path.dirname(__filename);
 const DIST_DIR = path.resolve(__dirname, 'dist');
 const PORT = Number(process.env.PORT || 8080);
 const HOST = process.env.HOST || '127.0.0.1';
+const managedTestnet = await createManagedTestnetGateway();
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -28,7 +30,12 @@ const MIME_TYPES = {
   '.ico': 'image/x-icon',
 };
 
-const server = http.createServer(async (req, res) => {
+const server = http.createServer((req, res) => {
+  void managedTestnet.middleware(req, res, () => serveRequest(req, res));
+});
+server.once('close', () => { void managedTestnet.close(); });
+
+async function serveRequest(req, res) {
   const originHeader = req.headers.origin;
   const allowedOrigin = resolveCorsOrigin(originHeader, undefined, req.headers.host);
   res.setHeader('Vary', 'Origin');
@@ -118,7 +125,7 @@ const server = http.createServer(async (req, res) => {
     res.writeHead(404, { 'Content-Type': 'text/plain; charset=utf-8' });
     res.end('Frontend build not found. Run "npm run build" first.');
   }
-});
+}
 
 server.listen(PORT, HOST, () => {
   console.log(
