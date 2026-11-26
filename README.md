@@ -91,8 +91,11 @@ Inject these variables into the server process with your local secret manager or
 |---|---|
 | `FINCEPT_ENABLE_BINANCE_TESTNET=1` | Enable the Testnet gateway |
 | `FINCEPT_TRADING_TOKEN` | Generate a random token with `openssl rand -hex 32`. Enter it in the Testnet panel to open the journal for the current browser session. |
-| `FINCEPT_BINANCE_SPOT_API_KEY` and `FINCEPT_BINANCE_SPOT_API_SECRET` | HMAC credentials from Binance Spot Testnet |
-| `FINCEPT_BINANCE_FUTURES_API_KEY` and `FINCEPT_BINANCE_FUTURES_API_SECRET` | HMAC credentials from Binance USD-M Futures Demo. Use an isolated one-way account. |
+| `FINCEPT_BINANCE_SPOT_API_KEY` and `FINCEPT_BINANCE_SPOT_API_SECRET` | HMAC credentials from Binance Demo Spot (`demo-api.binance.com`, auto-selected when unified with Futures key) or Spot Testnet (`testnet.binance.vision`) |
+| `FINCEPT_BINANCE_SPOT_ORIGIN` | Optional explicit Spot origin (`https://demo-api.binance.com` or `https://testnet.binance.vision`) |
+| `FINCEPT_BINANCE_FUTURES_API_KEY` and `FINCEPT_BINANCE_FUTURES_API_SECRET` | HMAC credentials from Binance USD-M Futures Demo (`demo-fapi.binance.com`). Use an isolated one-way account. |
+| `FINCEPT_FUTURES_LEVERAGE` | Target USD-M Futures leverage synced before every Futures entry (default `5`, range `1–20`). |
+| `FINCEPT_ALLOW_COEXIST_LEGACY` | Optional `1` to keep multi-venue `/api/execute/*` & `/api/account/*` active alongside Managed Testnet (default isolated `410`). |
 | `FINCEPT_TRADING_DB` | Journal path. Defaults to `.fincept/trading.sqlite`. Use a private directory and keep backups. The journal is bound to the configured API keys. |
 | `FINCEPT_TESTNET_SYMBOLS` | Allowed USDT symbols, comma separated. Default `BTCUSDT`. |
 | `FINCEPT_MAX_ORDER_USDT`, `FINCEPT_MAX_OPEN_SLOTS`, `FINCEPT_MAX_DAILY_LOSS_USDT` | Server limits with defaults of `100` USDT, `2` slots, and `25` USDT. Daily loss uses journal fills and supported commissions in UTC. |

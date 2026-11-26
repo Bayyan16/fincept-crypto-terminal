@@ -27,7 +27,11 @@ export async function createManagedTestnetGateway(trading) {
     let pathname;
     try { pathname = new URL(req.url || '/', 'http://localhost').pathname; }
     catch { return send(res, 400, { ok: false, error: 'URL tidak valid.' }); }
-    if (trading && (isUnder(pathname, '/api/execute') || isUnder(pathname, '/api/account'))) {
+    if (
+      trading &&
+      process.env.FINCEPT_ALLOW_COEXIST_LEGACY !== '1' &&
+      (isUnder(pathname, '/api/execute') || isUnder(pathname, '/api/account'))
+    ) {
       return send(res, 410, { ok: false, error: 'Gateway ini dikhususkan untuk Binance Testnet terkelola.' });
     }
     if (!isUnder(pathname, '/api/trading')) return next();

@@ -3,14 +3,25 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { closeSync, mkdirSync, openSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { makeBinanceTestnet, VenueError } from './binanceTestnet.mjs';
-import { closedCandleSignal, protectionLevels, protectionTrigger } from './testnetStrategy.mjs';
+import {
+  closedCandleSignal,
+  evaluateManagedEntryConfluence,
+  protectionLevels,
+  protectionTrigger,
+} from './testnetStrategy.mjs';
+import { getRealAggregatedOrderbook, getRealMarketSnapshot } from './exchangeGateway.mjs';
 
 const WORKING = new Set(['SUBMITTING', 'UNCONFIRMED', 'NEW', 'PARTIALLY_FILLED', 'PENDING_CANCEL']);
 const VENUE_STATUS = new Set(['NEW', 'PARTIALLY_FILLED', 'FILLED', 'CANCELED', 'PENDING_CANCEL', 'REJECTED', 'EXPIRED', 'EXPIRED_IN_MATCH']);
+const EXPLICIT_REJECT_CODES = new Set([
+  -1013, -1021, -1022, -1100, -1102, -1111, -1121,
+  -2010, -2015, -2019, -2022, -4164, -5022,
+]);
 const EPSILON = 1e-9;
 const ENTRY_LIFETIME_MS = 60_000;
 const EXIT_RETRY_MS = 15_000;
 const MAX_AUTO_CLOSE_ATTEMPTS = 3;
+const MAX_STOP_LOSS_ATTEMPTS = 6;
 const MAX_AUTOMATION_RULES = 4;
 const AUTOMATION_POLL_MS = 10_000;
 const instrumentKey = (item) => `${item.product}:${item.symbol}`;
@@ -104,7 +115,7 @@ function accounting(orders, today) {
   return { positions: [...positions.values()].filter((p) => Math.abs(p.quantity) > EPSILON), realized, complete };
 }
 
-export function createTradingJournal({ env = process.env, fetchImpl, now = Date.now, databasePath = env.FINCEPT_TRADING_DB || '.fincept/trading.sqlite', intervalMs = 3000 } = {}) {
+export function createTradingJournal({ env = process.env, fetchImpl, intelProvider, now = Date.now, databasePath = env.FINCEPT_TRADING_DB || '.fincept/trading.sqlite', intervalMs = 3000 } = {}) {
   const enabled = env.FINCEPT_ENABLE_BINANCE_TESTNET === '1';
   const token = env.FINCEPT_TRADING_TOKEN;
   if (!enabled) return null;
@@ -114,15 +125,24 @@ export function createTradingJournal({ env = process.env, fetchImpl, now = Date.
   const dailyLimit = riskNumber(env, 'FINCEPT_MAX_DAILY_LOSS_USDT', 25, 1000);
   const maxSlots = riskNumber(env, 'FINCEPT_MAX_OPEN_SLOTS', 2, 10);
   if (!Number.isInteger(maxSlots)) throw new Error('FINCEPT_MAX_OPEN_SLOTS harus bilangan bulat.');
+  const futuresLeverage = riskNumber(env, 'FINCEPT_FUTURES_LEVERAGE', 5, 20);
+  if (!Number.isInteger(futuresLeverage)) throw new Error('FINCEPT_FUTURES_LEVERAGE harus bilangan bulat.');
   const allowlisted = new Set((env.FINCEPT_TESTNET_SYMBOLS || 'BTCUSDT').split(',').map((symbol) => symbol.trim()));
   if ([...allowlisted].some((symbol) => !/^[A-Z0-9]{1,16}USDT$/.test(symbol))) throw new Error('FINCEPT_TESTNET_SYMBOLS tidak valid.');
   const venues = {};
   const fingerprints = {};
+  const spotKey = env.FINCEPT_BINANCE_SPOT_API_KEY;
+  const futKey = env.FINCEPT_BINANCE_FUTURES_API_KEY;
+  const unifiedDemoSingleKey = Boolean(spotKey && futKey && spotKey === futKey);
   for (const [product, suffix] of [['SPOT', 'SPOT'], ['PERP', 'FUTURES']]) {
     const key = env[`FINCEPT_BINANCE_${suffix}_API_KEY`];
     const secret = env[`FINCEPT_BINANCE_${suffix}_API_SECRET`];
     if (key && secret) {
-      venues[product] = makeBinanceTestnet(product, { key, secret }, fetchImpl);
+      const origin =
+        product === 'SPOT'
+          ? env.FINCEPT_BINANCE_SPOT_ORIGIN || (unifiedDemoSingleKey ? 'https://demo-api.binance.com' : undefined)
+          : env.FINCEPT_BINANCE_FUTURES_ORIGIN || undefined;
+      venues[product] = makeBinanceTestnet(product, { key, secret, origin }, fetchImpl);
       fingerprints[product] = hash(key).toString('hex');
     }
   }
@@ -176,13 +196,17 @@ export function createTradingJournal({ env = process.env, fetchImpl, now = Date.
   const snapshot = () => {
     const items = orders();
     const state = current(items);
-    return { halted: halted(), configured: Object.keys(venues), symbols: [...allowlisted], maxOrder, dailyLimit,
+    const origins = Object.fromEntries(
+      Object.entries(venues).map(([prod, v]) => [prod, v.origin || ''])
+    );
+    return { halted: halted(), configured: Object.keys(venues), origins, futuresLeverage, symbols: [...allowlisted], maxOrder, dailyLimit,
       riskHalted: !state.complete || state.realized <= -dailyLimit, accountingComplete: state.complete,
       realizedToday: state.complete ? state.realized : null, automation: rules(),
       positions: state.positions.map(({ entryFillQty, entryQuote, cost, ...position }) => {
         const entry = items.find(({ id }) => id === position.entryOrderId);
         return { ...position, ...(entry?.protection ? {
           protection: protectionLevels(position.entryPrice, entry.protection, position.quantity > 0),
+          exchangeStopId: entry.exchangeStopId || null,
           trigger: entry.exitTrigger?.reason,
           protectionStatus: protectionHealth.get(entry.id)?.error,
         } : {}) };
@@ -239,7 +263,21 @@ export function createTradingJournal({ env = process.env, fetchImpl, now = Date.
     try {
       if (WORKING.has(order.status)) order = applyVenue(order, await venue.order(order));
       return await reconcileFills(order, venue);
-    } catch {
+    } catch (error) {
+      // If Binance explicitly reports -2013 (Order does not exist) for an UNCONFIRMED order with no venueId
+      // after grace window, the order was never accepted -> release symbol cleanly instead of permanent deadlock!
+      if (
+        order.status === 'UNCONFIRMED' &&
+        !order.venueId &&
+        error instanceof VenueError &&
+        error.code === -2013 &&
+        now() - (order.createdAt || 0) >= 10_000
+      ) {
+        return save(
+          { ...order, status: 'REJECTED', venueCode: -2013, syncError: null },
+          'SUBMIT_NOT_FOUND_AT_VENUE'
+        );
+      }
       if (order.syncError) return order;
       return save({ ...order, syncError: 'Menunggu konfirmasi Binance.' }, 'RECONCILE_PENDING');
     }
@@ -295,20 +333,57 @@ export function createTradingJournal({ env = process.env, fetchImpl, now = Date.
       }
       if ((protectionHealth.get(entry.id)?.retryAt ?? 0) > now()) continue;
       const attempts = items.filter((order) => order.action === 'CLOSE' && order.entryOrderId === entry.id);
-      if (attempts.length >= MAX_AUTO_CLOSE_ATTEMPTS) {
+      const maxAttempts = entry.exitTrigger?.reason === 'STOP_LOSS' ? MAX_STOP_LOSS_ATTEMPTS : MAX_AUTO_CLOSE_ATTEMPTS;
+      if (attempts.length >= maxAttempts) {
         protectionHealth.set(entry.id, { error: 'Batas percobaan exit tercapai. Periksa posisi dan tutup secara manual.' });
         continue;
       }
-      if (attempts.length && now() - attempts.at(-1).createdAt < EXIT_RETRY_MS) continue;
+      const backoffMs = attempts.length >= 2 ? EXIT_RETRY_MS * 2 : EXIT_RETRY_MS;
+      if (attempts.length && now() - attempts.at(-1).createdAt < backoffMs) continue;
       try {
+        const venue = venues[product];
+        requireValue(venue, 503, 'Kredensial produk tidak tersedia untuk proteksi.');
         let reason = entry.exitTrigger?.reason;
+        const { bid, ask } = readQuote(await venue.book(symbol), symbol, now());
+        const isLong = position.quantity > 0;
+        const levels = protectionLevels(position.entryPrice, entry.protection, isLong);
+
+        // Dual-layer protection: arm exchange-hosted Stop-Loss when venue instrument supports STOP_MARKET / STOP_LOSS_LIMIT
+        if (!reason && !entry.exchangeStopId && typeof venue.placeStop === 'function') {
+          try {
+            const inst = await venue.instrument(symbol);
+            const stopOrderType = product === 'PERP' ? 'STOP_MARKET' : 'STOP_LOSS_LIMIT';
+            if (inst?.orderTypes?.includes(stopOrderType)) {
+              const pxFilter = inst.filters?.find((f) => f.filterType === 'PRICE_FILTER');
+              const lot = inst.filters?.find((f) => f.filterType === 'LOT_SIZE');
+              const stopPx = floorStep(levels.stopLoss, pxFilter?.tickSize);
+              const stopPxNum = Number(stopPx);
+              const validSide = isLong ? stopPxNum < bid * 0.9999 : stopPxNum > ask * 1.0001;
+              if (stopPxNum > 0 && validSide) {
+                const limitPx = floorStep(stopPxNum * (isLong ? 0.998 : 1.002), pxFilter?.tickSize);
+                const stopQty = floorStep(Math.abs(position.quantity), lot?.stepSize);
+                const stopClientId = stableId('stop', entry.id);
+                if (product === 'PERP' || Number(stopQty) > 0) {
+                  await venue.placeStop({
+                    symbol,
+                    side: isLong ? 'SELL' : 'BUY',
+                    stopPrice: stopPx,
+                    limitPrice: limitPx,
+                    quantity: stopQty,
+                    clientOrderId: stopClientId,
+                  });
+                  save({ ...entry, exchangeStopId: stopClientId }, 'EXCHANGE_STOP_ARMED');
+                }
+              }
+            }
+          } catch {
+            // Non-fatal: server-side TP/SL monitor continues protecting the position and retries arming cleanly
+          }
+        }
+
         if (!reason) {
-          const venue = venues[product];
-          requireValue(venue, 503, 'Kredensial produk tidak tersedia untuk proteksi.');
-          const { bid, ask } = readQuote(await venue.book(symbol), symbol, now());
-          const isLong = position.quantity > 0;
           const quote = isLong ? bid : ask;
-          reason = protectionTrigger(quote, protectionLevels(position.entryPrice, entry.protection, isLong), isLong);
+          reason = protectionTrigger(quote, levels, isLong);
           if (reason) save({ ...entry, exitTrigger: { reason, quote, triggeredAt: now() } }, `TRIGGER_${reason}`);
         }
         if (reason) {
@@ -320,6 +395,19 @@ export function createTradingJournal({ env = process.env, fetchImpl, now = Date.
         protectionHealth.set(entry.id, { retryAt: now() + EXIT_RETRY_MS,
           error: error.status ? error.message : 'Proteksi menunggu koneksi Binance Testnet.' });
       }
+    }
+  }
+
+  async function fetchLiveIntelForSymbol(symbol) {
+    const baseCoin = String(symbol || '').replace(/USDT$/i, '').replace(/^1000/, '').toUpperCase();
+    try {
+      const [orderbook, snap] = await Promise.all([
+        getRealAggregatedOrderbook(baseCoin, symbol, true),
+        getRealMarketSnapshot(),
+      ]);
+      return { orderbook, snapshot: snap };
+    } catch {
+      return null;
     }
   }
 
@@ -351,6 +439,29 @@ export function createTradingJournal({ env = process.env, fetchImpl, now = Date.
         evaluated = { ...rule, lastCandle: signal.closedAt, error: null };
         saveRule(evaluated);
         if (!signal.side || (product === 'SPOT' && signal.side === 'SELL')) continue;
+
+        // Multi-Pillar On-Chain + Live L2 Orderbook + Verified News Confluence Gate
+        const intel =
+          typeof intelProvider === 'function'
+            ? await intelProvider(symbol, product)
+            : typeof fetchImpl !== 'function'
+              ? await fetchLiveIntelForSymbol(symbol)
+              : null;
+        if (intel) {
+          const confluence = evaluateManagedEntryConfluence({
+            side: signal.side,
+            symbol,
+            orderbook: intel.orderbook,
+            snapshot: intel.snapshot,
+          });
+          evaluated = { ...evaluated, lastIntelSummary: confluence.summary };
+          if (!confluence.allowed) {
+            saveRule({ ...evaluated, error: confluence.reason });
+            continue;
+          }
+          saveRule(evaluated);
+        }
+
         const order = await submit({ id: stableId('signal', product, symbol, signal.closedAt), product, symbol,
           action: 'OPEN', side: signal.side, budget, protection }, { signalAt: signal.closedAt });
         if (order.status === 'REJECTED' && !halted()) saveRule({ ...evaluated, error: `Entry ditolak Binance (${order.venueCode}).` });
@@ -463,6 +574,19 @@ export function createTradingJournal({ env = process.env, fetchImpl, now = Date.
     }
     if (action === 'OPEN') requireValue(!halted(), 423, 'Entry dihentikan sebelum order dikirim.');
     if (context.signalAt) requireValue(now() - context.signalAt < 60_000, 409, 'Sinyal entry sudah kedaluwarsa.');
+    // Cancel-Before-Close: cancel any armed exchange-hosted protective stop before submitting CLOSE
+    // (releases locked Spot inventory and prevents orphaned Futures conditional stops)
+    if (action === 'CLOSE' && position?.entryOrderId && typeof venue.cancelStop === 'function') {
+      const entryOrder = find(position.entryOrderId);
+      if (entryOrder?.exchangeStopId) {
+        await venue.cancelStop({ symbol, clientOrderId: entryOrder.exchangeStopId });
+        save({ ...entryOrder, exchangeStopId: null }, 'EXCHANGE_STOP_CANCELED_BEFORE_CLOSE');
+      }
+    }
+    // Sync Futures leverage before OPEN so orders never execute with random stale account leverage
+    if (product === 'PERP' && action === 'OPEN' && typeof venue.setLeverage === 'function') {
+      await venue.setLeverage(symbol, futuresLeverage);
+    }
     let order = save({ id, signature, product, action, symbol, base: instrument.baseAsset, side: orderSide,
       price, quantity, status: 'SUBMITTING', executed: 0, fills: [], fillsPending: false, createdAt: now(),
       ...(protection ? { protection } : {}),
@@ -472,8 +596,7 @@ export function createTradingJournal({ env = process.env, fetchImpl, now = Date.
     try {
       order = applyVenue(order, await venue.place(order));
     } catch (error) {
-      if (error instanceof VenueError && error.status >= 400 && error.status < 500 &&
-          [-1013, -1021, -1022, -1100, -1102, -1111, -1121, -2015, -2022].includes(error.code)) {
+      if (error instanceof VenueError && error.status >= 400 && error.status < 500 && EXPLICIT_REJECT_CODES.has(error.code)) {
         return publicOrder(save({ ...order, status: 'REJECTED', venueCode: error.code }, 'SUBMIT_REJECTED'));
       }
       // A failed response is ambiguous. Recover by querying the original client order ID, never by resubmitting.

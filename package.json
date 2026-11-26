@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite --port 5173",
-    "test:trading": "node --test test/tradingJournal.test.mjs",
+    "test:trading": "node --test tests/managed-testnet-journal.test.mjs",
     "build": "vite build",
     "preview": "vite preview --port 5173",
     "start": "node server.mjs",

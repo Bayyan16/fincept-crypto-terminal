@@ -369,10 +369,11 @@ async function fetchViaDohHttps(urlStr, options = {}, timeoutMs = 4500) {
           const text = Buffer.concat(chunks).toString('utf8');
           const status = res.statusCode || 0;
           const ok = status >= 200 && status < 300;
+          const retryAfter = res.headers?.['retry-after'] ?? null;
           try {
-            resolve({ ok, status, data: JSON.parse(text), transport: 'DoH_TLS' });
+            resolve({ ok, status, data: JSON.parse(text), retryAfter, transport: 'DoH_TLS' });
           } catch {
-            resolve({ ok, status, data: text, transport: 'DoH_TLS' });
+            resolve({ ok, status, data: text, retryAfter, transport: 'DoH_TLS' });
           }
         });
       }
@@ -391,7 +392,7 @@ async function fetchViaDohHttps(urlStr, options = {}, timeoutMs = 4500) {
   });
 }
 
-async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 3400, bypassCooldown = false) {
+export async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 3400, bypassCooldown = false) {
   let hostname = '';
   try {
     hostname = new URL(url).hostname;
@@ -419,10 +420,11 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 3400, bypassC
     const res = await fetch(url, { ...options, signal: controller.signal });
     clearTimeout(timer);
     const text = await res.text();
+    const retryAfter = res.headers?.get?.('retry-after') ?? null;
     try {
-      return { ok: res.ok, status: res.status, data: JSON.parse(text) };
+      return { ok: res.ok, status: res.status, data: JSON.parse(text), retryAfter };
     } catch {
-      return { ok: res.ok, status: res.status, data: text };
+      return { ok: res.ok, status: res.status, data: text, retryAfter };
     }
   } catch (err) {
     clearTimeout(timer);
@@ -443,7 +445,7 @@ async function fetchJsonWithTimeout(url, options = {}, timeoutMs = 3400, bypassC
   }
 }
 
-async function getSyncedBinanceTimestamp(baseUrl, isFutures = true) {
+export async function getSyncedBinanceTimestamp(baseUrl, isFutures = true) {
   const cached = binanceTimeOffsetMap.get(baseUrl);
   if (cached && Date.now() - cached.ts < 60_000) {
     return Date.now() + cached.offsetMs;

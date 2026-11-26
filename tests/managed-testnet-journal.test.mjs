@@ -63,11 +63,14 @@ function venueFixture() {
       const path = pathname.replace(/^\/(?:api|fapi)\/v[13]/, '');
       const method = options.method;
       calls.push({ futures, path, method, params: Object.fromEntries(params) });
-      if (['/order', '/myTrades', '/userTrades', '/positionSide/dual', '/positionRisk', '/account'].includes(path)) {
+      if (['/order', '/leverage', '/myTrades', '/userTrades', '/positionSide/dual', '/positionRisk', '/account'].includes(path)) {
         const signature = params.get('signature');
         params.delete('signature');
         assert.equal(signature, createHmac('sha256', futures ? 'perp-secret' : 'spot-secret').update(params.toString()).digest('hex'));
         assert.equal(options.headers['X-MBX-APIKEY'], futures ? 'perp-key' : 'spot-key');
+      }
+      if (path === '/leverage' && method === 'POST') {
+        return response({ symbol: params.get('symbol'), leverage: Number(params.get('leverage')) });
       }
       if (path === '/exchangeInfo') return response({ symbols: [{ symbol: 'BTCUSDT', baseAsset: 'BTC', quoteAsset: 'USDT',
         status: 'TRADING', contractType: 'PERPETUAL', isSpotTradingAllowed: true, orderTypes: ['MARKET', 'LIMIT', 'LIMIT_MAKER'], filters }] });
@@ -346,4 +349,214 @@ test('Without managed mode, legacy execution is delegated and the managed journa
   const origin = `http://127.0.0.1:${server.address().port}`;
   assert.equal((await fetch(origin + '/api/execute/order', { method: 'POST' })).status, 204);
   assert.equal((await fetch(origin + root)).status, 503);
+});
+
+test('Opsi A #1: Post-Only -5022/-2010 rejects cleanly (no UNCONFIRMED deadlock) and stale UNCONFIRMED -2013 releases symbol', async (context) => {
+  const clock = testClock();
+  const folder = mkdtempSync(join(tmpdir(), 'fincept-journal-reject-'));
+  const databasePath = join(folder, 'orders.sqlite');
+  let mode = 'REJECT_5022';
+
+  const mockFetch = async (url, options) => {
+    const { pathname, searchParams: params } = new URL(url);
+    const path = pathname.replace(/^\/(?:api|fapi)\/v[13]/, '');
+    if (path === '/exchangeInfo') {
+      return Response.json({
+        symbols: [{ symbol: 'BTCUSDT', baseAsset: 'BTC', quoteAsset: 'USDT', status: 'TRADING', contractType: 'PERPETUAL', isSpotTradingAllowed: true, orderTypes: ['MARKET', 'LIMIT', 'LIMIT_MAKER'], filters }],
+      });
+    }
+    if (path === '/ticker/bookTicker') return Response.json({ symbol: 'BTCUSDT', bidPrice: '100', askPrice: '100.01' });
+    if (path === '/positionSide/dual') return Response.json({ dualSidePosition: false });
+    if (path === '/positionRisk') return Response.json([{ symbol: 'BTCUSDT', positionSide: 'BOTH', positionAmt: '0' }]);
+    if (path === '/account') return Response.json({ canTrade: true, balances: [{ asset: 'USDT', free: '1000' }, { asset: 'BTC', free: '1' }] });
+    if (path === '/leverage') return Response.json({ symbol: 'BTCUSDT', leverage: Number(params.get('leverage')) });
+    if (path === '/order' && options.method === 'POST') {
+      if (mode === 'REJECT_5022') return Response.json({ code: -5022, msg: 'Post Only order will be rejected' }, { status: 400 });
+      if (mode === 'REJECT_2010') return Response.json({ code: -2010, msg: 'Order would immediately match and take' }, { status: 400 });
+      if (mode === 'DROP_NEVER_ACCEPTED') throw new Error('TCP reset before venue accepted');
+      return Response.json({ symbol: 'BTCUSDT', side: params.get('side'), orderId: 777, clientOrderId: params.get('newClientOrderId'), executedQty: '0', status: 'NEW' });
+    }
+    if (path === '/order' && options.method === 'GET') {
+      return Response.json({ code: -2013, msg: 'Order does not exist' }, { status: 400 });
+    }
+    return Response.json({});
+  };
+
+  const journal = createTradingJournal({ env, databasePath, fetchImpl: mockFetch, intervalMs: 25, now: clock.now });
+  context.after(async () => { await journal.close(); rmSync(folder, { recursive: true, force: true }); });
+  const get = () => journal.route(root, 'GET', null, auth);
+  const post = (p, b) => journal.route(root + p, 'POST', async () => b, auth);
+
+  // 1) Futures -5022 -> immediately REJECTED (never UNCONFIRMED)
+  const r5022 = await post('/orders', open('PERP', 'BUY'));
+  assert.equal(r5022.order.status, 'REJECTED');
+  assert.equal(r5022.order.venueCode, -5022);
+
+  // 2) Spot -2010 -> immediately REJECTED
+  mode = 'REJECT_2010';
+  const r2010 = await post('/orders', open('SPOT', 'BUY'));
+  assert.equal(r2010.order.status, 'REJECTED');
+  assert.equal(r2010.order.venueCode, -2010);
+
+  // 3) Dropped request never accepted by Binance -> UNCONFIRMED initially, then -2013 after 10s grace releases symbol!
+  mode = 'DROP_NEVER_ACCEPTED';
+  const dropped = await post('/orders', open('PERP', 'SELL'));
+  assert.equal(dropped.order.status, 'UNCONFIRMED');
+  clock.set(clock.now() + 12_000);
+  await until(get, (st) => st.orders[0].status === 'REJECTED' && st.orders[0].venueCode === -2013);
+
+  // Symbol is now unlocked and accepts new order cleanly!
+  mode = 'ACCEPT';
+  const recovered = await post('/orders', open('PERP', 'BUY'));
+  assert.equal(recovered.order.status, 'NEW');
+});
+
+test('Opsi A #2 & #3: Futures syncs FINCEPT_FUTURES_LEVERAGE, Unified Demo key uses demo-api.binance.com, and Dual-Layer Exchange SL + Cancel-Before-Close works', async (context) => {
+  const folder = mkdtempSync(join(tmpdir(), 'fincept-journal-exsl-'));
+  const databasePath = join(folder, 'orders.sqlite');
+  const seenHosts = new Set();
+  const levCalls = [];
+  const stopOrders = [];
+  const canceledStops = [];
+  let filledQty = 0;
+
+  const mockFetch = async (url, options) => {
+    const { hostname, pathname, searchParams: params } = new URL(url);
+    seenHosts.add(hostname);
+    const path = pathname.replace(/^\/(?:api|fapi)\/v[13]/, '');
+    if (path === '/exchangeInfo') {
+      return Response.json({
+        symbols: [{
+          symbol: 'BTCUSDT', baseAsset: 'BTC', quoteAsset: 'USDT', status: 'TRADING',
+          contractType: 'PERPETUAL', isSpotTradingAllowed: true,
+          orderTypes: ['MARKET', 'LIMIT', 'LIMIT_MAKER', 'STOP_MARKET', 'STOP_LOSS_LIMIT'],
+          filters,
+        }],
+      });
+    }
+    if (path === '/ticker/bookTicker') return Response.json({ symbol: 'BTCUSDT', bidPrice: '100', askPrice: '100.01' });
+    if (path === '/positionSide/dual') return Response.json({ dualSidePosition: false });
+    if (path === '/positionRisk') return Response.json([{ symbol: 'BTCUSDT', positionSide: 'BOTH', positionAmt: String(filledQty) }]);
+    if (path === '/account') return Response.json({ canTrade: true, balances: [{ asset: 'USDT', free: '1000' }, { asset: 'BTC', free: '1' }] });
+    if (path === '/leverage' && options.method === 'POST') {
+      levCalls.push({ symbol: params.get('symbol'), leverage: Number(params.get('leverage')) });
+      return Response.json({ symbol: params.get('symbol'), leverage: Number(params.get('leverage')) });
+    }
+    if (path === '/order' && options.method === 'POST') {
+      const type = params.get('type');
+      const cid = params.get('newClientOrderId');
+      if (type === 'STOP_MARKET') {
+        stopOrders.push({ cid, stopPrice: params.get('stopPrice'), closePosition: params.get('closePosition') });
+        return Response.json({ symbol: 'BTCUSDT', side: params.get('side'), orderId: 9001, clientOrderId: cid, executedQty: '0', status: 'NEW' });
+      }
+      if (type === 'MARKET') {
+        const q = Number(params.get('quantity'));
+        filledQty = 0;
+        return Response.json({ symbol: 'BTCUSDT', side: params.get('side'), orderId: 9002, clientOrderId: cid, executedQty: String(q), status: 'FILLED' });
+      }
+      filledQty = Number(params.get('quantity'));
+      return Response.json({ symbol: 'BTCUSDT', side: params.get('side'), orderId: 9000, clientOrderId: cid, executedQty: String(filledQty), status: 'FILLED' });
+    }
+    if (path === '/order' && options.method === 'DELETE') {
+      canceledStops.push(params.get('origClientOrderId'));
+      return Response.json({ symbol: 'BTCUSDT', orderId: 9001, origClientOrderId: params.get('origClientOrderId'), status: 'CANCELED' });
+    }
+    if (path === '/userTrades') {
+      const oid = params.get('orderId');
+      return Response.json([{ symbol: 'BTCUSDT', orderId: Number(oid), id: Number(oid) * 10, qty: '0.5', time: Date.now(), price: '100', commission: '0.05', commissionAsset: 'USDT', realizedPnl: '0' }]);
+    }
+    return Response.json({});
+  };
+
+  // Single unified Binance Demo API key for both Spot & Futures -> Spot automatically selects demo-api.binance.com!
+  const unifiedEnv = {
+    ...env,
+    FINCEPT_BINANCE_SPOT_API_KEY: 'unified-demo-key',
+    FINCEPT_BINANCE_SPOT_API_SECRET: 'unified-demo-secret',
+    FINCEPT_BINANCE_FUTURES_API_KEY: 'unified-demo-key',
+    FINCEPT_BINANCE_FUTURES_API_SECRET: 'unified-demo-secret',
+    FINCEPT_FUTURES_LEVERAGE: '7',
+  };
+  const journal = createTradingJournal({ env: unifiedEnv, databasePath, fetchImpl: mockFetch, intervalMs: 25 });
+  context.after(async () => { await journal.close(); rmSync(folder, { recursive: true, force: true }); });
+  const get = () => journal.route(root, 'GET', null, auth);
+  const post = (p, b) => journal.route(root + p, 'POST', async () => b, auth);
+
+  const snap0 = await get();
+  assert.equal(snap0.origins.SPOT, 'https://demo-api.binance.com');
+  assert.equal(snap0.futuresLeverage, 7);
+
+  // Open protected Futures LONG -> syncs 7x leverage -> fills -> worker arms exchange STOP_MARKET closePosition=true!
+  const entry = await post('/orders', { ...open('PERP', 'BUY'), protection });
+  assert.equal(entry.order.status, 'FILLED');
+  assert.deepEqual(levCalls, [{ symbol: 'BTCUSDT', leverage: 7 }]);
+
+  const armed = await until(get, (st) => Boolean(st.positions[0]?.exchangeStopId));
+  assert.equal(stopOrders.length, 1);
+  assert.equal(stopOrders[0].closePosition, 'true');
+  assert.equal(stopOrders[0].stopPrice, '99.00');
+  assert.ok(seenHosts.has('demo-fapi.binance.com'));
+
+  // Close position -> Cancel-Before-Close cancels exchange stop BEFORE market CLOSE!
+  await post('/orders', { id: orderId(), product: 'PERP', symbol: 'BTCUSDT', action: 'CLOSE' });
+  assert.deepEqual(canceledStops, [armed.positions[0].exchangeStopId]);
+});
+
+test('Opsi A #4: On-Chain Whale + L2 Orderbook + Verified News confluence gate vetoes conflicting entries and allows aligned entries', async (context) => {
+  const clock = testClock();
+  const fixture = venueFixture();
+  const folder = mkdtempSync(join(tmpdir(), 'fincept-journal-intel-'));
+  const databasePath = join(folder, 'orders.sqlite');
+  let intelScenario = 'BEARISH_NEWS_AND_ASK_WALL';
+
+  const intelProvider = async () => {
+    if (intelScenario === 'BEARISH_NEWS_AND_ASK_WALL') {
+      return {
+        orderbook: { ok: true, bids: [{ price: 100 }], asks: [{ price: 100.01 }], spreadBps: 1, obiPercent: -52 },
+        snapshot: {
+          verifiedMacroNews: [
+            { credibilityScore: 99, impactScore: 95, sentiment: 'BEARISH', affectedAssets: ['BTC'] },
+            { credibilityScore: 97, impactScore: 92, sentiment: 'BEARISH', affectedAssets: ['BTC', 'ETH'] },
+          ],
+          realOnChainTrades: [
+            { symbol: 'BTC-PERP', tokenSymbol: 'BTC', direction: 'BEARISH', sizeUsd: 2_500_000, isDirectionalWhaleTrade: true },
+          ],
+        },
+      };
+    }
+    return {
+      orderbook: { ok: true, bids: [{ price: 100 }], asks: [{ price: 100.01 }], spreadBps: 1, obiPercent: 28 },
+      snapshot: {
+        verifiedMacroNews: [
+          { credibilityScore: 98, impactScore: 92, sentiment: 'BULLISH', affectedAssets: ['BTC'] },
+        ],
+        realOnChainTrades: [
+          { symbol: 'BTC-PERP', tokenSymbol: 'BTC', direction: 'BULLISH', sizeUsd: 3_000_000, isDirectionalWhaleTrade: true },
+        ],
+      },
+    };
+  };
+
+  const journal = createTradingJournal({ env, databasePath, fetchImpl: fixture.fetch, intelProvider, intervalMs: 25, now: clock.now });
+  context.after(async () => { await journal.close(); rmSync(folder, { recursive: true, force: true }); });
+  const get = () => journal.route(root, 'GET', null, auth);
+  const post = (p, b) => journal.route(root + p, 'POST', async () => b, auth);
+
+  await post('/automation', { enabled: true, product: 'SPOT', symbol: 'BTCUSDT', budget: 50, protection });
+  fixture.setCandles(candlesAt(clock.boundary, 103));
+  clock.set(clock.boundary + 1000);
+
+  // Blocked by opposing L2 Ask Wall (-52% OBI) + Bearish news/whale flow -> 0 orders submitted!
+  const blocked = await until(get, (st) => Boolean(st.automation[0]?.error));
+  assert.match(blocked.automation[0].error, /Dinding Ask L2|BEARISH/i);
+  assert.equal(submits(fixture).length, 0);
+
+  // Next candle with aligned bullish L2 OBI + bullish news + whale inflow -> entry executes cleanly!
+  intelScenario = 'ALIGNED_BULLISH';
+  const nextBoundary = clock.boundary + minute;
+  fixture.setCandles(candlesAt(nextBoundary, 103));
+  clock.set(nextBoundary + 1000);
+  await until(get, (st) => st.orders.length === 1 && st.orders[0].side === 'BUY');
+  assert.equal(submits(fixture).length, 1);
+  assert.match((await get()).automation[0].lastIntelSummary || '', /L2 OBI \+28%/);
 });

@@ -10,6 +10,7 @@ interface AutomationRule {
   budget: number;
   protection: Protection;
   error?: string;
+  lastIntelSummary?: string;
 }
 type Intent = {
   id: string;
@@ -33,10 +34,13 @@ interface JournalOrder {
 }
 interface Journal {
   configured: Product[];
+  origins?: Record<string, string>;
+  futuresLeverage?: number;
   symbols: string[];
   orders: JournalOrder[];
   automation?: AutomationRule[];
   positions: { product: Product; symbol: string; quantity: number; entryPrice?: number;
+    exchangeStopId?: string | null;
     protection?: { takeProfit: number; stopLoss: number }; trigger?: CloseTrigger; protectionStatus?: string }[];
   maxOrder: number;
   dailyLimit: number;
@@ -172,6 +176,8 @@ export function TestnetTradingPanel({ onBack }: { onBack: () => void }) {
             <div className="flex flex-wrap items-center gap-3 border-y border-[#26354d] py-3">
               <span>PnL tercatat hari ini (UTC) {journal.realizedToday === null ? 'belum lengkap' : `${journal.realizedToday.toFixed(2)} USDT`}</span>
               <span>Batas rugi {journal.dailyLimit} USDT</span>
+              {journal.futuresLeverage && <span>Leverage Futures {journal.futuresLeverage}x</span>}
+              {journal.origins?.[product] && <span className="text-xs text-[#94a3b8]">Host: {journal.origins[product]}</span>}
               <button className={control} disabled={busy || journal.halted} onClick={() => void mutate('/halt', {})}>
                 {journal.halted ? 'Entry dihentikan' : 'Hentikan entry & batalkan order entry'}
               </button>
@@ -204,7 +210,7 @@ export function TestnetTradingPanel({ onBack }: { onBack: () => void }) {
             </div>
             <div className="space-y-2 border border-[#26354d] p-3">
               <div className="flex flex-wrap items-center gap-3">
-                <strong>Auto-entry EMA 5/13 · 1 menit</strong>
+                <strong>Auto-entry Closed-Candle + On-Chain / L2 / News Confluence</strong>
                 {selectedRule?.enabled ? (
                   <button className={control} disabled={busy || !!connectionError} onClick={() => void mutate('/automation', { product, symbol, enabled: false })}>Jeda auto-entry</button>
                 ) : (
@@ -214,8 +220,9 @@ export function TestnetTradingPanel({ onBack }: { onBack: () => void }) {
                 )}
               </div>
               {selectedRule?.enabled && <p className="text-sm">Aktif untuk {selectedRule.symbol} · {selectedRule.budget} USDT · TP {selectedRule.protection.takeProfitPct}% · SL {selectedRule.protection.stopLossPct}%</p>}
+              {selectedRule?.lastIntelSummary && <p className="text-xs text-[#00e5ff]">Konfluensi Real-Time: {selectedRule.lastIntelSummary}</p>}
               {selectedRule?.error && <p role="alert" className="text-sm text-[#ff8c96]">{selectedRule.error}</p>}
-              <p className="text-sm text-[#94a3b8]">TP dan SL dihitung dari harga fill. Server harus tetap berjalan dan terhubung ke Binance Testnet.</p>
+              <p className="text-sm text-[#94a3b8]">Proteksi ganda: Exchange Stop-Loss (STOP_MARKET / STOP_LOSS_LIMIT) otomatis dipasang di bursa + monitor TP/SL server. Cancel-before-close aktif otomatis.</p>
             </div>
             {!journal.configured.includes(product) && <p>Kredensial {productName(product)} belum tersedia di server.</p>}
             {journal.riskHalted && !journal.halted && <p>Kontrol risiko sedang menahan entry.</p>}
@@ -223,6 +230,7 @@ export function TestnetTradingPanel({ onBack }: { onBack: () => void }) {
               <div key={position.symbol} className="flex flex-wrap items-center gap-3">
                 <span>Posisi terkonfirmasi {position.symbol} · {position.quantity}</span>
                 {position.protection && <span>TP {formatPrice.format(position.protection.takeProfit)} · SL {formatPrice.format(position.protection.stopLoss)}</span>}
+                {position.exchangeStopId && <span className="text-xs text-[#00e676]">✓ Exchange SL Armed</span>}
                 {position.trigger && <span>{triggerName(position.trigger)} terpicu</span>}
                 {position.protectionStatus && <span className="text-[#ff8c96]">{position.protectionStatus}</span>}
                 <button className={control} disabled={busy || !!pending || !!connectionError} onClick={() => {
