@@ -2865,6 +2865,10 @@ export function App({
             ))}
           </div>
 
+          <a href="/testnet/" className="shrink-0 border border-[#1E2736] px-2 py-0.5 font-bold text-[#00E5FF]">
+            Managed Testnet
+          </a>
+
           {/* 1-Click Flexible Network Switcher Dropdown (Prevents ChainID Mismatch!) */}
           <div className="hidden md:flex items-center bg-[#06111F] border border-[#00E5FF]/50 px-1.5 py-0.5">
             <span className="text-[#00E5FF] font-extrabold mr-1">NET:</span>

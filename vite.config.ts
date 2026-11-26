@@ -1,14 +1,21 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { resolve } from 'node:path';
+import { createManagedTestnetGateway } from './backend/managedTestnetGateway.mjs';
 import { handleGatewayApiRoute } from './backend/exchangeGateway.mjs';
 import { MAX_JSON_BODY_BYTES, resolveCorsOrigin } from './backend/httpSecurity.mjs';
+
+const journalFile = process.env.FINCEPT_TRADING_DB ? `${resolve(process.env.FINCEPT_TRADING_DB)}*` : null;
 
 export default defineConfig({
   plugins: [
     react(),
     {
       name: 'fincept-real-money-gateway',
-      configureServer(server) {
+      async configureServer(server) {
+        const managedTestnet = await createManagedTestnetGateway();
+        server.middlewares.use(managedTestnet.middleware);
+        server.httpServer?.once('close', () => { void managedTestnet.close(); });
         server.middlewares.use(async (req, res, next) => {
           if (!req.url || !req.url.startsWith('/api/')) {
             return next();
@@ -162,11 +169,14 @@ export default defineConfig({
   server: {
     port: 5173,
     host: process.env.FINCEPT_DEV_HOST || '127.0.0.1',
+    fs: {
+      deny: ['.env', '.env.*', '*.{crt,pem}', '**/.git/**', '**/.fincept/**', '**/*.sqlite*', ...(journalFile ? [journalFile] : [])],
+    },
     watch: {
       // Editor atomic-save tmp dirs (e.g. .index.css.<pid>.<rand>.tmpdir) can trip
       // chokidar's Windows watcher with EBUSY; ignore them so the dev server
       // never crashes on hot-reload.
-      ignored: ['**/*.tmp', '**/*.tmpdir/**', '**/artifacts/**', '**/playwright-report/**', '**/test-results/**', '**/dist/**', '**/.git/**'],
+      ignored: ['**/*.tmp', '**/*.tmpdir/**', '**/artifacts/**', '**/playwright-report/**', '**/test-results/**', '**/dist/**', '**/.git/**', '**/.fincept/**', '**/*.sqlite*', ...(journalFile ? [journalFile] : [])],
     },
   },
 });

@@ -81,7 +81,36 @@ npm start
 ```
 The standalone production server (`server.mjs`) serves the compiled frontend bundle alongside all `/api/live/*` and `/api/gateway/*` endpoints on port `8080` (or the configured `PORT` environment variable).
 
-### 4. Run End-to-End Tests (Playwright)
+### 4. Run Managed Binance Testnet
+
+Use Node.js 22.13 or later for the managed SQLite journal. Open `/testnet/` or choose **Managed Testnet**. On a gateway with managed mode enabled, legacy execution and account endpoints are disabled, including Mainnet execution on that instance. The regular gateway remains available when managed mode is off. Testnet has separate Spot and USD-M Futures products and credentials, and supports manual entry or opt-in automated entry. The background worker reconciles orders and fills even when the browser closes.
+
+Inject these variables into the server process with your local secret manager or a private environment file outside the checkout. Start only one gateway process per database. Both dev and production bind to loopback by default.
+
+| Variable | Purpose |
+|---|---|
+| `FINCEPT_ENABLE_BINANCE_TESTNET=1` | Enable the Testnet gateway |
+| `FINCEPT_TRADING_TOKEN` | Generate a random token with `openssl rand -hex 32`. Enter it in the Testnet panel to open the journal for the current browser session. |
+| `FINCEPT_BINANCE_SPOT_API_KEY` and `FINCEPT_BINANCE_SPOT_API_SECRET` | HMAC credentials from Binance Demo Spot (`demo-api.binance.com`, auto-selected when unified with Futures key) or Spot Testnet (`testnet.binance.vision`) |
+| `FINCEPT_BINANCE_SPOT_ORIGIN` | Optional explicit Spot origin (`https://demo-api.binance.com` or `https://testnet.binance.vision`) |
+| `FINCEPT_BINANCE_FUTURES_API_KEY` and `FINCEPT_BINANCE_FUTURES_API_SECRET` | HMAC credentials from Binance USD-M Futures Demo (`demo-fapi.binance.com`). Use an isolated one-way account. |
+| `FINCEPT_FUTURES_LEVERAGE` | Target USD-M Futures leverage synced before every Futures entry (default `5`, range `1–20`). |
+| `FINCEPT_ALLOW_COEXIST_LEGACY` | Optional `1` to keep multi-venue `/api/execute/*` & `/api/account/*` active alongside Managed Testnet (default isolated `410`). |
+| `FINCEPT_TRADING_DB` | Journal path. Defaults to `.fincept/trading.sqlite`. Use a private directory and keep backups. The journal is bound to the configured API keys. |
+| `FINCEPT_TESTNET_SYMBOLS` | Allowed USDT symbols, comma separated. Default `BTCUSDT`. |
+| `FINCEPT_MAX_ORDER_USDT`, `FINCEPT_MAX_OPEN_SLOTS`, `FINCEPT_MAX_DAILY_LOSS_USDT` | Server limits with defaults of `100` USDT, `2` slots, and `25` USDT. Daily loss uses journal fills and supported commissions in UTC. |
+
+Open **Managed Testnet** and verify both products independently. For Spot, buy on the test account, verify a fill or partial fill, cancel any unfilled remainder, then sell only the journal position. For Futures, open a one-way long or short, verify the fill against the position on Binance Demo, and close with reduce-only. The dashboard derives positions from confirmed fills. Keep test accounts dedicated to this terminal and compare activity against the Binance account after any Testnet reset.
+
+**Aktifkan auto-entry** saves a rule for the selected product and symbol. The sample strategy uses a 5/13 EMA crossover on closed one-minute candles from that product’s Testnet REST API. Spot uses bullish crosses to buy and sells inventory from confirmed fills. Futures supports long and short entries. Orders use the same risk checks and journal as manual orders. An automated entry expires after one minute and a protected entry’s unfilled remainder is canceled after a partial fill. The worker skips stale candles and does not repeat an entry signal after restart. The crossover is a test strategy without a profitability claim.
+
+Each new entry from the panel stores its own TP and SL percentages. The worker calculates the levels from the position’s average fill price and compares against the executable bid for a sell or ask for a buy. A triggered exit closes only journal inventory, using `reduceOnly` for Futures. Manual entries created before this feature have no saved TP/SL. **Jeda auto-entry** and **Hentikan entry** stop new entries while the worker continues monitoring protected open positions. The halt persists across restart and cancels remaining entry orders. Resuming the gateway leaves auto-entry paused until re-enabled.
+
+TP/SL runs in the Fincept server. It requires the process and Binance connection to remain healthy, may miss moves between reads, and has no guaranteed fill price. It does not place exchange-hosted Spot OCO or Futures conditional orders. A submission without a verified response is queried by its original order ID without resubmitting it. If Binance cannot confirm a pending order, compare it with exchange order history before starting another test session. Unpriced commission currencies block new entries. Funding and wallet withdrawals are outside this path.
+
+Run `npm run test:trading` for offline Spot and Futures contract tests. Actual venue validation requires outbound access to `testnet.binance.vision` and `demo-fapi.binance.com` and credentials for each product.
+
+### 5. Run End-to-End Tests (Playwright)
 The Playwright E2E suite covers the Simple and Pro editions across desktop (`1600px`) and narrow tablet (`900px`) viewports, covering terminal navigation, multi-sector market explorer, token icons, 4-Agent Consensus Forum, 3D visualizers, accuracy auditor, execution audit cockpit, DEX Screener, orderbook depth, wallet modal, and UI motion/accessibility (`prefers-reduced-motion`).
 
 ```bash

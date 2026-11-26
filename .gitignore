@@ -37,3 +37,6 @@ playwright-report/
 test-results/
 artifacts/
 
+# Local trading journal and SQLite sidecars
+.fincept/
+*.sqlite*
