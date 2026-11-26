@@ -184,6 +184,7 @@ export interface AgentPosition {
   id: string;
   orderId?: string;
   isRealMoney?: boolean;
+  executionEnv?: ExecutionEnvironment;
   rlsOwnerScope?: string;
   rlsRowHash?: string;
   symbol: string;
@@ -198,6 +199,7 @@ export interface AgentPosition {
   requestedQty?: number;
   orderState?: 'FILLED' | 'PARTIALLY_FILLED' | 'RESTING';
   venueMode?: 'FUTURES' | 'SPOT';
+  baseTokenAddress?: string;
   initialStopOrderId?: string;
   stopOrderId?: string;
   leverage: number;
@@ -226,6 +228,7 @@ export interface ClosedTradeLog {
   id: string;
   orderId?: string;
   isRealMoney?: boolean;
+  executionEnv?: ExecutionEnvironment;
   rlsOwnerScope?: string;
   rlsRowHash?: string;
   timestamp: string;
@@ -244,6 +247,7 @@ export interface ClosedTradeLog {
   hotWalletName?: string;
   hotWalletAddress?: string;
   settlementTxHash?: string;
+  explorerTxUrl?: string;
 }
 
 export interface AgentBrainDecision {

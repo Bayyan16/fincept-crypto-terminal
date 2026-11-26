@@ -694,10 +694,25 @@ export function enforceRlsOrderExecutionGuard(payload = {}, liveMarkPrice = 0) {
     }
   }
 
-  if ((exchange === 'JUPITER' || exchange === 'DEXSCREENER') && solanaSignedTx !== undefined) {
-    const rawSolSig = String(solanaSignedTx || '').trim();
+  if (
+    (exchange === 'JUPITER' || exchange === 'DEXSCREENER') &&
+    (solanaSignedTx !== undefined ||
+      payload.solanaTxSignature !== undefined ||
+      payload.solanaSignedTxBase64 !== undefined)
+  ) {
+    const rawSolSig = String(
+      payload.solanaTxSignature || payload.solanaSignedTxBase64 || solanaSignedTx || ''
+    ).trim();
     if (rawSolSig.length < 32 || /[\s&=?#\r\n\0]/.test(rawSolSig)) {
       const err = '[RLS SOLANA GUARD] Format tanda tangan transaksi Solana tidak valid.';
+      recordRlsAuditEvent({ action: 'EXECUTE_ORDER', policy: 'RLS_SOLANA_SIGNATURE_FORMAT', allowed: false, rlsOwnerId, exchange, symbol, reason: err });
+      return { ok: false, policy: 'RLS_SOLANA_SIGNATURE_FORMAT', rlsOwnerId, error: err };
+    }
+    if (
+      payload.solanaTxSignature &&
+      !/^[1-9A-HJ-NP-Za-km-z]{64,96}$/.test(String(payload.solanaTxSignature).trim())
+    ) {
+      const err = '[RLS SOLANA GUARD] Format signature transaksi on-chain Solana (Base58) tidak valid.';
       recordRlsAuditEvent({ action: 'EXECUTE_ORDER', policy: 'RLS_SOLANA_SIGNATURE_FORMAT', allowed: false, rlsOwnerId, exchange, symbol, reason: err });
       return { ok: false, policy: 'RLS_SOLANA_SIGNATURE_FORMAT', rlsOwnerId, error: err };
     }

@@ -332,10 +332,12 @@ export const WalletConnectModal: React.FC<WalletConnectModalProps> = ({
     });
 
     setStatusBanner({
-      tone: 'SUCCESS',
-      text: `[${w.name}] TERVERIFIKASI REAL (${effectiveTestnet ? 'Testnet' : 'Mainnet'})! Saldo Live: $${(
-        res.balanceUsd ?? 0
-      ).toLocaleString()} (${res.addressDisplay})`,
+      tone: res.agentAuthWarning ? 'INFO' : 'SUCCESS',
+      text: res.agentAuthWarning
+        ? `[${w.name}] Saldo terverifikasi ($${(res.balanceUsd ?? 0).toLocaleString()}), namun PERHATIAN: ${res.agentAuthWarning}`
+        : `[${w.name}] TERVERIFIKASI REAL (${effectiveTestnet ? 'Testnet' : 'Mainnet'})! Saldo Live: $${(
+            res.balanceUsd ?? 0
+          ).toLocaleString()} (${res.addressDisplay})`,
     });
   };
 

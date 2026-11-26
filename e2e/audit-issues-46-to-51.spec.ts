@@ -354,4 +354,58 @@ test.describe('Issues #46-#51 End-to-End Real-Money Integrity & Automation Contr
     });
     expect(newsDefense.sentimentWithBearNews).toBeLessThan(newsDefense.sentimentWithoutNews - 10);
   });
+
+  test('3-WAY ISOLATION (PAPER / TESTNET / REAL MONEY), ZERO STATIC NEWS LEAKAGE & PHANTOM JUPITER V1 SWAP BUILDER', async ({
+    request,
+    page,
+  }) => {
+    await page.goto('/pro/', { waitUntil: 'domcontentloaded' });
+
+    // 1. In PAPER mode: seeded paper positions exist (3/3) and simulator buttons are visible
+    await expect(page.getByText(/ACTIVE POSITIONS \[PAPER\] \(3\/3 SLOTS\)/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /WHALE INFLOW/ })).toBeVisible();
+
+    // 2. Switch to TESTNET: Paper positions MUST NOT bleed into TESTNET (0/3 slots), simulator buttons hidden, AUTO-AGENT OFF
+    await page.getByRole('button', { name: 'TESTNET', exact: true }).click();
+    await expect(page.getByText(/ACTIVE POSITIONS \[TESTNET\] \(0\/3 SLOTS\)/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /WHALE INFLOW/ })).toHaveCount(0);
+    await expect(page.getByTestId('kill-switch')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /AUTO-AGENT: OFF/ })).toBeVisible();
+
+    // 3. Switch to REAL MONEY: strictly isolated (0/3 slots), simulator buttons hidden, AUTO-AGENT OFF
+    await page.getByRole('button', { name: /REAL MONEY/ }).click();
+    await expect(page.getByText(/ACTIVE POSITIONS \[🔥 REAL MONEY\] \(0\/3 SLOTS\)/)).toBeVisible();
+    await expect(page.getByRole('button', { name: /WHALE INFLOW/ })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /AUTO-AGENT: OFF/ })).toBeVisible();
+
+    // 4. Switch back to PAPER: Paper positions are still intact (zero cross-mode data loss!)
+    await page.getByRole('button', { name: 'PAPER', exact: true }).click();
+    await expect(page.getByText(/ACTIVE POSITIONS \[PAPER\] \(3\/3 SLOTS\)/)).toBeVisible();
+
+    // 5. Verify strictLiveOnly news guard never injects static INITIAL_VERIFIED_NEWS
+    const strictNewsCount = await page.evaluate(async () => {
+      const forum: any = await import('/src/engine/multiAgentForum.ts');
+      const items = forum.buildVerifiedMacroNewsFeed([], [], [], { strictLiveOnly: true });
+      return items.length;
+    });
+    expect(strictNewsCount).toBe(0);
+
+    // 6. Verify live Phantom Jupiter V1 Swap Transaction Builder returns an authentic serialized VersionedTransaction
+    const swapRes = await request.post('/api/execute/solana-swap-tx', {
+      data: {
+        symbol: 'SOL-PERP',
+        side: 'LONG',
+        orderPurpose: 'ENTRY_MAKER',
+        sizeUsd: 25,
+        userPublicKey: '9xQeWvG816bUx9EPjHmaT23yvVM2ZWbrrpZb9PusVFin',
+        useTestnet: false,
+      },
+    });
+    expect(swapRes.status()).toBe(200);
+    const swapJson = await swapRes.json();
+    expect(swapJson.ok).toBe(true);
+    expect(typeof swapJson.swapTransaction).toBe('string');
+    expect(swapJson.swapTransaction.length).toBeGreaterThan(200);
+    expect(swapJson.expectedOutQty).toBeGreaterThan(0);
+  });
 });

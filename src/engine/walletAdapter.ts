@@ -6,7 +6,6 @@ import {
   WalletCredentials,
 } from '../types/terminal';
 import {
-  computeRlsHexDigest,
   deriveWalletRlsOwnerScope,
   EVM_ADDR_RE,
   resolveOwningWalletForExchange,
@@ -17,7 +16,9 @@ import {
   verifyAndUnsealLoadedWallets,
 } from './rlsSecurityGuard';
 import {
+  buildHyperliquidCancelAction,
   buildHyperliquidEip712TypedData,
+  buildHyperliquidLeverageAction,
   buildHyperliquidOrderAction,
 } from '../../backend/hyperliquidProtocol.mjs';
 import {
@@ -25,18 +26,60 @@ import {
   isWalletReadyForRealExecution,
 } from '../../backend/realExecutionRouter.mjs';
 
+const BASE58_ALPHABET = '123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz';
+
+function encodeBase58(bytes: Uint8Array): string {
+  if (!bytes.length) return '';
+  const digits = [0];
+  for (let i = 0; i < bytes.length; i++) {
+    let carry = bytes[i];
+    for (let j = 0; j < digits.length; j++) {
+      carry += digits[j] << 8;
+      digits[j] = carry % 58;
+      carry = (carry / 58) | 0;
+    }
+    while (carry > 0) {
+      digits.push(carry % 58);
+      carry = (carry / 58) | 0;
+    }
+  }
+  let out = '';
+  for (let i = 0; i < bytes.length && bytes[i] === 0; i++) out += '1';
+  for (let i = digits.length - 1; i >= 0; i--) out += BASE58_ALPHABET[digits[i]];
+  return out;
+}
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const bin = atob(base64);
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function uint8ArrayToBase64(bytes: Uint8Array): string {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
 declare global {
   interface Window {
     solana?: {
       isPhantom?: boolean;
       connect: () => Promise<{ publicKey: { toString: () => string } }>;
       signMessage?: (msg: Uint8Array, encoding: string) => Promise<{ signature: Uint8Array }>;
+      signAndSendTransaction?: (tx: any, opts?: any) => Promise<{ signature: string }>;
+      signTransaction?: (tx: any) => Promise<{ serialize: () => Uint8Array }>;
+      request?: (args: { method: string; params?: any }) => Promise<any>;
     };
     phantom?: {
       solana?: {
         isPhantom?: boolean;
         connect: () => Promise<{ publicKey: { toString: () => string } }>;
         signMessage?: (msg: Uint8Array, encoding: string) => Promise<{ signature: Uint8Array }>;
+        signAndSendTransaction?: (tx: any, opts?: any) => Promise<{ signature: string }>;
+        signTransaction?: (tx: any) => Promise<{ serialize: () => Uint8Array }>;
+        request?: (args: { method: string; params?: any }) => Promise<any>;
       };
     };
     trustwallet?: {
@@ -484,6 +527,9 @@ export async function verifyRealAccountWithBackend(
   rlsOwnerId?: string;
   resolvedUseTestnet?: boolean;
   resolvedSpotHost?: string;
+  agentAddress?: string;
+  agentAuthorized?: boolean;
+  agentAuthWarning?: string;
   publicIp?: string;
   error?: string;
 }> {
@@ -530,6 +576,9 @@ export async function verifyRealAccountWithBackend(
       resolvedUseTestnet:
         typeof data.resolvedUseTestnet === 'boolean' ? data.resolvedUseTestnet : undefined,
       resolvedSpotHost: typeof data.resolvedSpotHost === 'string' ? data.resolvedSpotHost : undefined,
+      agentAddress: typeof data.agentAddress === 'string' ? data.agentAddress : undefined,
+      agentAuthorized: typeof data.agentAuthorized === 'boolean' ? data.agentAuthorized : undefined,
+      agentAuthWarning: typeof data.agentAuthWarning === 'string' ? data.agentAuthWarning : undefined,
       publicIp: data.publicIp,
       ...(latency ? { latencyMs: latency } : {}),
     };
@@ -678,20 +727,100 @@ async function signHyperliquidEip712Order(orderSpec: {
 }
 
 /**
- * Signs a Solana DEX order intent via Phantom Wallet with RLS signer verification.
+ * Signs any Hyperliquid L1 EIP-712 action (`updateLeverage` or `cancel`) via Trust Wallet / EVM extension
+ * so browser-wallet users have 1:1 parity with server-side Agent Private Key execution!
  */
-async function signSolanaDexOrderIntent(orderSpec: {
+async function signHyperliquidEip712Action(params: {
+  action: any;
+  nonce?: number;
+  useTestnet?: boolean;
+  expectedAddress?: string;
+}): Promise<{ ok: boolean; signedAction?: any; error?: string }> {
+  const evmProvider = window.trustwallet || window.ethereum;
+  if (!evmProvider) {
+    return {
+      ok: false,
+      error: 'Ekstensi Trust Wallet / EVM diperlukan untuk menandatangani aksi Hyperliquid L1.',
+    };
+  }
+  try {
+    const accounts = await evmProvider.request({ method: 'eth_requestAccounts' });
+    const signer = String(accounts?.[0] || '').trim();
+    if (!signer || !EVM_ADDR_RE.test(signer)) {
+      return { ok: false, error: 'Tidak ada akun Trust Wallet / EVM yang aktif.' };
+    }
+    const expected = String(params.expectedAddress || '').trim();
+    if (EVM_ADDR_RE.test(expected) && expected.toLowerCase() !== signer.toLowerCase()) {
+      return {
+        ok: false,
+        error: `[RLS SIGNER MISMATCH] Akun Trust Wallet aktif (${signer.slice(0, 6)}...${signer.slice(-4)}) tidak cocok dengan wallet terdaftar (${expected.slice(0, 6)}...${expected.slice(-4)}).`,
+      };
+    }
+    const nonce = Number.isFinite(Number(params.nonce)) ? Number(params.nonce) : Date.now();
+    const typedData = buildHyperliquidEip712TypedData(params.action, nonce, Boolean(params.useTestnet));
+    const rawSignature = await evmProvider.request({
+      method: 'eth_signTypedData_v4',
+      params: [signer, JSON.stringify(typedData)],
+    });
+    const cleanSig = String(rawSignature || '').replace(/^0x/, '');
+    const r = cleanSig.length >= 64 ? `0x${cleanSig.slice(0, 64)}` : '0x0';
+    const s = cleanSig.length >= 128 ? `0x${cleanSig.slice(64, 128)}` : '0x0';
+    const vRaw = cleanSig.length >= 130 ? parseInt(cleanSig.slice(128, 130), 16) : 27;
+    const v = vRaw < 27 ? vRaw + 27 : vRaw;
+    return {
+      ok: true,
+      signedAction: {
+        action: params.action,
+        nonce,
+        signature: { r, s, v },
+        rawSignature: String(rawSignature),
+        signedChainId: 1337,
+        signer,
+      },
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: err?.message || 'Tanda tangan EIP-712 dibatalkan oleh pengguna.',
+    };
+  }
+}
+
+/**
+ * Builds an authentic Jupiter V1 VersionedTransaction on the backend and signs/broadcasts it
+ * via Phantom Solana Wallet extension (non-custodial real on-chain execution).
+ */
+async function signAndBroadcastPhantomJupiterSwap(orderSpec: {
   symbol: string;
+  baseTokenAddress?: string;
   side: 'LONG' | 'SHORT';
+  orderPurpose: 'ENTRY_MAKER' | 'SCRATCH_EXIT' | 'BREAKEVEN_STOP';
   price: number;
   sizeUsd: number;
+  quantity?: number;
+  useTestnet?: boolean;
   expectedAddress?: string;
-}): Promise<{ ok: boolean; solanaSignedTx?: string; solanaSigner?: string; error?: string }> {
+}): Promise<{
+  ok: boolean;
+  solanaTxSignature?: string;
+  solanaSignedTxBase64?: string;
+  solanaSigner?: string;
+  expectedOutQty?: number;
+  effectivePrice?: number;
+  error?: string;
+}> {
+  if (orderSpec.useTestnet) {
+    return {
+      ok: false,
+      error:
+        'Jupiter V1 Aggregator hanya beroperasi di Solana Mainnet-Beta. Beralih ke mode REAL_MAINNET untuk swap Phantom live, atau gunakan Binance / Hyperliquid Testnet.',
+    };
+  }
   const provider = window.phantom?.solana || window.solana;
   if (!provider || typeof provider.connect !== 'function') {
     return {
       ok: false,
-      error: 'Ekstensi Phantom Solana diperlukan untuk menandatangani transaksi DEX.',
+      error: 'Ekstensi Phantom Solana diperlukan untuk menandatangani & mengirim transaksi swap Jupiter V1 on-chain.',
     };
   }
   try {
@@ -708,28 +837,92 @@ async function signSolanaDexOrderIntent(orderSpec: {
       };
     }
 
-    const nonce = Date.now();
-    const msgText = `FINCEPT_RLS_SOL_ORDER|${orderSpec.symbol}|${orderSpec.side}|${orderSpec.sizeUsd}|${orderSpec.price}|${nonce}`;
-    if (typeof provider.signMessage === 'function') {
-      const encoded = new TextEncoder().encode(msgText);
-      const sigRes = await provider.signMessage(encoded, 'utf8');
-      const sigHex = Array.from(sigRes.signature || [])
-        .map((b) => b.toString(16).padStart(2, '0'))
-        .join('');
+    const buildRes = await fetch('/api/execute/solana-swap-tx', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        symbol: orderSpec.symbol,
+        baseTokenAddress: orderSpec.baseTokenAddress,
+        side: orderSpec.side,
+        orderPurpose: orderSpec.orderPurpose,
+        sizeUsd: orderSpec.sizeUsd,
+        quantity: orderSpec.quantity,
+        userPublicKey: pubKey,
+        useTestnet: Boolean(orderSpec.useTestnet),
+      }),
+    });
+    const swapData = await buildRes.json();
+    if (!swapData?.ok || !swapData?.swapTransaction) {
       return {
-        ok: true,
-        solanaSignedTx: sigHex || computeRlsHexDigest(msgText) + computeRlsHexDigest(pubKey),
-        solanaSigner: pubKey,
+        ok: false,
+        error: swapData?.error || 'Gagal menyusun transaksi swap Jupiter V1.',
       };
     }
+
+    const txBytes = base64ToUint8Array(swapData.swapTransaction);
+    const txBase58 = encodeBase58(txBytes);
+
+    // 1. Official Phantom JSON-RPC signAndSendTransaction (accepts Base58 serialized VersionedTransaction natively)
+    if (typeof provider.request === 'function') {
+      const rpcRes = await provider.request({
+        method: 'signAndSendTransaction',
+        params: {
+          message: txBase58,
+          options: { skipPreflight: false, maxRetries: 3 },
+        },
+      });
+      const sig = String(rpcRes?.signature || rpcRes || '').trim();
+      if (sig) {
+        return {
+          ok: true,
+          solanaTxSignature: sig,
+          solanaSigner: pubKey,
+          expectedOutQty: swapData.expectedOutQty,
+          effectivePrice: swapData.effectivePrice,
+        };
+      }
+    }
+
+    // 2. Fallback: duck-typed VersionedTransaction object for provider.signAndSendTransaction / signTransaction
+    const serializedWrapper = {
+      serialize: () => txBytes,
+      serializeMessage: () => txBytes,
+    };
+    if (typeof provider.signAndSendTransaction === 'function') {
+      const sent = await provider.signAndSendTransaction(serializedWrapper, { skipPreflight: false });
+      const sig = String(sent?.signature || '').trim();
+      if (sig) {
+        return {
+          ok: true,
+          solanaTxSignature: sig,
+          solanaSigner: pubKey,
+          expectedOutQty: swapData.expectedOutQty,
+          effectivePrice: swapData.effectivePrice,
+        };
+      }
+    }
+    if (typeof provider.signTransaction === 'function') {
+      const signed = await provider.signTransaction(serializedWrapper);
+      const signedBytes = signed?.serialize?.();
+      if (signedBytes && signedBytes.length > 0) {
+        return {
+          ok: true,
+          solanaSignedTxBase64: uint8ArrayToBase64(signedBytes),
+          solanaSigner: pubKey,
+          expectedOutQty: swapData.expectedOutQty,
+          effectivePrice: swapData.effectivePrice,
+        };
+      }
+    }
+
     return {
       ok: false,
-      error: 'Phantom signMessage tidak tersedia pada sesi ekstensi ini.',
+      error: 'Ekstensi Phantom pada sesi ini tidak mendukung signAndSendTransaction / signTransaction.',
     };
   } catch (err: any) {
     return {
       ok: false,
-      error: err?.message || 'Tanda tangan Phantom Solana dibatalkan oleh pengguna.',
+      error: err?.message || 'Transaksi swap Phantom Solana dibatalkan oleh pengguna.',
     };
   }
 }
@@ -752,6 +945,7 @@ export async function executeRealOrderOnVenue(params: {
   makerOnly?: boolean;
   marketType?: MarketType;
   venueMode?: 'FUTURES' | 'SPOT';
+  baseTokenAddress?: string;
   wallets: WalletConnectionState[];
   useTestnet: boolean;
   rowOwnerScope?: string;
@@ -759,6 +953,8 @@ export async function executeRealOrderOnVenue(params: {
 }): Promise<{
   ok: boolean;
   orderId?: string;
+  txSignature?: string;
+  explorerTxUrl?: string;
   status?: string;
   orderState?: 'FILLED' | 'PARTIALLY_FILLED' | 'RESTING';
   venueMode?: 'FUTURES' | 'SPOT';
@@ -849,6 +1045,7 @@ export async function executeRealOrderOnVenue(params: {
   };
 
   let hlSignedAction: any = undefined;
+  let hlSignedLeverage: any = undefined;
   const unsealedHlAgentKey = unsealCredentialSecret(hlAgentWallet?.credentials?.agentPrivateKey);
   if (params.exchange === 'HYPERLIQUID') {
     const effectiveAgentKey = (unsealedCredentials.agentPrivateKey || unsealedHlAgentKey || '').trim();
@@ -859,6 +1056,29 @@ export async function executeRealOrderOnVenue(params: {
       // Unattended server-side EIP-712 Phantom Agent signing + automatic updateLeverage sync (no browser popup!)
       unsealedCredentials.agentPrivateKey = effectiveAgentKey;
     } else {
+      // Trust Wallet / EVM Extension interactive EIP-712 leverage sync before ENTRY_MAKER
+      if (params.orderPurpose === 'ENTRY_MAKER' && Number(params.leverage) >= 1) {
+        const assetMeta = await resolveHyperliquidAssetMeta(params.symbol, Boolean(params.useTestnet));
+        if (assetMeta) {
+          const clampedLev = Math.max(1, Math.min(assetMeta.maxLeverage || 20, Math.round(Number(params.leverage))));
+          const levAction = buildHyperliquidLeverageAction({
+            assetIndex: assetMeta.index,
+            leverage: clampedLev,
+            isCross: true,
+          });
+          const levSignRes = await signHyperliquidEip712Action({
+            action: levAction,
+            nonce: Date.now(),
+            useTestnet: params.useTestnet,
+            expectedAddress: unsealedCredentials.walletAddress,
+          });
+          if (!levSignRes.ok) {
+            return { ok: false, error: levSignRes.error };
+          }
+          hlSignedLeverage = levSignRes.signedAction;
+        }
+      }
+
       const signRes = await signHyperliquidEip712Order({
         symbol: params.symbol,
         side: params.side,
@@ -878,21 +1098,38 @@ export async function executeRealOrderOnVenue(params: {
     }
   }
 
-  let solanaSignedTx: string | undefined = undefined;
+  let solanaTxSignature: string | undefined = undefined;
+  let solanaSignedTxBase64: string | undefined = undefined;
   let solanaSigner: string | undefined = undefined;
+  let expectedOutQty: number | undefined = undefined;
+  let effectivePrice: number | undefined = undefined;
   if (params.exchange === 'JUPITER' || params.exchange === 'DEXSCREENER') {
-    const solSign = await signSolanaDexOrderIntent({
+    if (params.orderPurpose === 'BREAKEVEN_STOP') {
+      return {
+        ok: false,
+        error:
+          'Solana AMM Spot (Jupiter V1 / Phantom) tidak memiliki native conditional stop-loss di DEX pool; proteksi exit dipantau secara aktif oleh Agent.',
+      };
+    }
+    const solSign = await signAndBroadcastPhantomJupiterSwap({
       symbol: params.symbol,
+      baseTokenAddress: params.baseTokenAddress,
       side: params.side,
+      orderPurpose: params.orderPurpose,
       price: params.price,
       sizeUsd: params.sizeUsd,
+      quantity: params.quantity,
+      useTestnet: params.useTestnet,
       expectedAddress: unsealedCredentials.walletAddress,
     });
     if (!solSign.ok) {
-      return { ok: false, error: solSign.error || 'Tanda tangan Phantom Solana ditolak.' };
+      return { ok: false, error: solSign.error || 'Swap Phantom Solana ditolak.' };
     }
-    solanaSignedTx = solSign.solanaSignedTx;
+    solanaTxSignature = solSign.solanaTxSignature;
+    solanaSignedTxBase64 = solSign.solanaSignedTxBase64;
     solanaSigner = solSign.solanaSigner;
+    expectedOutQty = solSign.expectedOutQty;
+    effectivePrice = solSign.effectivePrice;
   }
 
   try {
@@ -916,9 +1153,13 @@ export async function executeRealOrderOnVenue(params: {
         refMarkPrice: params.refMarkPrice,
         credentials: unsealedCredentials,
         useTestnet: params.useTestnet,
+        hlSignedLeverage,
         hlSignedAction,
-        solanaSignedTx,
+        solanaTxSignature,
+        solanaSignedTxBase64,
         solanaSigner,
+        expectedOutQty,
+        effectivePrice,
         rlsContext: {
           sessionOwnerScope,
           rowOwnerScope: params.rowOwnerScope || sessionOwnerScope,
@@ -971,6 +1212,35 @@ export async function cancelRealOrderOnVenue(params: {
         ? unsealCredentialSecret(hlAgentWallet?.credentials?.agentPrivateKey)
         : ''),
   };
+  let hlSignedCancel: any = undefined;
+  if (params.exchange === 'HYPERLIQUID') {
+    const effKey = String(unsealedCredentials.agentPrivateKey || '').trim();
+    const hasValidAgentKey = /^(0x)?[a-fA-F0-9]{64}$/.test(effKey) && !/^0x?0+$/i.test(effKey);
+    if (!hasValidAgentKey) {
+      const assetMeta = await resolveHyperliquidAssetMeta(params.symbol, Boolean(params.useTestnet));
+      if (!assetMeta) {
+        return { ok: false, error: `Aset Hyperliquid '${params.symbol}' tidak ditemukan untuk pembatalan order.` };
+      }
+      try {
+        const cancelAction = buildHyperliquidCancelAction({
+          assetIndex: assetMeta.index,
+          orderId: params.orderId,
+        });
+        const cancelSign = await signHyperliquidEip712Action({
+          action: cancelAction,
+          nonce: Date.now(),
+          useTestnet: params.useTestnet,
+          expectedAddress: unsealedCredentials.walletAddress,
+        });
+        if (!cancelSign.ok) {
+          return { ok: false, error: cancelSign.error };
+        }
+        hlSignedCancel = cancelSign.signedAction;
+      } catch (err: any) {
+        return { ok: false, error: err instanceof Error ? err.message : 'Order ID Hyperliquid tidak valid.' };
+      }
+    }
+  }
   try {
     const res = await fetch('/api/execute/cancel', {
       method: 'POST',
@@ -984,6 +1254,7 @@ export async function cancelRealOrderOnVenue(params: {
         marketType: params.marketType,
         venueMode: params.venueMode,
         credentials: unsealedCredentials,
+        hlSignedCancel,
         useTestnet: params.useTestnet,
         rlsContext: {
           sessionOwnerScope,

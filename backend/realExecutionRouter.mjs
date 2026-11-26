@@ -16,7 +16,8 @@ export const MIN_SINGLE_ORDER_USD = 10;
 // Canonical exchange priority order: Hyperliquid & Binance first, followed by Bybit & OKX
 export const EXCHANGE_PRIORITY_ORDER = ['HYPERLIQUID', 'BINANCE', 'BYBIT', 'OKX'];
 
-const EXECUTABLE_REAL_EXCHANGES = new Set(EXCHANGE_PRIORITY_ORDER);
+const EXECUTABLE_REAL_EXCHANGES = new Set([...EXCHANGE_PRIORITY_ORDER, 'JUPITER', 'DEXSCREENER']);
+const SOLANA_DEX_EXCHANGES = new Set(['JUPITER', 'DEXSCREENER']);
 const HL_AGENT_PK_RE = /^(0x)?[a-fA-F0-9]{64}$/;
 
 function hasNonEmptyCredential(val) {
@@ -104,6 +105,13 @@ export function resolveReadyRealWalletForExchange(
     if (trustReady) return trust;
     if (hlAgentReady) return hlAgent;
     return null;
+  }
+  if (SOLANA_DEX_EXCHANGES.has(exchange)) {
+    // Phantom Jupiter V1 Aggregator executes real on-chain swaps on Solana Mainnet-Beta via interactive browser signing
+    if (useTestnet || requireAutonomousKey) return null;
+    const phantom = wallets.find((w) => w.id === 'phantom');
+    if (!phantom) return null;
+    return isWalletReadyForRealExecution(phantom, false).ok ? phantom : null;
   }
   const map = {
     BINANCE: 'binance_api',
@@ -196,6 +204,24 @@ export function getWalletMarketCapabilities(wallet) {
     };
   }
 
+  if (wallet.id === 'phantom') {
+    const solChain = wallet.chainBalances?.find(
+      (c) => c.chainId === 'solana' || String(c.chainName || '').toLowerCase().includes('solana')
+    );
+    const stableUsd =
+      typeof wallet.spotBalanceUsd === 'number' && wallet.spotBalanceUsd > 0
+        ? wallet.spotBalanceUsd
+        : solChain && Number.isFinite(Number(solChain.stableBalanceUsd)) && Number(solChain.stableBalanceUsd) > 0
+          ? Number(solChain.stableBalanceUsd)
+          : totalBal;
+    return {
+      supportsFutures: false,
+      supportsSpot: true,
+      availableFuturesUsd: 0,
+      availableSpotUsd: Math.max(0, stableUsd),
+    };
+  }
+
   return {
     supportsFutures: false,
     supportsSpot: false,
@@ -266,12 +292,26 @@ export function resolveExecutableRealVenue({
   let interactivePopupBlockedError = null;
 
   for (const ex of candidateExchanges) {
-    // (#51 + HL Autonomous Parity): Hyperliquid browser extension signing requires interactive popup,
-    // EXCEPT when a valid Hyperliquid Agent Private Key is configured for unattended server-side EIP-712 signing!
+    // (#51 + HL Autonomous Parity + Phantom Solana Swap):
+    // - Hyperliquid without Agent Private Key requires interactive EVM extension popup.
+    // - Phantom (JUPITER/DEXSCREENER) executes live on-chain Jupiter V1 swaps via interactive Phantom extension popup on Solana Mainnet-Beta.
     const wallet = resolveReadyRealWalletForExchange(ex, wallets, useTestnet, {
-      requireAutonomousKey: Boolean(isAutonomous && ex === 'HYPERLIQUID'),
+      requireAutonomousKey: Boolean(isAutonomous && (ex === 'HYPERLIQUID' || SOLANA_DEX_EXCHANGES.has(ex))),
     });
     if (!wallet) {
+      if (SOLANA_DEX_EXCHANGES.has(ex)) {
+        const phantomRaw = wallets.find((w) => w.id === 'phantom' && w.connected && hasRealWalletCredentials(w));
+        if (phantomRaw) {
+          if (useTestnet) {
+            envMismatchError =
+              'Phantom Jupiter V1 Swap beroperasi langsung di Solana Mainnet-Beta (tidak tersedia pada mode EXCHANGE_TESTNET). Gunakan mode REAL_MAINNET untuk swap Phantom live, atau hubungkan Binance / Hyperliquid Testnet.';
+          } else if (isAutonomous) {
+            interactivePopupBlockedError =
+              'Phantom Solana memerlukan persetujuan transaksi on-chain di ekstensi browser (non-custodial) sehingga hanya dapat dieksekusi manual. Untuk Auto-Hunter unattended, gunakan Hyperliquid Agent Key / Binance / Bybit / OKX.';
+          }
+        }
+        continue;
+      }
       if (isAutonomous && ex === 'HYPERLIQUID') {
         const hlAnyReady = resolveReadyRealWalletForExchange('HYPERLIQUID', wallets, useTestnet, {
           requireAutonomousKey: false,

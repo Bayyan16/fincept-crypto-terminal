@@ -12,16 +12,23 @@ export function computePositionPnl(params: {
   initialMarginUsd: number;
   effectiveQty: number;
 };
+export type RecordExecutionEnv = 'PAPER_SANDBOX' | 'EXCHANGE_TESTNET' | 'REAL_MAINNET';
+export function resolveRecordExecutionEnv(record?: {
+  executionEnv?: string;
+  isRealMoney?: boolean;
+}): RecordExecutionEnv;
 export function getUtcTradingDayKey(dateInput?: Date | number | string): string;
 export function computeDailyRealizedPnlUsd(params: {
   closedTrades: Array<{
     id: string;
     isRealMoney?: boolean;
+    executionEnv?: RecordExecutionEnv;
     isSeededDemo?: boolean;
     closedDateKey?: string;
     realizedPnlUsd: number;
   }>;
-  isRealEnv: boolean;
+  isRealEnv?: boolean;
+  executionEnv?: RecordExecutionEnv;
   tradingDayKey?: string;
 }): number;
 export function evaluateDailyDrawdownCircuitBreaker(params: {
@@ -42,6 +49,7 @@ export function computeClosedTradeSettlement(params: {
   executedQty?: number;
   isRealMoney?: boolean;
   exchangeOrderId?: string;
+  solanaTxSignature?: string;
 }): {
   exitPrice: number;
   realizedPnlPct: number;

@@ -48,6 +48,7 @@ import {
   computeSafeBreakevenParams,
   evaluateDailyDrawdownCircuitBreaker,
   getUtcTradingDayKey,
+  resolveRecordExecutionEnv,
 } from '../backend/positionMath.mjs';
 import {
   computeSafeAutonomousRealOrderSizeUsd,
@@ -208,6 +209,10 @@ export function App({
   const activePriceRef = useRef<number>(INITIAL_MARKETS[0].price);
   const hasLiveSnapshotRef = useRef<boolean>(false);
   const lastLiveSnapshotAtRef = useRef<number>(0);
+  const hasLiveNewsRef = useRef<boolean>(false);
+  const hasLiveWhaleRef = useRef<boolean>(false);
+  const [isLiveNewsSynced, setIsLiveNewsSynced] = useState<boolean>(false);
+  const [isLiveWhaleSynced, setIsLiveWhaleSynced] = useState<boolean>(false);
   const initialStopSubmittedIdsRef = useRef<Set<string>>(new Set());
   const beStopSubmittedIdsRef = useRef<Set<string>>(new Set());
   const closingPositionIdsRef = useRef<Set<string>>(new Set());
@@ -285,12 +290,22 @@ export function App({
   const [wallets, setWallets] = useState<WalletConnectionState[]>(() => loadSavedWallets());
   const [isWalletModalOpen, setIsWalletModalOpen] = useState(false);
 
-  // Real-Money Execution Mode & Capital Guardrails
+  // Real-Money Execution Mode & Capital Guardrails (strict 3-way isolation: Paper vs Testnet vs Mainnet)
   const [executionEnv, setExecutionEnv] = useState<ExecutionEnvironment>('PAPER_SANDBOX');
+  const executionEnvRef = useRef<ExecutionEnvironment>('PAPER_SANDBOX');
+  executionEnvRef.current = executionEnv;
   const [orderSizeUsdInput, setOrderSizeUsdInput] = useState<number>(500);
   const [leverageInput, setLeverageInput] = useState<number>(6);
   const [maxDailyDrawdownUsd, setMaxDailyDrawdownUsd] = useState<number>(150);
-  const [circuitBreakerTriggered, setCircuitBreakerTriggered] = useState<boolean>(false);
+  const [circuitBreakerByEnv, setCircuitBreakerByEnv] = useState<Record<ExecutionEnvironment, boolean>>({
+    PAPER_SANDBOX: false,
+    EXCHANGE_TESTNET: false,
+    REAL_MAINNET: false,
+  });
+  const circuitBreakerTriggered = circuitBreakerByEnv[executionEnv];
+  const setCircuitBreakerTriggered = (val: boolean) => {
+    setCircuitBreakerByEnv((prev) => ({ ...prev, [executionEnvRef.current]: val }));
+  };
   const [isExecutingOrder, setIsExecutingOrder] = useState<boolean>(false);
 
   // Autonomous Agent Settings (Calibrated for Real-Money Safety #51: BE trigger strictly > lock offset + cushion, realistic scratch cap)
@@ -435,34 +450,59 @@ export function App({
     return markets[0];
   }, [markets, selectedSymbol, customDeskPool]);
 
+  const isRealExecutionEnv = executionEnv !== 'PAPER_SANDBOX';
+
+  // Strict 3-way environment isolation: Paper Sandbox, Exchange Testnet, and Real Mainnet never overlap!
+  const envPositions = useMemo(
+    () => positions.filter((p) => resolveRecordExecutionEnv(p) === executionEnv),
+    [positions, executionEnv]
+  );
+  const envClosedTrades = useMemo(
+    () => closedTrades.filter((c) => resolveRecordExecutionEnv(c) === executionEnv),
+    [closedTrades, executionEnv]
+  );
+  // Zero static fixture leakage in Testnet & Real Mainnet: ONLY live verified Bloomberg/CoinDesk RSS & live on-chain txs!
+  const effectiveVerifiedNews = useMemo(
+    () => (isRealExecutionEnv ? (isLiveNewsSynced ? verifiedNews : []) : verifiedNews),
+    [isRealExecutionEnv, isLiveNewsSynced, verifiedNews]
+  );
+  const effectiveWhaleTxs = useMemo(
+    () => (isRealExecutionEnv ? whaleTxs.filter((w) => w.isLiveVerified) : whaleTxs),
+    [isRealExecutionEnv, whaleTxs]
+  );
+  const effectiveVerifiedNewsRef = useRef<VerifiedNewsItem[]>(effectiveVerifiedNews);
+  effectiveVerifiedNewsRef.current = effectiveVerifiedNews;
+  const effectiveWhaleTxsRef = useRef<WhaleTransaction[]>(effectiveWhaleTxs);
+  effectiveWhaleTxsRef.current = effectiveWhaleTxs;
+
   const activePosition = useMemo(
-    () => positions.find((p) => p.symbol === activePair.symbol),
-    [positions, activePair.symbol]
+    () => envPositions.find((p) => p.symbol === activePair.symbol),
+    [envPositions, activePair.symbol]
   );
 
   const confluence = useMemo(
-    () => computeAgentConfluenceMatrix(activePair, orderbook, whaleTxs),
-    [activePair, orderbook, whaleTxs]
+    () => computeAgentConfluenceMatrix(activePair, orderbook, effectiveWhaleTxs),
+    [activePair, orderbook, effectiveWhaleTxs]
   );
 
   const nextLowRiskCandidate = useMemo(
     () =>
       selectBestLowRiskHunterCandidate(
         markets,
-        positions,
+        envPositions,
         lastClosedSymbol,
         minLiquidityScoreGate,
         orderSizeUsdInput,
-        verifiedNews,
+        effectiveVerifiedNews,
         candlesMap
       ),
     [
       markets,
-      positions,
+      envPositions,
       lastClosedSymbol,
       minLiquidityScoreGate,
       orderSizeUsdInput,
-      verifiedNews,
+      effectiveVerifiedNews,
       candlesMap,
     ]
   );
@@ -495,18 +535,18 @@ export function App({
       runMultiAgentForumConsensus(
         activePair,
         orderbook,
-        whaleTxs,
+        effectiveWhaleTxs,
         currentCandles,
-        verifiedNews,
+        effectiveVerifiedNews,
         whalePositions,
         orderSizeUsdInput
       ),
     [
       activePair,
       orderbook,
-      whaleTxs,
+      effectiveWhaleTxs,
       currentCandles,
-      verifiedNews,
+      effectiveVerifiedNews,
       whalePositions,
       orderSizeUsdInput,
     ]
@@ -516,20 +556,20 @@ export function App({
     () =>
       scanAllMarketMultiAgentCandidates(
         markets,
-        positions,
+        envPositions,
         lastClosedSymbol,
         minLiquidityScoreGate,
         orderSizeUsdInput,
-        verifiedNews,
+        effectiveVerifiedNews,
         candlesMap
       ),
     [
       markets,
-      positions,
+      envPositions,
       lastClosedSymbol,
       minLiquidityScoreGate,
       orderSizeUsdInput,
-      verifiedNews,
+      effectiveVerifiedNews,
       candlesMap,
     ]
   );
@@ -537,14 +577,14 @@ export function App({
   const positionAudits = useMemo(
     () =>
       auditActivePositionsAccuracy(
-        positions,
+        envPositions,
         markets,
         candlesMap,
-        verifiedNews,
-        whaleTxs,
+        effectiveVerifiedNews,
+        effectiveWhaleTxs,
         whalePositions
       ),
-    [positions, markets, candlesMap, verifiedNews, whaleTxs, whalePositions]
+    [envPositions, markets, candlesMap, effectiveVerifiedNews, effectiveWhaleTxs, whalePositions]
   );
 
   const walkForwardOutcomes = useMemo(
@@ -699,17 +739,24 @@ export function App({
     const syncBatchScannerCandles = async () => {
       try {
         const res = await fetch(
-          '/api/live/batch-candles?coins=BTC,ETH,SOL,HYPE,XRP,DOGE,SUI,TAO,kPEPE,ONDO,AAVE,ARB&interval=15m&limit=64'
+          '/api/live/batch-candles?coins=BTC,ETH,SOL,HYPE,XRP,BNB,DOGE,ADA,AVAX,LINK,SUI,TAO,kPEPE,ONDO,AAVE,ARB,JUP,RAY&interval=15m&limit=64'
         );
         if (!res.ok || !mounted) return;
         const data = await res.json();
         if (data?.ok && data.candlesByCoin && typeof data.candlesByCoin === 'object') {
+          const syncedBaseCoins = new Set<string>();
           setCandlesMap((prev) => {
             const next = { ...prev };
             for (const [coin, candles] of Object.entries(data.candlesByCoin)) {
               if (Array.isArray(candles) && candles.length > 0) {
                 const cleanBase = coin.replace(/^k(?=[A-Z]{2,})/, '');
-                const sym = cleanBase === 'HYPE' ? 'HYPE-USDC' : `${cleanBase}-PERP`;
+                const sym =
+                  cleanBase === 'HYPE'
+                    ? 'HYPE-USDC'
+                    : cleanBase === 'JUP' || cleanBase === 'RAY'
+                      ? `${cleanBase}-SOL`
+                      : `${cleanBase}-PERP`;
+                syncedBaseCoins.add(cleanBase.toUpperCase());
                 next[coin] = candles as CandlePoint[];
                 if (!next[`${sym}_15m`]) {
                   next[`${sym}_15m`] = candles as CandlePoint[];
@@ -718,6 +765,15 @@ export function App({
             }
             return next;
           });
+          if (syncedBaseCoins.size > 0) {
+            setMarkets((prev) =>
+              prev.map((m) =>
+                syncedBaseCoins.has(m.baseAsset.toUpperCase())
+                  ? { ...m, hasRealCandles: true }
+                  : m
+              )
+            );
+          }
         }
       } catch {
         // ignore transient error
@@ -757,11 +813,24 @@ export function App({
           snap.realOnChainTrades
         );
         setMarkets(nextMarkets);
+        const hasLiveRssNews = Array.isArray(snap.verifiedMacroNews) && snap.verifiedMacroNews.length > 0;
+        if (hasLiveRssNews) {
+          hasLiveNewsRef.current = true;
+          setIsLiveNewsSynced(true);
+        }
+        const liveTradesOnly = Array.isArray(snap.realOnChainTrades)
+          ? snap.realOnChainTrades.filter((t) => t.isLiveVerified !== false)
+          : [];
+        if (liveTradesOnly.length > 0) {
+          hasLiveWhaleRef.current = true;
+          setIsLiveWhaleSynced(true);
+        }
         setVerifiedNews(
           buildVerifiedMacroNewsFeed(
             nextMarkets,
-            snap.realOnChainTrades || whaleTxsRef.current,
-            snap.verifiedMacroNews
+            liveTradesOnly,
+            snap.verifiedMacroNews,
+            { strictLiveOnly: executionEnvRef.current !== 'PAPER_SANDBOX' }
           )
         );
 
@@ -982,8 +1051,17 @@ export function App({
       stage === 'INITIAL'
         ? Boolean(pos.initialStopOrderId || pos.stopOrderId)
         : Boolean(pos.stopOrderId);
-    // Never attach an exchange stop to an unfilled resting Post-Only order (#49)
-    if (!pos.isRealMoney || pos.orderState === 'RESTING' || alreadyHasOrder || trackerRef.current.has(pos.id)) return;
+    // Never attach an exchange stop to an unfilled resting Post-Only order (#49) or AMM DEX Spot (Jupiter/Raydium)
+    if (
+      !pos.isRealMoney ||
+      pos.orderState === 'RESTING' ||
+      pos.exchange === 'JUPITER' ||
+      pos.exchange === 'DEXSCREENER' ||
+      alreadyHasOrder ||
+      trackerRef.current.has(pos.id)
+    ) {
+      return;
+    }
     if (!Number.isFinite(targetStopPrice) || targetStopPrice <= 0) return;
 
     // Guard against inverted stop price that would trigger `-2021 Order would immediately trigger` (#51)
@@ -1001,7 +1079,9 @@ export function App({
       ? `1000${rawBase.slice(1)}USDT`
       : `${rawBase.toUpperCase()}USDT`;
     const binSym = matchedMkt?.binanceSymbol || fallbackBinSym;
-    const useTestnetEnv = executionEnv === 'EXCHANGE_TESTNET';
+    // Always derive Testnet/Mainnet from the position's OWN executionEnv (never active UI tab!)
+    const posEnv = resolveRecordExecutionEnv(pos);
+    const useTestnetEnv = posEnv === 'EXCHANGE_TESTNET';
 
     // CRITICAL (#50): Cancel-before-replace! Cancel existing initial stop before placing BREAKEVEN_STOP
     // so Spot balance is unlocked and Futures never accumulates duplicate/rejected closePosition stops.
@@ -1132,13 +1212,16 @@ export function App({
             stopLossPrice: shouldLockBe && beCheck.canPlaceExchangeStop ? bePrice : pos.stopLossPrice,
           };
 
+          const posEnv = resolveRecordExecutionEnv(pos);
+          const posWhales = posEnv === 'PAPER_SANDBOX' ? liveWhaleTxs : effectiveWhaleTxsRef.current;
+          const posNews = posEnv === 'PAPER_SANDBOX' ? verifiedNewsRef.current : effectiveVerifiedNewsRef.current;
           const deepEval = evaluateActivePositionDeepIntelligence(
             updatedBase,
             mkt,
-            liveWhaleTxs,
+            posWhales,
             autoTakeProfitTriggerPct,
             maxMicroLossScratchPct,
-            verifiedNewsRef.current
+            posNews
           );
 
           return {
@@ -1171,6 +1254,8 @@ export function App({
     const pollFills = async () => {
       for (const pos of restingReal) {
         if (!mounted) return;
+        const posEnv = resolveRecordExecutionEnv(pos);
+        const posUseTestnet = posEnv === 'EXCHANGE_TESTNET';
         const mkt = marketsRef.current.find((m) => m.symbol === pos.symbol);
         const st = await fetchRealOrderStatusOnVenue({
           exchange: pos.exchange,
@@ -1180,7 +1265,7 @@ export function App({
           marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
           venueMode: pos.venueMode,
           wallets,
-          useTestnet: executionEnv === 'EXCHANGE_TESTNET',
+          useTestnet: posUseTestnet,
         });
         if (!mounted || !st.ok) continue;
         if (st.orderState === 'CANCELED') {
@@ -1198,7 +1283,7 @@ export function App({
                     filledQty: confirmedQty,
                     executedQty: confirmedQty,
                     entryPrice: confirmedPx,
-                    statusReason: `[${executionEnv} ${p.venueMode || 'FUTURES'} #${p.orderId}] FILLED @ $${confirmedPx.toLocaleString()} — Protective SL Armed`,
+                    statusReason: `[${posEnv} ${p.venueMode || 'FUTURES'} #${p.orderId}] FILLED @ $${confirmedPx.toLocaleString()} — Protective SL Armed`,
                   }
                 : p
             )
@@ -1257,7 +1342,8 @@ export function App({
         }
       }
 
-      if (agentAutonomousEnabled && !dispatchedAutoClose) {
+      // Strict 3-way isolation: ONLY auto-close positions belonging to the active executionEnv!
+      if (agentAutonomousEnabled && !dispatchedAutoClose && resolveRecordExecutionEnv(pos) === executionEnv) {
         const openedTs = Number((pos.id.match(/(\d{13})/) || [])[1] || 0);
         const posAgeMs = openedTs > 0 ? Date.now() - openedTs : 60_000;
         const allowAutoCut = posAgeMs >= 15_000 || pos.unrealizedPnlPct <= -1.5;
@@ -1273,18 +1359,17 @@ export function App({
     }
   }, [positions, agentAutonomousEnabled, wallets, executionEnv, autoBreakevenTriggerPct]);
 
-  // 4B. Live Daily Drawdown Circuit Breaker Monitor
-  // Halts new manual & autonomous entries when daily net loss exceeds maxDailyDrawdownUsd,
+  // 4B. Live Daily Drawdown Circuit Breaker Monitor (Strictly isolated per Paper / Testnet / Real Mainnet!)
+  // Halts new manual & autonomous entries when daily net loss in the active environment exceeds maxDailyDrawdownUsd,
   // while keeping automatic protective exits (scratch/TP/BE) active for open positions.
   useEffect(() => {
-    const isRealEnv = executionEnv !== 'PAPER_SANDBOX';
-    const relevantPositions = isRealEnv
-      ? positions.filter((p) => p.isRealMoney)
-      : positions.filter((p) => !p.isRealMoney);
+    // Do not trip Paper Sandbox circuit breaker on pre-sync cold-boot seed fixtures before live snapshot anchors them
+    if (executionEnv === 'PAPER_SANDBOX' && !hasLiveSnapshotRef.current) return;
+    const relevantPositions = positions.filter((p) => resolveRecordExecutionEnv(p) === executionEnv);
     const unrealizedSum = relevantPositions.reduce((s, p) => s + p.unrealizedPnlUsd, 0);
     const realizedSum = computeDailyRealizedPnlUsd({
       closedTrades,
-      isRealEnv,
+      executionEnv,
       tradingDayKey: getUtcTradingDayKey(),
     });
     const check = evaluateDailyDrawdownCircuitBreaker({
@@ -1293,9 +1378,9 @@ export function App({
       maxDailyDrawdownUsd,
     });
     if (check.triggered && !circuitBreakerTriggered) {
-      setCircuitBreakerTriggered(true);
+      setCircuitBreakerByEnv((prev) => ({ ...prev, [executionEnv]: true }));
       setCommandFeedback(
-        `🚨 [CIRCUIT BREAKER TRIPPED] Kerugian harian ($${check.netPnlUsd.toFixed(2)}) melampaui batas -$${check.limitUsd}. Entry baru dihentikan; proteksi exit posisi terbuka tetap aktif.`
+        `🚨 [CIRCUIT BREAKER TRIPPED — ${executionEnv}] Kerugian harian ($${check.netPnlUsd.toFixed(2)}) melampaui batas -$${check.limitUsd}. Entry baru pada ${executionEnv} dihentikan; proteksi exit posisi terbuka tetap aktif.`
       );
     }
   }, [
@@ -1422,8 +1507,10 @@ export function App({
       return false;
     }
 
-    // Isolate Paper vs Real position slot counting so seeded Paper positions never starve Real-Money slots
-    const liveModePositions = positionsRef.current.filter((p) => Boolean(p.isRealMoney) === isReal);
+    // Strict 3-way isolation: Paper Sandbox, Exchange Testnet, and Real Mainnet never share position slots!
+    const liveModePositions = positionsRef.current.filter(
+      (p) => resolveRecordExecutionEnv(p) === executionEnv
+    );
     const alreadyOpenSameSymbol = liveModePositions.some((p) => p.symbol === targetPair.symbol);
     const maxManualSlots = Math.max(maxConcurrentPositions, 8);
     if (!isExplicitUserEntry && !alreadyOpenSameSymbol && liveModePositions.length >= maxConcurrentPositions) {
@@ -1543,6 +1630,10 @@ export function App({
           makerOnly: makerOnlyMode,
           marketType: resolvedMarketType,
           venueMode: resolvedVenueMode,
+          baseTokenAddress:
+            customDeskPool && targetPair.symbol.endsWith('-DEX')
+              ? customDeskPool.baseTokenAddress
+              : undefined,
           refMarkPrice: effectiveRefMarkPx,
           wallets,
           useTestnet,
@@ -1616,6 +1707,7 @@ export function App({
         id: `pos-${Date.now()}`,
         orderId: realOrderId,
         isRealMoney: isReal,
+        executionEnv,
         symbol: targetPair.symbol,
         side,
         marketType: resolvedVenueMode === 'SPOT' ? 'SPOT' : targetPair.marketType,
@@ -1628,6 +1720,10 @@ export function App({
         requestedQty,
         orderState,
         venueMode: resolvedVenueMode,
+        baseTokenAddress:
+          customDeskPool && targetPair.symbol.endsWith('-DEX')
+            ? customDeskPool.baseTokenAddress
+            : undefined,
         leverage: finalLeverage,
         stopLossPrice: initialProtectiveStop,
         takeProfitPrice: tp,
@@ -1647,12 +1743,12 @@ export function App({
       wallets
     );
 
-    // CRITICAL (#50): NEVER silently slice/drop active real-money positions from tracking state!
+    // CRITICAL (#50 + 3-Way Isolation): NEVER drop active positions from this or any other ExecutionEnvironment!
     setPositions((prev) => {
       const sameMode = prev.filter(
-        (p) => Boolean(p.isRealMoney) === isReal && p.symbol !== targetPair.symbol
+        (p) => resolveRecordExecutionEnv(p) === executionEnv && p.symbol !== targetPair.symbol
       );
-      const otherMode = prev.filter((p) => Boolean(p.isRealMoney) !== isReal);
+      const otherMode = prev.filter((p) => resolveRecordExecutionEnv(p) !== executionEnv);
       if (isReal) {
         return [newPos, ...sameMode, ...otherMode];
       }
@@ -1692,18 +1788,33 @@ export function App({
     if (autonomousEntryInFlightRef.current) return false;
     const isRealEnv = executionEnv !== 'PAPER_SANDBOX';
     const useTestnet = executionEnv === 'EXCHANGE_TESTNET';
-    const modePositions = positionsRef.current.filter((p) => Boolean(p.isRealMoney) === isRealEnv);
+    const modePositions = positionsRef.current.filter(
+      (p) => resolveRecordExecutionEnv(p) === executionEnv
+    );
     if (circuitBreakerTriggered || modePositions.length >= maxConcurrentPositions) return false;
 
     // In EXCHANGE_TESTNET / REAL_MAINNET, select the highest-conviction brain candidate that has
     // an actually connected, env-matched real wallet supporting the signal's BUY/SELL + Futures/Spot mode,
     // and cap autonomous sizing safely within verified real balance.
     if (isRealEnv) {
-      // CRITICAL (#49): Block autonomous real-money entry until live snapshot is synced and fresh (< 20s old)
+      // CRITICAL (#49 + Authentic Telemetry): Block autonomous real/testnet entry until live market snapshot,
+      // live RSS news sentiment, AND live on-chain whale tape are synced (ZERO static fixture decisions!).
       const snapAgeMs = Date.now() - lastLiveSnapshotAtRef.current;
       if (!hasLiveSnapshotRef.current || snapAgeMs > 20_000) {
         setCommandFeedback(
           '[AUTO-HUNTER STANDBY] Menunggu sinkronisasi data real-time on-chain & bursa yang segar sebelum eksekusi dana asli.'
+        );
+        return false;
+      }
+      if (!hasLiveNewsRef.current || effectiveVerifiedNewsRef.current.length === 0) {
+        setCommandFeedback(
+          '[AUTO-HUNTER STANDBY] Menunggu sinkronisasi berita real-time Bloomberg/CoinDesk RSS agar sentimen berita 100% autentik.'
+        );
+        return false;
+      }
+      if (!hasLiveWhaleRef.current || effectiveWhaleTxsRef.current.length === 0) {
+        setCommandFeedback(
+          '[AUTO-HUNTER STANDBY] Menunggu sinkronisasi data transaksi whale on-chain real-time sebelum eksekusi.'
         );
         return false;
       }
@@ -1715,7 +1826,7 @@ export function App({
         lastClosedSymbol,
         minLiquidityScoreGate,
         orderSizeUsdInput,
-        verifiedNewsRef.current,
+        effectiveVerifiedNewsRef.current,
         candlesMapRef.current,
         { requireRealCandles: true, requireConsensusQuorum: true }
       );
@@ -1800,9 +1911,9 @@ export function App({
         const fullConsensus = runMultiAgentForumConsensus(
           verifiedPair,
           liveBook,
-          whaleTxsRef.current,
+          effectiveWhaleTxsRef.current,
           liveCandles,
-          verifiedNewsRef.current,
+          effectiveVerifiedNewsRef.current,
           whalePositions,
           safeSizing.sizeUsd
         );
@@ -1878,6 +1989,7 @@ export function App({
       id: `pos-auto-${Date.now()}`,
       orderId: autoOrderId,
       isRealMoney: false,
+      executionEnv: 'PAPER_SANDBOX',
       symbol: candidate.market.symbol,
       side: candidate.side,
       marketType: leverageInput === 1 ? 'SPOT' : candidate.market.marketType,
@@ -1900,7 +2012,7 @@ export function App({
     };
 
     setPositions((prev) => {
-      const paperPrev = prev.filter((p) => !p.isRealMoney);
+      const paperPrev = prev.filter((p) => resolveRecordExecutionEnv(p) === 'PAPER_SANDBOX');
       if (paperPrev.length >= maxConcurrentPositions || paperPrev.some((p) => p.symbol === autoPos.symbol)) {
         return prev;
       }
@@ -1930,10 +2042,7 @@ export function App({
   const executeAutonomousLowRiskSlotRef = useRef(executeAutonomousLowRiskSlot);
   executeAutonomousLowRiskSlotRef.current = executeAutonomousLowRiskSlot;
 
-  const isRealExecutionEnv = executionEnv !== 'PAPER_SANDBOX';
-  const activeModePositionsCount = positions.filter(
-    (p) => Boolean(p.isRealMoney) === isRealExecutionEnv
-  ).length;
+  const activeModePositionsCount = envPositions.length;
   const readyRealVenuesKey = wallets
     .filter((w) => isWalletReadyForRealExecution(w, executionEnv === 'EXCHANGE_TESTNET').ok)
     .map((w) => `${w.id}:${w.verifiedReal ? '1' : '0'}:${w.credentials?.useTestnet ? 'T' : 'M'}`)
@@ -2016,6 +2125,14 @@ export function App({
       now.getMinutes()
     ).padStart(2, '0')}:${String(now.getSeconds()).padStart(2, '0')}`;
 
+    const posEnv = resolveRecordExecutionEnv(pos);
+    const posUseTestnet = posEnv === 'EXCHANGE_TESTNET';
+    if (posEnv !== executionEnv) {
+      const err = `[3-WAY ISOLATION BLOCKED] Posisi ${pos.symbol} milik lingkungan ${posEnv}, sedangkan mode aktif adalah ${executionEnv}. Pindah ke ${posEnv} terlebih dahulu untuk menutup posisi ini.`;
+      setCommandFeedback(err);
+      return { ok: false, error: err };
+    }
+
     const rlsOwnership = verifyPositionRlsOwnership(pos, wallets);
     if (!rlsOwnership.ok) {
       setCommandFeedback(rlsOwnership.error || '[RLS ISOLATION BLOCKED] Penutupan posisi ditolak.');
@@ -2024,7 +2141,21 @@ export function App({
 
     let realCloseOrderId: string | undefined = undefined;
     let realClosePrice: number | undefined = undefined;
-    // STRICT ISOLATION: Only send exchange close orders for positions actually opened with real money (never for paper positions!)
+    let realCloseTxSignature: string | undefined = undefined;
+    let realCloseExplorerUrl: string | undefined = undefined;
+    const owningRealWallet = wallets.find(
+      (w) =>
+        w.verifiedReal &&
+        w.connected &&
+        w.credentials &&
+        ((pos.exchange === 'BINANCE' && w.id === 'binance_api') ||
+          (pos.exchange === 'BYBIT' && w.id === 'bybit_api') ||
+          (pos.exchange === 'OKX' && w.id === 'okx_api') ||
+          (pos.exchange === 'HYPERLIQUID' && (w.id === 'trust' || w.id === 'hyperliquid_agent')) ||
+          ((pos.exchange === 'JUPITER' || pos.exchange === 'DEXSCREENER') && w.id === 'phantom'))
+    );
+
+    // STRICT ISOLATION: Only send exchange close orders for positions actually opened with real/testnet money (never paper!)
     if (pos.isRealMoney) {
       setIsExecutingOrder(true);
       const matchedMkt = marketsRef.current.find((m) => m.symbol === pos.symbol);
@@ -2033,7 +2164,6 @@ export function App({
         ? `1000${rawBase.slice(1)}USDT`
         : `${rawBase.toUpperCase()}USDT`;
       const binSym = matchedMkt?.binanceSymbol || fallbackBinSym;
-      const useTestnetEnv = executionEnv === 'EXCHANGE_TESTNET';
 
       // Case A (#49): Unfilled resting Post-Only order -> CANCEL limit order on exchange (do NOT send Market close!)
       if (pos.orderState === 'RESTING' && pos.orderId) {
@@ -2046,13 +2176,16 @@ export function App({
           marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
           venueMode: pos.venueMode,
           wallets,
-          useTestnet: useTestnetEnv,
+          useTestnet: posUseTestnet,
           rowOwnerScope: pos.rlsOwnerScope,
         });
         setIsExecutingOrder(false);
         if (!cancelLimitRes.ok) {
           setCommandFeedback(`[CANCEL RESTING FAILED] ${pos.symbol}: ${cancelLimitRes.error}`);
           return { ok: false, error: cancelLimitRes.error };
+        }
+        if (owningRealWallet?.credentials) {
+          refreshRealWalletBalance(owningRealWallet, posUseTestnet);
         }
         setPositions((prev) => prev.filter((p) => p.id !== pos.id));
         setCommandFeedback(`✓ Resting Post-Only Order ${pos.symbol} (#${pos.orderId}) dibatalkan di ${pos.exchange}.`);
@@ -2074,7 +2207,7 @@ export function App({
           marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
           venueMode: pos.venueMode,
           wallets,
-          useTestnet: useTestnetEnv,
+          useTestnet: posUseTestnet,
           rowOwnerScope: pos.rlsOwnerScope,
         });
       }
@@ -2096,8 +2229,9 @@ export function App({
         price: pos.currentPrice,
         marketType: pos.venueMode === 'SPOT' ? 'SPOT' : pos.marketType,
         venueMode: pos.venueMode,
+        baseTokenAddress: pos.baseTokenAddress,
         wallets,
-        useTestnet: useTestnetEnv,
+        useTestnet: posUseTestnet,
         rowOwnerScope: pos.rlsOwnerScope,
       });
       setIsExecutingOrder(false);
@@ -2111,7 +2245,7 @@ export function App({
             timestamp: timeStr,
             symbol: pos.symbol,
             category: 'EXECUTION',
-            headline: `🚨 GAGAL MENUTUP POSISI REAL ${pos.symbol} di ${pos.exchange}`,
+            headline: `🚨 GAGAL MENUTUP POSISI ${posEnv} ${pos.symbol} di ${pos.exchange}`,
             detail: `${errMsg} — Posisi dipertahankan di daftar aktif agar tetap terpantau.`,
             score: 0,
             tone: 'WARN',
@@ -2121,6 +2255,8 @@ export function App({
         return { ok: false, error: errMsg };
       }
       realCloseOrderId = closeRes.orderId;
+      realCloseTxSignature = closeRes.txSignature;
+      realCloseExplorerUrl = closeRes.explorerTxUrl;
       if (closeRes.executedPrice && closeRes.executedPrice > 0) {
         realClosePrice = closeRes.executedPrice;
       }
@@ -2136,52 +2272,84 @@ export function App({
       executedQty: pos.executedQty,
       isRealMoney: Boolean(pos.isRealMoney),
       exchangeOrderId: realCloseOrderId,
+      solanaTxSignature: realCloseTxSignature,
     });
     const finalPnlPct = settled.realizedPnlPct;
     const finalPnlUsd = settled.realizedPnlUsd;
 
-    // Direct-to-Hot-Wallet Settlement Metadata (Zero Fake TxHash & Zero Corruption of Verified Real Wallet Balances)
+    // Truthful Venue-Accurate Settlement Destination (ZERO fabricated cross-chain claims for CEX/HL!)
     const isSolanaVenue =
       pos.exchange === 'JUPITER' ||
       pos.exchange === 'DEXSCREENER' ||
       pos.symbol.endsWith('-SOL');
-    const targetHotWalletId = isSolanaVenue ? 'phantom' : 'trust';
-    const targetHotWallet =
-      wallets.find((w) => w.id === targetHotWalletId) || wallets[0];
-    const hotWalletDisplayAddr =
-      targetHotWallet?.credentials?.walletAddress
-        ? `${targetHotWallet.credentials.walletAddress.slice(
-            0,
-            6
-          )}...${targetHotWallet.credentials.walletAddress.slice(-4)}`
-        : targetHotWallet?.addressOrKeyId?.split(' ')[0] || '0x71C...9A4E';
-    const hotWalletNameLabel = isSolanaVenue
-      ? 'Phantom Hot Wallet (Solana USDC)'
-      : `Trust Hot Wallet (${targetHotWallet?.activeChainName || 'Arbitrum L2 USDC'})`;
-    const settlementTxHash = settled.settlementTxHash;
+    const targetPaperWalletId = isSolanaVenue ? 'phantom' : 'trust';
+    const formatShortAddr = (addr?: string, fallback?: string) => {
+      if (addr && addr.length > 10) return `${addr.slice(0, 6)}...${addr.slice(-4)}`;
+      return fallback || 'Venue Account';
+    };
+    const trustOrHlWallet =
+      wallets.find((w) => w.id === 'hyperliquid_agent' && w.verifiedReal) ||
+      wallets.find((w) => w.id === 'trust') ||
+      wallets[0];
+    const phantomWallet = wallets.find((w) => w.id === 'phantom');
+    const binanceWallet = wallets.find((w) => w.id === 'binance_api');
+    const bybitWallet = wallets.find((w) => w.id === 'bybit_api');
+    const okxWallet = wallets.find((w) => w.id === 'okx_api');
 
-    const isSettledToHotWallet = autoDirectHotWalletSettle && finalPnlUsd > 0;
+    let settlementWalletName: string;
+    let settlementWalletAddr: string;
+    if (!pos.isRealMoney) {
+      const paperWallet = isSolanaVenue ? phantomWallet : trustOrHlWallet;
+      settlementWalletName = isSolanaVenue
+        ? 'Phantom Wallet [PAPER SIM]'
+        : `Trust Wallet [PAPER SIM]`;
+      settlementWalletAddr = formatShortAddr(
+        paperWallet?.credentials?.walletAddress,
+        paperWallet?.addressOrKeyId?.split(' ')[0]
+      );
+    } else if (pos.exchange === 'JUPITER' || pos.exchange === 'DEXSCREENER') {
+      settlementWalletName = 'Phantom Solana Wallet (On-Chain SPL USDC)';
+      settlementWalletAddr = formatShortAddr(
+        phantomWallet?.credentials?.walletAddress,
+        phantomWallet?.addressOrKeyId?.split(' ')[0]
+      );
+    } else if (pos.exchange === 'HYPERLIQUID') {
+      settlementWalletName = `Hyperliquid L1 ${posUseTestnet ? 'Testnet' : 'Mainnet'} Margin Wallet (Non-Custodial USDC)`;
+      settlementWalletAddr = formatShortAddr(
+        trustOrHlWallet?.credentials?.walletAddress,
+        trustOrHlWallet?.addressOrKeyId?.split(' ')[0]
+      );
+    } else if (pos.exchange === 'BINANCE') {
+      settlementWalletName = `Binance ${pos.venueMode === 'SPOT' ? 'Spot' : 'USDT-M Futures'} ${
+        posUseTestnet ? 'Demo/Testnet' : 'Mainnet'
+      } Wallet`;
+      settlementWalletAddr = binanceWallet?.credentials?.apiKey
+        ? `KEY-${binanceWallet.credentials.apiKey.slice(0, 5)}...`
+        : 'Binance Account';
+    } else if (pos.exchange === 'BYBIT') {
+      settlementWalletName = `Bybit V5 Unified ${posUseTestnet ? 'Testnet' : 'Mainnet'} Wallet`;
+      settlementWalletAddr = bybitWallet?.credentials?.apiKey
+        ? `KEY-${bybitWallet.credentials.apiKey.slice(0, 5)}...`
+        : 'Bybit Account';
+    } else {
+      settlementWalletName = `OKX V5 Multi-Asset ${posUseTestnet ? 'Demo' : 'Mainnet'} Wallet`;
+      settlementWalletAddr = okxWallet?.credentials?.apiKey
+        ? `KEY-${okxWallet.credentials.apiKey.slice(0, 5)}...`
+        : 'OKX Account';
+    }
+
+    const settlementTxHash = settled.settlementTxHash;
+    const isSettledToWallet = autoDirectHotWalletSettle && finalPnlUsd > 0;
 
     if (pos.isRealMoney) {
-      // Never mutate verified real wallet balance locally; refresh actual equity from the exchange/blockchain
-      const owning = wallets.find(
-        (w) =>
-          w.verifiedReal &&
-          w.connected &&
-          w.credentials &&
-          ((pos.exchange === 'BINANCE' && w.id === 'binance_api') ||
-            (pos.exchange === 'BYBIT' && w.id === 'bybit_api') ||
-            (pos.exchange === 'OKX' && w.id === 'okx_api') ||
-            (pos.exchange === 'HYPERLIQUID' && (w.id === 'trust' || w.id === 'hyperliquid_agent')) ||
-            ((pos.exchange === 'JUPITER' || pos.exchange === 'DEXSCREENER') && w.id === 'phantom'))
-      );
-      if (owning?.credentials) {
-        refreshRealWalletBalance(owning, executionEnv === 'EXCHANGE_TESTNET');
+      // Never mutate verified real wallet balance locally; refresh authoritative equity from the exchange/blockchain!
+      if (owningRealWallet?.credentials) {
+        refreshRealWalletBalance(owningRealWallet, posUseTestnet);
       }
-    } else if (isSettledToHotWallet && settled.allowLocalBalanceMutation) {
+    } else if (isSettledToWallet && settled.allowLocalBalanceMutation) {
       setWallets((prevWallets) => {
         const updated = prevWallets.map((w) => {
-          if (w.id === targetHotWalletId && !w.verifiedReal) {
+          if (w.id === targetPaperWalletId && !w.verifiedReal) {
             const nextBal = Number((w.balanceUsd + finalPnlUsd).toFixed(2));
             const nextChains = w.chainBalances
               ? w.chainBalances.map((cb, idx) =>
@@ -2210,8 +2378,9 @@ export function App({
     const closedItem: ClosedTradeLog = stampClosedTradeWithRls(
       {
         id: `cl-${Date.now()}`,
-        orderId: pos.orderId,
+        orderId: realCloseOrderId || pos.orderId,
         isRealMoney: pos.isRealMoney,
+        executionEnv: posEnv,
         timestamp: timeStr,
         closedDateKey: getUtcTradingDayKey(now),
         symbol: pos.symbol,
@@ -2230,14 +2399,15 @@ export function App({
               : finalPnlPct >= 0
                 ? 'BREAKEVEN_PROTECT'
                 : 'MICRO_LOSS_SCRATCH',
-        hotWalletSettled: isSettledToHotWallet,
-        hotWalletName: isSettledToHotWallet ? hotWalletNameLabel : undefined,
-        hotWalletAddress: isSettledToHotWallet ? hotWalletDisplayAddr : undefined,
-        settlementTxHash: isSettledToHotWallet ? settlementTxHash : undefined,
+        hotWalletSettled: isSettledToWallet,
+        hotWalletName: isSettledToWallet ? settlementWalletName : undefined,
+        hotWalletAddress: isSettledToWallet ? settlementWalletAddr : undefined,
+        settlementTxHash: settlementTxHash,
+        explorerTxUrl: realCloseExplorerUrl,
         note:
           mode === 'SCRATCH'
-            ? `Auto-Invalidation Scratch Exit dieksekusi instan (${finalPnlPct}%) saat Orderbook & Whale berbalik arah.`
-            : `Keputusan Agent Take Profit (+${finalPnlPct}% >= Min +50%): Profit +$${finalPnlUsd} langsung masuk otomatis ke ${hotWalletNameLabel} (${hotWalletDisplayAddr}) [Tx: ${settlementTxHash}]!`,
+            ? `[${posEnv}] Exit dieksekusi @ $${effectiveExitPrice} (${finalPnlPct >= 0 ? '+' : ''}${finalPnlPct}% / ${formatSignedUsd(finalPnlUsd)}). Saldo ${settlementWalletName} diperbarui otomatis.${settlementTxHash ? ` Ref: ${settlementTxHash}` : ''}`
+            : `[${posEnv}] Take Profit (${finalPnlPct >= 0 ? '+' : ''}${finalPnlPct}% / ${formatSignedUsd(finalPnlUsd)}) terselesaikan ke ${settlementWalletName} (${settlementWalletAddr})${settlementTxHash ? ` [Ref: ${settlementTxHash}]` : ''}.`,
       },
       rlsOwnership.rlsOwnerScope
     );
@@ -2253,8 +2423,8 @@ export function App({
           timestamp: timeStr,
           symbol: pos.symbol,
           category: 'EXECUTION',
-          headline: `💸 PROFIT +$${finalPnlUsd} AUTO-SETTLED KE HOT WALLET (${hotWalletDisplayAddr}) → Memulai Post-TP Scan (4x–8x)`,
-          detail: `Dana profit +$${finalPnlUsd} dari ${pos.symbol} telah langsung masuk ke ${hotWalletNameLabel} (Tx: ${settlementTxHash}) tanpa perlu withdraw dari terminal. Agent kini memindai 7 market untuk membuka posisi baru (Leverage 4x–8x, Maks ${maxConcurrentPositions} posisi)...`,
+          headline: `💸 [${posEnv}] PROFIT +$${finalPnlUsd.toFixed(2)} SETTLED KE ${settlementWalletName} (${settlementWalletAddr})`,
+          detail: `Realized profit +$${finalPnlUsd.toFixed(2)} (${finalPnlPct >= 0 ? '+' : ''}${finalPnlPct}%) dari ${pos.symbol} di ${pos.exchange} langsung masuk ke ${settlementWalletName}${settlementTxHash ? ` (Ref: ${settlementTxHash})` : ''}. Saldo live akun otomatis disinkronkan ulang.`,
           score: 97,
           tone: 'BULLISH',
         },
@@ -2264,8 +2434,8 @@ export function App({
 
     setCommandFeedback(
       finalPnlUsd > 0
-        ? `✓ Profit +$${finalPnlUsd} (${pos.symbol}) Otomatis Masuk ke ${hotWalletNameLabel} (${hotWalletDisplayAddr})! Auto-Hunter scanning (4x-8x)...`
-        : `Closed ${pos.symbol} (${closedItem.exitType}): ${finalPnlPct}% — Auto-Hunter scanning replacement...`
+        ? `✓ [${posEnv}] Profit +$${finalPnlUsd.toFixed(2)} (${pos.symbol}) masuk ke ${settlementWalletName} (${settlementWalletAddr})!`
+        : `[${posEnv}] Closed ${pos.symbol} (${closedItem.exitType}): ${finalPnlPct}% (${formatSignedUsd(finalPnlUsd)})`
     );
     return { ok: true, orderId: realCloseOrderId, executedPrice: realClosePrice };
   };
@@ -2300,15 +2470,19 @@ export function App({
             const next = [...prev];
             for (const exPos of res.positions) {
               const exists = next.some(
-                (p) => p.isRealMoney && p.exchange === exPos.exchange && p.symbol === exPos.symbol
+                (p) =>
+                  resolveRecordExecutionEnv(p) === nextEnv &&
+                  p.exchange === exPos.exchange &&
+                  p.symbol === exPos.symbol
               );
               if (!exists && exPos.entryPrice > 0 && exPos.executedQty > 0) {
                 const slRatio = Math.max(0.005, Math.abs(maxMicroLossScratchPct) / (100 * Math.max(1, exPos.leverage)));
                 const synced: AgentPosition = stampPositionWithRls(
                   {
-                    id: `pos-sync-${exPos.exchange}-${exPos.symbol}-${Date.now()}`,
+                    id: `pos-sync-${nextEnv}-${exPos.exchange}-${exPos.symbol}-${Date.now()}`,
                     orderId: `SYNC-${exPos.exchange}`,
                     isRealMoney: true,
+                    executionEnv: nextEnv,
                     symbol: exPos.symbol,
                     side: exPos.side,
                     marketType: 'PERP',
@@ -2352,7 +2526,10 @@ export function App({
 
   const handleEmergencyFlattenAll = async () => {
     setAgentAutonomousEnabled(false);
-    const snapshotPositions = [...positions];
+    // Strict 3-way isolation: ONLY flatten positions belonging to the active executionEnv!
+    const snapshotPositions = positions.filter(
+      (p) => resolveRecordExecutionEnv(p) === executionEnv
+    );
     let closedCount = 0;
     let failedCount = 0;
     for (const pos of snapshotPositions) {
@@ -2365,8 +2542,8 @@ export function App({
     }
     setCommandFeedback(
       failedCount === 0
-        ? `🚨 EMERGENCY KILL SWITCH EXECUTED: Semua ${closedCount} posisi ditutup & Autonomous Agent dihentikan!`
-        : `🚨 EMERGENCY KILL SWITCH PARTIAL: ${closedCount} posisi ditutup, ${failedCount} GAGAL ditutup di exchange — segera periksa akun Anda!`
+        ? `🚨 EMERGENCY KILL SWITCH (${executionEnv}): Semua ${closedCount} posisi ditutup & Autonomous Agent dihentikan!`
+        : `🚨 EMERGENCY KILL SWITCH PARTIAL (${executionEnv}): ${closedCount} posisi ditutup, ${failedCount} GAGAL ditutup di exchange — segera periksa akun Anda!`
     );
   };
 
@@ -2754,8 +2931,8 @@ export function App({
     return `$${usd.toFixed(0)}`;
   };
 
-  const totalUnrealizedPnl = positions.reduce((acc, p) => acc + p.unrealizedPnlUsd, 0);
-  const totalRealizedPnl = closedTrades.reduce((acc, c) => acc + c.realizedPnlUsd, 0);
+  const totalUnrealizedPnl = envPositions.reduce((acc, p) => acc + p.unrealizedPnlUsd, 0);
+  const totalRealizedPnl = envClosedTrades.reduce((acc, c) => acc + c.realizedPnlUsd, 0);
   const connectedWalletsCount = wallets.filter((w) => w.connected).length;
   const verifiedRealCount = wallets.filter((w) => w.verifiedReal).length;
   const totalPortfolioEquityUsd = computeUnifiedPortfolioEquityUsd({ wallets, executionEnv });
@@ -2914,12 +3091,12 @@ export function App({
             WALLETS ({verifiedRealCount > 0 ? `${verifiedRealCount} REAL` : `${connectedWalletsCount}/6`})
           </button>
 
-          {positions.length > 0 && (
+          {envPositions.length > 0 && (
             <button
               onClick={handleEmergencyFlattenAll}
               data-testid="kill-switch"
               className="px-2 py-1 bg-[#FF1744] hover:bg-[#ff4569] text-white font-extrabold text-[10px] whitespace-nowrap"
-              title="Tutup semua posisi terbuka & hentikan bot seketika"
+              title={`Tutup semua posisi terbuka pada mode ${executionEnv} & hentikan bot seketika`}
             >
               🚨 KILL SWITCH
             </button>
@@ -3227,19 +3404,23 @@ export function App({
             {executionEnv === 'REAL_MAINNET' ? '🔥 REAL SHORT' : '- MAKER SHORT'}
           </button>
 
-          <button
-            onClick={() => handleSimulateWhaleSurge('BULLISH')}
-            className="px-2 py-1 bg-[#141C2B] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/60 text-[10px] font-bold transition-colors whitespace-nowrap shrink-0"
-          >
-            ⚡ WHALE INFLOW
-          </button>
+          {!isRealExecutionEnv && (
+            <>
+              <button
+                onClick={() => handleSimulateWhaleSurge('BULLISH')}
+                className="px-2 py-1 bg-[#141C2B] hover:bg-[#00E5FF] hover:text-black text-[#00E5FF] border border-[#00E5FF]/60 text-[10px] font-bold transition-colors whitespace-nowrap shrink-0"
+              >
+                ⚡ WHALE INFLOW
+              </button>
 
-          <button
-            onClick={() => handleSimulateWhaleSurge('BEARISH')}
-            className="px-2 py-1 bg-[#1A1218] hover:bg-[#D500F9] hover:text-white text-[#D500F9] border border-[#D500F9]/60 text-[10px] font-bold transition-colors whitespace-nowrap shrink-0"
-          >
-            🛡️ DUMP GUARD
-          </button>
+              <button
+                onClick={() => handleSimulateWhaleSurge('BEARISH')}
+                className="px-2 py-1 bg-[#1A1218] hover:bg-[#D500F9] hover:text-white text-[#D500F9] border border-[#D500F9]/60 text-[10px] font-bold transition-colors whitespace-nowrap shrink-0"
+              >
+                🛡️ DUMP GUARD
+              </button>
+            </>
+          )}
         </div>
       </div>
 
@@ -3756,11 +3937,11 @@ export function App({
                       <MultiAgentForumPanel
                         consensus={forumConsensus}
                         activeMarket={activePair}
-                        verifiedNews={verifiedNews}
+                        verifiedNews={effectiveVerifiedNews}
                         topOpportunities={topMultiAgentOpportunities}
                         positionAudits={positionAudits}
                         walkForwardOutcomes={walkForwardOutcomes}
-                        closedTrades={closedTrades}
+                        closedTrades={envClosedTrades}
                         totalMarketsCount={markets.length}
                         onSelectSymbol={(sym) => {
                           setCustomDeskPool(null);
@@ -3916,9 +4097,9 @@ export function App({
                 <div className="flex flex-wrap items-center justify-between px-3 py-1 bg-[#0B1018] border-b border-[#1E2736] text-[10.5px] gap-2 shrink-0">
                   <div className="flex items-center gap-2">
                     <span className="text-[#00E5FF] font-extrabold uppercase">
-                      ACTIVE POSITIONS ({positions.length}/{maxConcurrentPositions} MAX LOW-RISK SLOTS)
+                      ACTIVE POSITIONS [{executionEnv === 'REAL_MAINNET' ? '🔥 REAL MONEY' : executionEnv === 'EXCHANGE_TESTNET' ? 'TESTNET' : 'PAPER'}] ({envPositions.length}/{maxConcurrentPositions} SLOTS)
                     </span>
-                    {positions.length < maxConcurrentPositions && agentAutonomousEnabled && nextLowRiskCandidate ? (
+                    {envPositions.length < maxConcurrentPositions && agentAutonomousEnabled && nextLowRiskCandidate ? (
                       <span className="px-2 py-0.5 bg-[#00E5FF]/15 border border-[#00E5FF] text-[#00E5FF] text-[9.5px] font-extrabold animate-pulse">
                         🤖 POST-TP HUNTER: Analyzing {nextLowRiskCandidate.market.symbol} (Low-Risk{' '}
                         {nextLowRiskCandidate.lowRiskScore}/100, {nextLowRiskCandidate.recommendedLeverage}x) — Auto-Entry in{' '}
@@ -3926,18 +4107,18 @@ export function App({
                       </span>
                     ) : (
                       <span className="text-[10px] text-[#94A3B8] hidden xl:inline">
-                        (Auto-Breakeven Lock + Post-TP Continuous Low-Risk Hunter)
+                        (3-Way Isolated: Paper / Testnet / Real Money)
                       </span>
                     )}
                   </div>
                   <div className="flex items-center gap-1.5 flex-wrap">
-                    {positions.length < maxConcurrentPositions && nextLowRiskCandidate && (
+                    {envPositions.length < maxConcurrentPositions && nextLowRiskCandidate && (
                       <button
                         onClick={executeAutonomousLowRiskSlot}
                         className="px-2 py-0.5 bg-[#FF9F1C] hover:bg-[#ffb347] text-black font-extrabold text-[9.5px]"
                         title="Eksekusi instan kandidat risiko terendah untuk mengisi slot kosong"
                       >
-                        ⚡ FILL SLOT #{positions.length + 1}/{maxConcurrentPositions} ({nextLowRiskCandidate.market.symbol})
+                        ⚡ FILL SLOT #{envPositions.length + 1}/{maxConcurrentPositions} ({nextLowRiskCandidate.market.symbol})
                       </button>
                     )}
                     <span className="font-extrabold mr-1">
@@ -3991,7 +4172,15 @@ export function App({
 
                 {positionsDockHeightPx > 105 && (
                 <div className="flex-1 overflow-y-auto divide-y divide-[#131B29] text-[10.5px]">
-                  {positions.map((pos) => (
+                  {envPositions.length === 0 && (
+                    <div className="px-3 py-4 text-center text-[#94A3B8] text-[10.5px]">
+                      Belum ada posisi aktif pada mode <strong className="text-[#00E5FF]">{executionEnv}</strong> (terisolasi penuh dari mode lain).{' '}
+                      {isRealExecutionEnv && !isLiveWhaleSynced
+                        ? 'Menyinkronkan data on-chain & pasar real-time...'
+                        : 'Gunakan tombol LONG/SHORT atau aktifkan AUTO-AGENT bila wallet sudah terverifikasi.'}
+                    </div>
+                  )}
+                  {envPositions.map((pos) => (
                     <div
                       key={pos.id}
                       className="px-2.5 sm:px-3 py-2 sm:py-1.5 flex flex-col sm:flex-row sm:items-center justify-between gap-2 hover:bg-[#0D131F]"
@@ -4018,8 +4207,14 @@ export function App({
                               {pos.exchange}
                             </span>
                             {pos.isRealMoney && (
-                              <span className="text-[9.5px] px-1.5 bg-[#FF1744] text-white font-extrabold">
-                                REAL ORDER #{pos.orderId}
+                              <span
+                                className={`text-[9.5px] px-1.5 font-extrabold ${
+                                  resolveRecordExecutionEnv(pos) === 'EXCHANGE_TESTNET'
+                                    ? 'bg-[#00E5FF] text-black'
+                                    : 'bg-[#FF1744] text-white'
+                                }`}
+                              >
+                                {resolveRecordExecutionEnv(pos) === 'EXCHANGE_TESTNET' ? 'TESTNET' : 'REAL MAINNET'} #{pos.orderId}
                               </span>
                             )}
                             {pos.breakevenLocked && (
@@ -4082,9 +4277,9 @@ export function App({
                           <button
                             onClick={() => handleScratchOrClosePosition(pos, 'PROFIT_LOCK')}
                             className="px-2 py-1 bg-[#00E676]/20 hover:bg-[#00E676] hover:text-black text-[#00E676] border border-[#00E676] text-[9.5px] font-bold"
-                            title="Tutup posisi & kirim profit otomatis langsung ke Hot Wallet"
+                            title="Tutup posisi & selesaikan profit otomatis langsung ke wallet venue eksekusi"
                           >
-                            💸 TP → HOT WALLET
+                            💸 TP → SETTLE WALLET
                           </button>
                         </div>
                       </div>
@@ -4133,10 +4328,10 @@ export function App({
                   links={chordLinks}
                   recentWhales={
                     nodeFilter
-                      ? whaleTxs.filter(
+                      ? effectiveWhaleTxs.filter(
                           (w) => w.sourceNode === nodeFilter || w.targetNode === nodeFilter
                         )
-                      : whaleTxs
+                      : effectiveWhaleTxs
                   }
                   whalePositions={whalePositions}
                   hlpVaultSummary={hlpVaultSummary}
@@ -4847,7 +5042,7 @@ export function App({
                     3. DEEP POSITION INTELLIGENCE
                   </div>
                   <div className="text-xs font-extrabold text-white mt-0.5">
-                    {positions.length}/{maxConcurrentPositions} Slot • Min TP: +
+                    {envPositions.length}/{maxConcurrentPositions} Slot ({executionEnv === 'REAL_MAINNET' ? 'REAL' : executionEnv === 'EXCHANGE_TESTNET' ? 'TESTNET' : 'PAPER'}) • Min TP: +
                     {Math.max(50, autoTakeProfitTriggerPct)}% → Max: ∞
                   </div>
                   <div className="text-[9.5px] text-[#94A3B8] font-mono">
@@ -4879,7 +5074,7 @@ export function App({
                     Net Settled: {formatSignedUsd(totalRealizedPnl)} USD
                   </div>
                   <div className="text-[9.5px] text-[#94A3B8] font-mono">
-                    {closedTrades.length} Trade Ditutup • Direct Settle:{' '}
+                    {envClosedTrades.length} Trade Ditutup ({executionEnv}) • Auto-Sync Wallet:{' '}
                     {autoDirectHotWalletSettle ? 'ON' : 'OFF'}
                   </div>
                 </div>
@@ -4893,11 +5088,11 @@ export function App({
             <MultiAgentForumPanel
               consensus={forumConsensus}
               activeMarket={activePair}
-              verifiedNews={verifiedNews}
+              verifiedNews={effectiveVerifiedNews}
               topOpportunities={topMultiAgentOpportunities}
               positionAudits={positionAudits}
               walkForwardOutcomes={walkForwardOutcomes}
-              closedTrades={closedTrades}
+              closedTrades={envClosedTrades}
               totalMarketsCount={markets.length}
               onSelectSymbol={(sym) => {
                 setCustomDeskPool(null);
@@ -5085,10 +5280,10 @@ export function App({
                   <div className="flex items-center justify-between gap-2 p-2 bg-[#06090F] border border-[#00E676]/60">
                     <div className="min-w-0">
                       <div className="font-bold text-[#00E676] truncate">
-                        8. Direct-to-Hot-Wallet Auto-Settlement
+                        8. Venue-Native Automatic Profit Settlement &amp; Balance Sync
                       </div>
                       <div className="text-[9.5px] text-[#94A3B8] leading-snug">
-                        Setiap profit otomatis langsung masuk ke Hot Wallet (Trust / Phantom) instan.
+                        Profit otomatis masuk ke dompet venue eksekusi (Phantom On-Chain / Hyperliquid L1 Non-Custodial / Binance Margin &amp; Spot) lalu saldo disinkronkan real-time.
                       </div>
                     </div>
                     <button
@@ -5111,20 +5306,20 @@ export function App({
                 <div className="p-3 bg-[#080C14] border border-[#1E2B42]">
                   <div className="flex items-center justify-between border-b border-[#182336] pb-1.5 mb-2">
                     <h3 className="text-xs font-extrabold text-[#FF9F1C]">
-                      DEEP INTELLIGENCE MONITOR: HOLD FLOATING LOSS VS AUTO-CLOSE ({positions.length}/{maxConcurrentPositions} POSISI)
+                      DEEP INTELLIGENCE MONITOR: HOLD FLOATING LOSS VS AUTO-CLOSE ({envPositions.length}/{maxConcurrentPositions} POSISI • {executionEnv})
                     </h3>
                     <span className="text-[9.5px] font-mono text-[#00E676] font-bold">
                       {agentAutonomousEnabled ? '● AUTO-HUNTER ON' : '○ PAUSED'}
                     </span>
                   </div>
-                  {positions.length === 0 ? (
+                  {envPositions.length === 0 ? (
                     <div className="p-2.5 bg-[#060A12] border border-[#17243A] flex items-center justify-between gap-2 text-[10px]">
                       <div>
                         <div className="font-extrabold text-[#00E5FF]">
-                          SEMUA SLOT POSISI TELAH DI-SETTLE KE BRANKAS PROFIT (+${totalRealizedPnl.toFixed(2)})
+                          TIDAK ADA POSISI TERBUKA PADA {executionEnv} (REALIZED: {formatSignedUsd(totalRealizedPnl)})
                         </div>
                         <div className="text-[#94A3B8] mt-0.5">
-                          Post-TP Continuous Hunter aktif memindai {markets.length} market untuk peluang kuorum 4-Agent berikutnya.
+                          Post-TP Continuous Hunter memindai {markets.length} market untuk peluang kuorum 4-Agent berikutnya.
                         </div>
                       </div>
                       <button
@@ -5142,7 +5337,7 @@ export function App({
                     </div>
                   ) : (
                     <div className="space-y-1.5 text-[11px] max-h-40 overflow-y-auto">
-                      {positions.map((pos) => (
+                      {envPositions.map((pos) => (
                         <div
                           key={pos.id}
                           className="p-2 bg-[#06090F] border border-[#1C2638] flex flex-col gap-1"
@@ -5235,15 +5430,15 @@ export function App({
           </div>
         )}
 
-        {/* TAB 4: EXECUTION & MICRO-LOSS SCRATCH AUDIT LOG (SEAMLESS ZERO-GAP COCKPIT) */}
+        {/* TAB 4: EXECUTION & MICRO-LOSS SCRATCH AUDIT LOG (SEAMLESS ZERO-GAP COCKPIT, 3-WAY ISOLATED) */}
         {activeTopTab === 'PORTFOLIO_LOG' && (() => {
-          const filteredAuditTrades = closedTrades.filter((ct) => {
+          const filteredAuditTrades = envClosedTrades.filter((ct) => {
             if (auditLogFilter === 'PROFIT_IN') return ct.realizedPnlUsd >= 0;
             if (auditLogFilter === 'LOSS_OUT') return ct.realizedPnlUsd < 0;
             return true;
           });
-          const profitTradesAudit = closedTrades.filter((c) => c.realizedPnlUsd >= 0);
-          const lossTradesAudit = closedTrades.filter((c) => c.realizedPnlUsd < 0);
+          const profitTradesAudit = envClosedTrades.filter((c) => c.realizedPnlUsd >= 0);
+          const lossTradesAudit = envClosedTrades.filter((c) => c.realizedPnlUsd < 0);
           const profitAuditCount = profitTradesAudit.length;
           const lossAuditCount = lossTradesAudit.length;
           const totalProfitInAudit = profitTradesAudit.reduce((acc, c) => acc + c.realizedPnlUsd, 0);
@@ -5252,11 +5447,11 @@ export function App({
             0
           );
           const auditWinRate =
-            closedTrades.length > 0
-              ? Math.round((profitAuditCount / closedTrades.length) * 100)
+            envClosedTrades.length > 0
+              ? Math.round((profitAuditCount / envClosedTrades.length) * 100)
               : 100;
           const activeAuditTrade =
-            closedTrades.find((c) => c.id === selectedAuditTradeId) || closedTrades[0] || null;
+            envClosedTrades.find((c) => c.id === selectedAuditTradeId) || envClosedTrades[0] || null;
 
           return (
           <div
@@ -5267,11 +5462,10 @@ export function App({
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#1E2736] pb-2">
               <div>
                 <h2 className="text-xs font-extrabold text-[#00E676] uppercase tracking-wide">
-                  MULTI-EXCHANGE EXECUTION & DIRECT HOT-WALLET SETTLEMENT AUDIT LOG
+                  MULTI-EXCHANGE EXECUTION &amp; DIRECT HOT-WALLET / VENUE SETTLEMENT AUDIT LOG [{executionEnv}]
                 </h2>
                 <p className="text-[10.5px] text-[#94A3B8]">
-                  Riwayat eksekusi posisi tertutup, rute kurir profit masuk ke Brankas Hot Wallet, dan
-                  audit scratch kerugian ke Brankas Eksternal (klik baris untuk inspeksi di panggung 3D).
+                  Riwayat eksekusi terisolasi khusus mode {executionEnv} (Paper / Testnet / Real Money tidak pernah tercampur).
                 </p>
               </div>
               <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 font-mono text-[10px] sm:text-[10.5px]">
@@ -5291,7 +5485,7 @@ export function App({
             <div className="grid grid-cols-1 xl:grid-cols-12 gap-3 items-stretch">
               <div className="xl:col-span-7">
                 <VaultSettlementCourier3DViz
-                  closedTrades={closedTrades}
+                  closedTrades={envClosedTrades}
                   hideLedger
                   selectedTradeIdOverride={selectedAuditTradeId}
                   onSelectTrade={setSelectedAuditTradeId}
@@ -5406,7 +5600,7 @@ export function App({
               <div className="flex flex-wrap items-center gap-1.5">
                 {(
                   [
-                    { id: 'ALL', label: `SEMUA (${closedTrades.length})` },
+                    { id: 'ALL', label: `SEMUA (${envClosedTrades.length})` },
                     { id: 'PROFIT_IN', label: `📥 MASUK BRANKAS PROFIT (${profitAuditCount})` },
                     { id: 'LOSS_OUT', label: `📤 KELUAR BRANKAS EKSTERNAL (${lossAuditCount})` },
                   ] as const
@@ -5428,7 +5622,7 @@ export function App({
 
             <div data-testid="execution-audit-log-list" className="space-y-2">
               {filteredAuditTrades.map((ct) => {
-                const isSelected = (selectedAuditTradeId || closedTrades[0]?.id) === ct.id;
+                const isSelected = (selectedAuditTradeId || envClosedTrades[0]?.id) === ct.id;
                 const isWin = ct.realizedPnlUsd >= 0;
                 return (
                 <div
@@ -5474,9 +5668,20 @@ export function App({
                       </span>
                       {ct.hotWalletSettled && (
                         <span className="px-2 py-0.5 text-[10px] font-extrabold bg-[#00E5FF]/15 text-[#00E5FF] border border-[#00E5FF]/60">
-                          💸 AUTO-SETTLED → {ct.hotWalletName} ({ct.hotWalletAddress}) • TX:{' '}
-                          {ct.settlementTxHash}
+                          💸 SETTLED → {ct.hotWalletName} ({ct.hotWalletAddress})
+                          {ct.settlementTxHash ? ` • REF: ${ct.settlementTxHash}` : ''}
                         </span>
+                      )}
+                      {ct.explorerTxUrl && (
+                        <a
+                          href={ct.explorerTxUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          onClick={(e) => e.stopPropagation()}
+                          className="px-2 py-0.5 text-[10px] font-extrabold bg-[#00E676]/15 text-[#00E676] border border-[#00E676] hover:bg-[#00E676] hover:text-black"
+                        >
+                          SOLSCAN TX ↗
+                        </a>
                       )}
                     </div>
                     <div className="text-[11px] text-[#CBD5E1]">{ct.note}</div>
@@ -5614,8 +5819,8 @@ export function App({
                   </span>
                 </div>
                 <div className="text-[10.5px] text-[#94A3B8] mt-1">
-                  Posisi Aktif: <strong className="text-white">{positions.length} Posisi</strong> ($
-                  {positions.reduce((s, p) => s + p.sizeUsd, 0).toLocaleString()})
+                  Posisi Aktif ({executionEnv}): <strong className="text-white">{envPositions.length} Posisi</strong> ($
+                  {envPositions.reduce((s, p) => s + p.sizeUsd, 0).toLocaleString()})
                 </div>
                 <div className="mt-2 text-[9.5px] text-[#FF9F1C] font-bold">
                   Zero-Slop Breakeven Guard: ON (+{autoBreakevenTriggerPct}%)

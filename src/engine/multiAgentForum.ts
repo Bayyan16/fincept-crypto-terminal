@@ -124,16 +124,24 @@ export const INITIAL_VERIFIED_NEWS: VerifiedNewsItem[] = [
 /**
  * Generates / enriches live verified news items (strictly 90-100% credibility)
  * by combining incoming backend news with live market/whale anomaly detections.
+ * When `strictLiveOnly` is true (EXCHANGE_TESTNET / REAL_MAINNET), static demo headlines
+ * (`INITIAL_VERIFIED_NEWS`) and unsynced seed markets/whales are NEVER injected!
  */
 export function buildVerifiedMacroNewsFeed(
   markets: MarketPair[],
   whaleTxs: WhaleTransaction[],
-  backendNews?: VerifiedNewsItem[]
+  backendNews?: VerifiedNewsItem[],
+  options: { strictLiveOnly?: boolean } = {}
 ): VerifiedNewsItem[] {
-  const baseList =
-    backendNews && backendNews.length > 0 ? backendNews : INITIAL_VERIFIED_NEWS;
+  const { strictLiveOnly = false } = options;
+  const hasBackendNews = Array.isArray(backendNews) && backendNews.length > 0;
+  const baseList = hasBackendNews
+    ? backendNews!
+    : strictLiveOnly
+      ? []
+      : INITIAL_VERIFIED_NEWS;
 
-  // Strictly enforce the user's requirement: ONLY 90% - 100% verified news allowed in the forum
+  // Strictly enforce: ONLY 90% - 100% verified news allowed in the forum
   const verifiedOnly = baseList
     .filter((item) => item.credibilityScore >= 90)
     .map((item) => ({
@@ -147,8 +155,9 @@ export function buildVerifiedMacroNewsFeed(
     now.getMinutes()
   ).padStart(2, '0')}`;
 
-  // Detect live market mover & whale surge to synthesize real-time verified wire alerts
-  const sortedByMove = [...markets].sort(
+  // Detect live market mover & whale surge ONLY from live-synced markets & on-chain verified txs in strict mode
+  const eligibleMarkets = strictLiveOnly ? markets.filter((m) => m.isLiveSynced) : markets;
+  const sortedByMove = [...eligibleMarkets].sort(
     (a, b) => Math.abs(b.change24h) - Math.abs(a.change24h)
   );
   const topMover = sortedByMove[0];
@@ -175,7 +184,8 @@ export function buildVerifiedMacroNewsFeed(
     });
   }
 
-  const latestWhale = whaleTxs[0];
+  const eligibleWhales = strictLiveOnly ? whaleTxs.filter((w) => w.isLiveVerified) : whaleTxs;
+  const latestWhale = eligibleWhales[0];
   if (latestWhale && latestWhale.sizeUsd >= 1_500_000) {
     const asset = latestWhale.symbol.split('-')[0].split('/')[0].trim();
     dynamicItems.push({
@@ -201,57 +211,6 @@ export function buildVerifiedMacroNewsFeed(
   }
 
   return [...dynamicItems, ...verifiedOnly].slice(0, 12);
-}
-
-/**
- * Deterministic multi-bar OHLCV builder when a background coin doesn't have its 140 candles loaded yet
- */
-function ensureCandleSeries(pair: MarketPair, candles?: CandlePoint[]): CandlePoint[] {
-  if (candles && candles.length >= 24) {
-    return candles;
-  }
-
-  const count = 64;
-  const result: CandlePoint[] = [];
-  const targetClose = Math.max(0.0000001, pair.price);
-  const changeRatio = Math.max(-0.35, Math.min(0.45, (pair.change24h || 0) / 100));
-  const startPrice = targetClose / (1 + changeRatio * 0.65);
-  const seed = pair.symbol
-    .split('')
-    .reduce((acc, ch, i) => acc + ch.charCodeAt(0) * (i + 1), 0);
-
-  let prevClose = startPrice;
-  const now = Date.now();
-  for (let i = 0; i < count; i++) {
-    const progress = (i + 1) / count;
-    const trendTarget = startPrice + (targetClose - startPrice) * progress;
-    const wave =
-      Math.sin((i + (seed % 11)) * 0.48) * targetClose * 0.0045 +
-      Math.cos((i + (seed % 7)) * 0.23) * targetClose * 0.003;
-    const close =
-      i === count - 1
-        ? targetClose
-        : Math.max(targetClose * 0.3, trendTarget + wave);
-    const open = prevClose;
-    const wickSpan = Math.max(targetClose * 0.0025, Math.abs(close - open) * 0.85);
-    const high = Math.max(open, close) + wickSpan * (0.6 + ((i + seed) % 5) * 0.12);
-    const low = Math.min(open, close) - wickSpan * (0.55 + ((i * 3 + seed) % 5) * 0.11);
-    const vol = Math.round((pair.volume24hUsd || 10_000_000) / 96);
-
-    result.push({
-      time: now - (count - 1 - i) * 15 * 60_000,
-      label: `${i}`,
-      open,
-      high,
-      low,
-      close,
-      volume: vol,
-      cvd: (pair.cvdDelta15mUsd || 0) * progress,
-    });
-    prevClose = close;
-  }
-
-  return result;
 }
 
 export function computeEmaSeries(values: number[], period: number): number[] {

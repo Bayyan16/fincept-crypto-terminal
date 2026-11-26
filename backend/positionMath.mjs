@@ -63,23 +63,42 @@ export function getUtcTradingDayKey(dateInput = new Date()) {
   return d.toISOString().slice(0, 10);
 }
 
+const VALID_EXECUTION_ENVS = new Set(['PAPER_SANDBOX', 'EXCHANGE_TESTNET', 'REAL_MAINNET']);
+
+/**
+ * Resolves the canonical 3-way ExecutionEnvironment for a position or closed trade log
+ * so PAPER_SANDBOX, EXCHANGE_TESTNET, and REAL_MAINNET are strictly isolated with zero overlap.
+ */
+export function resolveRecordExecutionEnv(record) {
+  if (record && typeof record.executionEnv === 'string' && VALID_EXECUTION_ENVS.has(record.executionEnv)) {
+    return record.executionEnv;
+  }
+  return record?.isRealMoney ? 'REAL_MAINNET' : 'PAPER_SANDBOX';
+}
+
 /**
  * Computes daily realized PnL for the current UTC trading day,
- * cleanly excluding seeded demo fixtures (`cl-1`..`cl-4`) while including
- * runtime paper/real closes matching the active environment and day boundary.
+ * cleanly excluding seeded demo fixtures (`cl-1`..`cl-4`) while strictly isolating
+ * PAPER_SANDBOX, EXCHANGE_TESTNET, and REAL_MAINNET so Testnet losses never trip Real Mainnet!
  */
 export function computeDailyRealizedPnlUsd({
   closedTrades = [],
   isRealEnv = false,
+  executionEnv,
   tradingDayKey = getUtcTradingDayKey(),
 }) {
   if (!Array.isArray(closedTrades) || closedTrades.length === 0) return 0;
+  const useStrictEnv = typeof executionEnv === 'string' && VALID_EXECUTION_ENVS.has(executionEnv);
   let sum = 0;
   for (const c of closedTrades) {
     if (!c || typeof c !== 'object') continue;
     const id = String(c.id || '');
     if (c.isSeededDemo || /^cl-[1-4]$/.test(id)) continue;
-    if (isRealEnv ? !c.isRealMoney : Boolean(c.isRealMoney)) continue;
+    if (useStrictEnv) {
+      if (resolveRecordExecutionEnv(c) !== executionEnv) continue;
+    } else if (isRealEnv ? !c.isRealMoney : Boolean(c.isRealMoney)) {
+      continue;
+    }
     if (c.closedDateKey !== tradingDayKey) continue;
     const pnl = Number(c.realizedPnlUsd);
     if (Number.isFinite(pnl)) sum += pnl;
@@ -121,6 +140,7 @@ export function computeClosedTradeSettlement({
   executedQty,
   isRealMoney = false,
   exchangeOrderId,
+  solanaTxSignature,
 }) {
   const pnl = computePositionPnl({
     side,
@@ -134,8 +154,14 @@ export function computeClosedTradeSettlement({
     exitPrice: Number(exitPrice),
     realizedPnlPct: pnl.roePct,
     realizedPnlUsd: pnl.pnlUsd,
-    // Never fabricate a random on-chain txHash; reference real exchange orderId only when present
-    settlementTxHash: isRealMoney ? (exchangeOrderId ? `EXCH-${exchangeOrderId}` : undefined) : undefined,
+    // Never fabricate a random on-chain txHash; reference real Solana signature or exchange orderId only when present
+    settlementTxHash: isRealMoney
+      ? solanaTxSignature
+        ? String(solanaTxSignature)
+        : exchangeOrderId
+          ? `EXCH-${exchangeOrderId}`
+          : undefined
+      : undefined,
     allowLocalBalanceMutation: !isRealMoney,
   };
 }

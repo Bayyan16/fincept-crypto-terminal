@@ -29,7 +29,10 @@ import {
   buildHyperliquidLeverageAction,
   buildHyperliquidOrderAction,
 } from './hyperliquidProtocol.mjs';
-import { signHyperliquidActionWithPrivateKey } from './hyperliquidSigner.mjs';
+import {
+  deriveEvmAddressFromPrivateKey,
+  signHyperliquidActionWithPrivateKey,
+} from './hyperliquidSigner.mjs';
 
 export { queryDexUniverse, searchDexUniverseLive, fetchSpecificPoolTrades, resolveTokenIcon };
 
@@ -64,6 +67,7 @@ const HLP_MAINNET_VAULT = '0xdfc24b077bc1425ad1dea75bcb6f8158e10df303';
 const SOLANA_MINTS = {
   SOL: { mint: 'So11111111111111111111111111111111111111112', decimals: 9 },
   USDC: { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', decimals: 6 },
+  USDT: { mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', decimals: 6 },
   JUP: { mint: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', decimals: 6 },
   RAY: { mint: '4k3Dyjzvzp8eMZWUXbBCjEvwSkkk59S5iCNLY3QrkX6R', decimals: 6 },
   BONK: { mint: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263', decimals: 5 },
@@ -2194,7 +2198,7 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
       true
     ),
     fetchJsonWithTimeout(
-      `${binFuturesBase}/fapi/v1/depth?symbol=${encodeURIComponent(resolvedBinSymbol)}&limit=10`,
+      `${binFuturesBase}/fapi/v1/depth?symbol=${encodeURIComponent(resolvedBinSymbol)}&limit=20`,
       {},
       2600,
       true
@@ -2202,14 +2206,14 @@ export async function getRealAggregatedOrderbook(hlCoin = 'BTC', binanceSymbol =
     fetchJsonWithTimeout(
       `${bybitBase}/v5/market/orderbook?category=linear&symbol=${encodeURIComponent(
         resolvedBinSymbol
-      )}&limit=10`,
+      )}&limit=20`,
       {},
       2600,
       true
     ),
     !isKBookCoin
       ? fetchJsonWithTimeout(
-          `https://www.okx.com/api/v5/market/books?instId=${encodeURIComponent(okxInstId)}&sz=8`,
+          `https://www.okx.com/api/v5/market/books?instId=${encodeURIComponent(okxInstId)}&sz=15`,
           {},
           2600,
           true
@@ -2565,75 +2569,110 @@ export async function verifyAndFetchAccountBalance(payload) {
     const ethPx = cachedSnapshot?.hlAssets?.ETH?.price || lastGoodHlAssets?.ETH?.price || 2220;
     const bnbPx = cachedSnapshot?.hlAssets?.BNB?.price || lastGoodHlAssets?.BNB?.price || 610;
 
-    const [chRes, spotRes, arbPortfolio, bscPortfolio, basePortfolio, ethPortfolio] =
-      await Promise.all([
-        fetchJsonWithTimeout(hlUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: 'clearinghouseState', user: userAddr }),
-        }),
-        fetchJsonWithTimeout(hlUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ type: 'spotClearinghouseState', user: userAddr }),
-        }),
-        queryEvmChainPortfolio({
-          rpcUrl: 'https://arb1.arbitrum.io/rpc',
-          userAddr,
-          chainName: 'Arbitrum One (L2)',
-          chainId: 42161,
-          nativeSymbol: 'ETH',
-          nativePriceUsd: ethPx,
-          stableAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
-          stableDecimals: 6,
-          stableSymbol: 'USDC',
-          recommendedFor: 'Jaringan Utama Hyperliquid Bridge & Perp DEX (Gas < $0.01)',
-        }),
-        queryEvmChainPortfolio({
-          rpcUrl: 'https://bsc-dataseed.binance.org',
-          userAddr,
-          chainName: 'BNB Smart Chain (BEP20)',
-          chainId: 56,
-          nativeSymbol: 'BNB',
-          nativePriceUsd: bnbPx,
-          stableAddress: '0x55d398326f99059fF775485246999027B3197955',
-          stableDecimals: 18,
-          stableSymbol: 'USDT',
-          recommendedFor: 'Fleksibel untuk Transfer CEX Binance/Bybit & PancakeSwap DEX (Gas ~$0.01)',
-        }),
-        queryEvmChainPortfolio({
-          rpcUrl: 'https://mainnet.base.org',
-          userAddr,
-          chainName: 'Base Mainnet (L2)',
-          chainId: 8453,
-          nativeSymbol: 'ETH',
-          nativePriceUsd: ethPx,
-          stableAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
-          stableDecimals: 6,
-          stableSymbol: 'USDC',
-          recommendedFor: 'Sangat Cepat untuk Spot DEX Aerodrome/Uniswap (Gas < $0.005)',
-        }),
-        queryEvmChainPortfolio({
-          rpcUrl: 'https://eth.llamarpc.com',
-          userAddr,
-          chainName: 'Ethereum Mainnet (ERC20)',
-          chainId: 1,
-          nativeSymbol: 'ETH',
-          nativePriceUsd: ethPx,
-          stableAddress: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
-          stableDecimals: 6,
-          stableSymbol: 'USDT',
-          recommendedFor: 'Settlement Institusional Whale Besar (Biaya Gas Tinggi ~$1-$5)',
-        }),
-      ]);
+    const hasValidAgentKey = Boolean(
+      payload?.agentPrivateKey &&
+        /^(0x)?[a-fA-F0-9]{64}$/.test(String(payload.agentPrivateKey).trim()) &&
+        !/^0x?0+$/i.test(String(payload.agentPrivateKey).trim())
+    );
+    let derivedAgentAddress = null;
+    if (hasValidAgentKey) {
+      try {
+        derivedAgentAddress = deriveEvmAddressFromPrivateKey(String(payload.agentPrivateKey).trim());
+      } catch {
+        derivedAgentAddress = null;
+      }
+    }
+
+    // Strict Testnet vs Mainnet isolation: NEVER mix Mainnet Arbitrum/BSC/Base/ETH real balances into a Testnet wallet!
+    const evmChainQueries = useTestnet
+      ? [
+          queryEvmChainPortfolio({
+            rpcUrl: 'https://sepolia-rollup.arbitrum.io/rpc',
+            userAddr,
+            chainName: 'Arbitrum Sepolia (Testnet)',
+            chainId: 421614,
+            nativeSymbol: 'ETH',
+            nativePriceUsd: 0,
+            stableAddress: '0x1baAbB04529D43a73232B713C0FE471f7c7334d5',
+            stableDecimals: 6,
+            stableSymbol: 'USDC (Testnet)',
+            recommendedFor: 'Jaringan Testnet Bridge Hyperliquid (Arbitrum Sepolia)',
+          }),
+        ]
+      : [
+          queryEvmChainPortfolio({
+            rpcUrl: 'https://arb1.arbitrum.io/rpc',
+            userAddr,
+            chainName: 'Arbitrum One (L2)',
+            chainId: 42161,
+            nativeSymbol: 'ETH',
+            nativePriceUsd: ethPx,
+            stableAddress: '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+            stableDecimals: 6,
+            stableSymbol: 'USDC',
+            recommendedFor: 'Jaringan Utama Hyperliquid Bridge & Perp DEX (Gas < $0.01)',
+          }),
+          queryEvmChainPortfolio({
+            rpcUrl: 'https://bsc-dataseed.binance.org',
+            userAddr,
+            chainName: 'BNB Smart Chain (BEP20)',
+            chainId: 56,
+            nativeSymbol: 'BNB',
+            nativePriceUsd: bnbPx,
+            stableAddress: '0x55d398326f99059fF775485246999027B3197955',
+            stableDecimals: 18,
+            stableSymbol: 'USDT',
+            recommendedFor: 'Fleksibel untuk Transfer CEX Binance/Bybit & PancakeSwap DEX (Gas ~$0.01)',
+          }),
+          queryEvmChainPortfolio({
+            rpcUrl: 'https://mainnet.base.org',
+            userAddr,
+            chainName: 'Base Mainnet (L2)',
+            chainId: 8453,
+            nativeSymbol: 'ETH',
+            nativePriceUsd: ethPx,
+            stableAddress: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+            stableDecimals: 6,
+            stableSymbol: 'USDC',
+            recommendedFor: 'Sangat Cepat untuk Spot DEX Aerodrome/Uniswap (Gas < $0.005)',
+          }),
+          queryEvmChainPortfolio({
+            rpcUrl: 'https://eth.llamarpc.com',
+            userAddr,
+            chainName: 'Ethereum Mainnet (ERC20)',
+            chainId: 1,
+            nativeSymbol: 'ETH',
+            nativePriceUsd: ethPx,
+            stableAddress: '0xdAC17F958D2ee523a2206206994597C13D831ec7',
+            stableDecimals: 6,
+            stableSymbol: 'USDT',
+            recommendedFor: 'Settlement Institusional Whale Besar (Biaya Gas Tinggi ~$1-$5)',
+          }),
+        ];
+
+    const [chRes, spotRes, extraAgentsRes, ...evmPortfolios] = await Promise.all([
+      fetchJsonWithTimeout(hlUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'clearinghouseState', user: userAddr }),
+      }),
+      fetchJsonWithTimeout(hlUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ type: 'spotClearinghouseState', user: userAddr }),
+      }),
+      derivedAgentAddress
+        ? fetchJsonWithTimeout(hlUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ type: 'extraAgents', user: userAddr }),
+          })
+        : Promise.resolve({ ok: false, data: null }),
+      ...evmChainQueries,
+    ]);
 
     const anyUpstreamReachable = Boolean(
-      chRes.ok ||
-        spotRes.ok ||
-        arbPortfolio.rpcOk ||
-        bscPortfolio.rpcOk ||
-        basePortfolio.rpcOk ||
-        ethPortfolio.rpcOk
+      chRes.ok || spotRes.ok || evmPortfolios.some((p) => p?.rpcOk)
     );
     if (!anyUpstreamReachable) {
       return {
@@ -2643,6 +2682,24 @@ export async function verifyAndFetchAccountBalance(payload) {
         error:
           'Gagal menghubungi Hyperliquid L1 & seluruh EVM RPC — saldo tidak dapat diverifikasi (tidak mengembalikan $0 palsu).',
       };
+    }
+
+    let agentAuthorized = false;
+    let agentAuthWarning;
+    if (derivedAgentAddress) {
+      if (derivedAgentAddress.toLowerCase() === userAddr.toLowerCase()) {
+        agentAuthorized = true;
+      } else if (extraAgentsRes?.ok && Array.isArray(extraAgentsRes.data)) {
+        const nowMs = Date.now();
+        agentAuthorized = extraAgentsRes.data.some((ag) => {
+          const agAddr = String(ag?.address || '').toLowerCase();
+          const validUntil = Number(ag?.validUntil || 0);
+          return agAddr === derivedAgentAddress.toLowerCase() && (validUntil === 0 || validUntil > nowMs);
+        });
+        if (!agentAuthorized) {
+          agentAuthWarning = `Agent Key (${derivedAgentAddress.slice(0, 6)}...${derivedAgentAddress.slice(-4)}) belum terdaftar/approved pada Hyperliquid ${useTestnet ? 'Testnet' : 'Mainnet'} untuk akun ${userAddr.slice(0, 6)}...${userAddr.slice(-4)}. Approve dulu di app.hyperliquid.xyz/API.`;
+        }
+      }
     }
 
     const perpAccountValue = parseFloat(chRes.data?.marginSummary?.accountValue || '0');
@@ -2655,23 +2712,19 @@ export async function verifyAndFetchAccountBalance(payload) {
     const hlTotalUsd = Number((perpAccountValue + spotUsdc).toFixed(2));
 
     const hlChainEntry = {
-      chainName: 'Hyperliquid L1 Native',
+      chainName: useTestnet ? 'Hyperliquid L1 Testnet' : 'Hyperliquid L1 Native',
       chainId: 998,
       nativeSymbol: 'HYPE',
       nativeBalance: 0,
       stableSymbol: 'USDC (Perp+Spot)',
       stableBalanceUsd: hlTotalUsd,
       totalChainUsd: hlTotalUsd,
-      recommendedFor: 'Eksekusi Orderbook Perp/Spot Instan (0 Gas Fee, Latency < 50ms)',
+      recommendedFor: agentAuthWarning
+        ? agentAuthWarning
+        : 'Eksekusi Orderbook Perp/Spot Instan (0 Gas Fee, Latency < 50ms)',
     };
 
-    const chainBalances = [
-      hlChainEntry,
-      arbPortfolio,
-      bscPortfolio,
-      basePortfolio,
-      ethPortfolio,
-    ];
+    const chainBalances = [hlChainEntry, ...evmPortfolios];
 
     const totalMultiChainUsd = Number(
       chainBalances.reduce((sum, c) => sum + c.totalChainUsd, 0).toFixed(2)
@@ -2680,12 +2733,6 @@ export async function verifyAndFetchAccountBalance(payload) {
     const openPositions = (chRes.data?.assetPositions || [])
       .map((ap) => ap.position)
       .filter((p) => p && Math.abs(parseFloat(p.szi || '0')) > 0);
-
-    const hasValidAgentKey = Boolean(
-      payload?.agentPrivateKey &&
-        /^(0x)?[a-fA-F0-9]{64}$/.test(String(payload.agentPrivateKey).trim()) &&
-        !/^0x?0+$/i.test(String(payload.agentPrivateKey).trim())
-    );
 
     return {
       ok: true,
@@ -2697,13 +2744,18 @@ export async function verifyAndFetchAccountBalance(payload) {
       spotEnabled: false,
       futuresBalanceUsd: hlTotalUsd,
       spotBalanceUsd: 0,
-      autonomousReady: hasValidAgentKey,
+      autonomousReady: hasValidAgentKey && (agentAuthorized || !extraAgentsRes?.ok),
+      agentAddress: derivedAgentAddress || undefined,
+      agentAuthorized: derivedAgentAddress ? agentAuthorized : undefined,
+      agentAuthWarning,
       resolvedUseTestnet: Boolean(useTestnet),
       openPositionsCount: openPositions.length,
       openPositions,
       chainBalances,
       addressDisplay: `${userAddr.slice(0, 6)}...${userAddr.slice(-4)} (${
-        hasValidAgentKey ? 'HL Agent Autonomous + EVM' : 'Multi-Chain EVM + HL'
+        hasValidAgentKey
+          ? `${useTestnet ? 'HL Testnet ' : 'HL '}Agent Autonomous`
+          : `${useTestnet ? 'HL Testnet + Arb Sepolia' : 'Multi-Chain EVM + HL'}`
       })`,
     };
   }
@@ -2714,7 +2766,8 @@ export async function verifyAndFetchAccountBalance(payload) {
       ? 'https://api.devnet.solana.com'
       : 'https://api.mainnet-beta.solana.com';
     const usdcMint = SOLANA_MINTS.USDC.mint;
-    const [balRes, usdcTokenRes] = await Promise.all([
+    const usdtMint = SOLANA_MINTS.USDT.mint;
+    const [balRes, usdcTokenRes, usdtTokenRes] = await Promise.all([
       fetchJsonWithTimeout(rpcUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -2735,9 +2788,19 @@ export async function verifyAndFetchAccountBalance(payload) {
           params: [solAddr, { mint: usdcMint }, { encoding: 'jsonParsed' }],
         }),
       }),
+      fetchJsonWithTimeout(rpcUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'getTokenAccountsByOwner',
+          params: [solAddr, { mint: usdtMint }, { encoding: 'jsonParsed' }],
+        }),
+      }),
     ]);
 
-    if (!balRes.ok && !usdcTokenRes.ok) {
+    if (!balRes.ok && !usdcTokenRes.ok && !usdtTokenRes.ok) {
       return {
         ok: false,
         rlsPolicy: 'ENFORCED',
@@ -2748,30 +2811,36 @@ export async function verifyAndFetchAccountBalance(payload) {
 
     const lamports = balRes.data?.result?.value || 0;
     const solCoins = lamports / 1e9;
-    const solPrice = cachedSnapshot?.hlAssets?.SOL?.price || 84.0;
+    const solPrice = cachedSnapshot?.hlAssets?.SOL?.price || lastGoodHlAssets?.SOL?.price || 84.0;
     const solUsd = solCoins * solPrice;
 
-    let splUsdcUsd = 0;
-    const tokenAccounts = usdcTokenRes?.data?.result?.value;
-    if (Array.isArray(tokenAccounts)) {
-      for (const acc of tokenAccounts) {
-        const uiAmt = Number(acc?.account?.data?.parsed?.info?.tokenAmount?.uiAmount || 0);
-        if (Number.isFinite(uiAmt) && uiAmt > 0) {
-          splUsdcUsd += uiAmt;
+    const sumSplUiAmount = (res) => {
+      let total = 0;
+      const accounts = res?.data?.result?.value;
+      if (Array.isArray(accounts)) {
+        for (const acc of accounts) {
+          const uiAmt = Number(acc?.account?.data?.parsed?.info?.tokenAmount?.uiAmount || 0);
+          if (Number.isFinite(uiAmt) && uiAmt > 0) total += uiAmt;
         }
       }
-    }
-    const balanceUsd = Number((solUsd + splUsdcUsd).toFixed(2));
+      return total;
+    };
+    const splUsdcUsd = sumSplUiAmount(usdcTokenRes);
+    const splUsdtUsd = sumSplUiAmount(usdtTokenRes);
+    const splStablesUsd = Number((splUsdcUsd + splUsdtUsd).toFixed(2));
+    const balanceUsd = Number((solUsd + splStablesUsd).toFixed(2));
     const chainBalances = [
       {
         chainName: useTestnet ? 'Solana Devnet' : 'Solana Mainnet-Beta',
         chainId: 'solana',
         nativeSymbol: 'SOL',
         nativeBalance: Number(solCoins.toFixed(4)),
-        stableSymbol: 'USDC (SPL)',
-        stableBalanceUsd: Number(splUsdcUsd.toFixed(2)),
+        stableSymbol: splUsdtUsd > 0 ? 'USDC+USDT (SPL)' : 'USDC (SPL)',
+        stableBalanceUsd: splStablesUsd,
         totalChainUsd: balanceUsd,
-        recommendedFor: 'Eksekusi Jupiter V1 Aggregator & Raydium V3 CLMM (Fee ~$0.0005)',
+        recommendedFor: useTestnet
+          ? 'Solana Devnet — Untuk live swap Jupiter V1 gunakan mode REAL_MAINNET'
+          : 'Aktif — Eksekusi Jupiter V1 Aggregator & Raydium V3 CLMM On-Chain (Fee ~$0.0005)',
       },
     ];
 
@@ -2782,8 +2851,15 @@ export async function verifyAndFetchAccountBalance(payload) {
       balanceUsd,
       solBalance: Number(solCoins.toFixed(4)),
       usdcBalanceUsd: Number(splUsdcUsd.toFixed(2)),
+      usdtBalanceUsd: Number(splUsdtUsd.toFixed(2)),
+      futuresEnabled: false,
+      spotEnabled: !useTestnet,
+      futuresBalanceUsd: 0,
+      spotBalanceUsd: Number(splUsdcUsd.toFixed(2)),
+      spotEquityUsd: balanceUsd,
+      resolvedUseTestnet: Boolean(useTestnet),
       chainBalances,
-      addressDisplay: `${solAddr.slice(0, 4)}...${solAddr.slice(-4)} (${solCoins.toFixed(3)} SOL + $${splUsdcUsd.toFixed(2)} USDC)`,
+      addressDisplay: `${solAddr.slice(0, 4)}...${solAddr.slice(-4)} (${solCoins.toFixed(3)} SOL + $${splStablesUsd.toFixed(2)} SPL)`,
     };
   }
 
@@ -4145,6 +4221,35 @@ export async function executeRealExchangeOrder(payload) {
       signerAddr = signedPayload.signer;
     }
 
+    // Relay browser-signed Trust Wallet EIP-712 leverage sync before ENTRY_MAKER when provided
+    if (orderPurpose === 'ENTRY_MAKER' && payload.hlSignedLeverage?.action && payload.hlSignedLeverage?.signature) {
+      const levRes = await fetchJsonWithTimeout(
+        hlExchangeUrl,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: payload.hlSignedLeverage.action,
+            nonce: payload.hlSignedLeverage.nonce,
+            signature: payload.hlSignedLeverage.signature,
+          }),
+        },
+        4500,
+        true
+      );
+      if (!levRes.ok || levRes.data?.status !== 'ok') {
+        const levErr =
+          typeof levRes.data?.response === 'string'
+            ? levRes.data.response
+            : levRes.error || 'Rejected by Hyperliquid L1';
+        return {
+          ok: false,
+          exchange: 'HYPERLIQUID',
+          error: `Hyperliquid Trust Wallet Leverage Sync Failed: ${levErr}`,
+        };
+      }
+    }
+
     // Send only Hyperliquid L1 protocol fields (never leak internal metadata fields to /exchange)
     const hlBody = {
       action: signedPayload.action,
@@ -4210,19 +4315,306 @@ export async function executeRealExchangeOrder(payload) {
     };
   }
 
-  if ((exchange === 'JUPITER' || exchange === 'DEXSCREENER') && payload.solanaSignedTx) {
-    // Never fabricate CONFIRMED_SOLANA without a verified on-chain sendRawTransaction signature
-    return {
-      ok: false,
-      exchange,
-      error:
-        'Eksekusi real-money Solana/Jupiter memerlukan serialized Jupiter Swap transaction yang telah di-broadcast & terkonfirmasi di Solana RPC (signMessage intent tidak mengeksekusi swap on-chain).',
-    };
+  if (exchange === 'JUPITER' || exchange === 'DEXSCREENER') {
+    if (useTestnet) {
+      return {
+        ok: false,
+        exchange,
+        error:
+          'Jupiter V1 Aggregator hanya beroperasi di Solana Mainnet-Beta. Gunakan mode REAL_MAINNET untuk swap Phantom on-chain, atau Binance / Hyperliquid Testnet untuk uji coba.',
+      };
+    }
+    const solRpcUrl = 'https://api.mainnet-beta.solana.com';
+    let txSig = String(payload.solanaTxSignature || '').trim();
+
+    // Path 1: Phantom signed a serialized Jupiter VersionedTransaction (base64) -> broadcast via Solana Mainnet RPC
+    if (!txSig && payload.solanaSignedTxBase64) {
+      const sendRes = await fetchJsonWithTimeout(
+        solRpcUrl,
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            method: 'sendTransaction',
+            params: [
+              String(payload.solanaSignedTxBase64).trim(),
+              { encoding: 'base64', skipPreflight: false, maxRetries: 3 },
+            ],
+          }),
+        },
+        7500,
+        true
+      );
+      if (!sendRes.ok || sendRes.data?.error || typeof sendRes.data?.result !== 'string') {
+        return {
+          ok: false,
+          exchange,
+          error: `Solana RPC Broadcast Rejected: ${
+            sendRes.data?.error?.message || sendRes.error || 'Transaksi ditolak oleh validator Solana'
+          }`,
+        };
+      }
+      txSig = sendRes.data.result;
+    }
+
+    // Path 2: Verify authentic on-chain Solana signature via getSignatureStatuses (NEVER fabricate confirmation!)
+    if (txSig && /^[1-9A-HJ-NP-Za-km-z]{64,96}$/.test(txSig)) {
+      let confirmedStatus = null;
+      let txErr = null;
+      for (let attempt = 0; attempt < 4; attempt++) {
+        const stRes = await fetchJsonWithTimeout(
+          solRpcUrl,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jsonrpc: '2.0',
+              id: attempt + 1,
+              method: 'getSignatureStatuses',
+              params: [[txSig], { searchTransactionHistory: true }],
+            }),
+          },
+          5000,
+          true
+        );
+        const val = stRes?.data?.result?.value?.[0];
+        if (val) {
+          if (val.err) {
+            txErr = typeof val.err === 'string' ? val.err : JSON.stringify(val.err);
+            break;
+          }
+          confirmedStatus = val.confirmationStatus || 'processed';
+          if (confirmedStatus === 'confirmed' || confirmedStatus === 'finalized') {
+            break;
+          }
+        }
+        if (attempt < 3) {
+          await new Promise((r) => setTimeout(r, 900));
+        }
+      }
+      if (txErr) {
+        return {
+          ok: false,
+          exchange,
+          error: `Transaksi Solana gagal on-chain (${txSig.slice(0, 12)}...): ${txErr}`,
+        };
+      }
+      if (!confirmedStatus) {
+        return {
+          ok: false,
+          exchange,
+          error: `Signature Solana (${txSig.slice(0, 12)}...) belum ditemukan di Solana Mainnet RPC — periksa Solscan sebelum mencoba ulang.`,
+        };
+      }
+      const solExecQty =
+        Number.isFinite(Number(payload.expectedOutQty)) && Number(payload.expectedOutQty) > 0
+          ? Number(payload.expectedOutQty)
+          : quantity;
+      const solExecPx =
+        Number.isFinite(Number(payload.effectivePrice)) && Number(payload.effectivePrice) > 0
+          ? Number(payload.effectivePrice)
+          : Number(price);
+      return {
+        ok: true,
+        exchange,
+        venueMode: 'SPOT',
+        orderId: txSig,
+        txSignature: txSig,
+        explorerTxUrl: `https://solscan.io/tx/${txSig}`,
+        status: `CONFIRMED_SOLANA_${String(confirmedStatus).toUpperCase()}`,
+        orderState: 'FILLED',
+        signer: payload.solanaSigner || credentials?.walletAddress,
+        requestedQty: solExecQty,
+        filledQty: solExecQty,
+        executedQty: solExecQty,
+        executedPrice: solExecPx,
+      };
+    }
+
+    if (payload.solanaSignedTx) {
+      // Never fabricate CONFIRMED_SOLANA without a verified on-chain sendRawTransaction signature
+      return {
+        ok: false,
+        exchange,
+        error:
+          'Eksekusi real-money Solana/Jupiter memerlukan serialized Jupiter Swap transaction yang telah di-broadcast & terkonfirmasi di Solana RPC (signMessage intent tidak mengeksekusi swap on-chain).',
+      };
+    }
   }
 
   return {
     ok: false,
     error: `Untuk eksekusi Real Money di ${exchange}, pastikan Wallet / API Key aktif dan tanda tangan disetujui.`,
+  };
+}
+
+/**
+ * 5A. Build an Authentic Unsigned Serialized Jupiter V1 Swap Transaction (Solana Mainnet-Beta)
+ * for Non-Custodial Phantom Wallet Execution (`signAndSendTransaction` / `signTransaction`).
+ */
+export async function buildJupiterSwapTransaction(payload = {}) {
+  const {
+    symbol = '',
+    baseTokenAddress = '',
+    side = 'LONG',
+    orderPurpose = 'ENTRY_MAKER',
+    sizeUsd = 0,
+    quantity = 0,
+    userPublicKey = '',
+    slippageBps = 75,
+    useTestnet = false,
+  } = payload;
+
+  if (useTestnet) {
+    return {
+      ok: false,
+      error:
+        'Jupiter V1 Aggregator hanya beroperasi di Solana Mainnet-Beta (tidak mendukung Devnet/Testnet). Gunakan mode REAL_MAINNET untuk swap Phantom live.',
+    };
+  }
+
+  const pubKey = String(userPublicKey || '').trim();
+  if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(pubKey)) {
+    return { ok: false, error: 'Public key Phantom Solana tidak valid.' };
+  }
+
+  const isBuyToken =
+    (orderPurpose === 'ENTRY_MAKER' && side === 'LONG') ||
+    (orderPurpose !== 'ENTRY_MAKER' && side === 'SHORT');
+
+  if (orderPurpose === 'ENTRY_MAKER' && side === 'SHORT') {
+    return {
+      ok: false,
+      error: 'Solana DEX Spot (Phantom / Jupiter V1) tidak mendukung pembukaan posisi SHORT — hanya BUY (LONG) entry & SELL exit.',
+    };
+  }
+
+  const rawBase = String(symbol || '')
+    .split('-')[0]
+    .split('/')[0]
+    .replace(/^k(?=[A-Z]{2,})/, '')
+    .trim()
+    .toUpperCase();
+  const knownToken = SOLANA_MINTS[rawBase];
+  const tokenMint =
+    /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(String(baseTokenAddress || '').trim())
+      ? String(baseTokenAddress).trim()
+      : knownToken?.mint || '';
+
+  if (!tokenMint || tokenMint === SOLANA_MINTS.USDC.mint) {
+    return {
+      ok: false,
+      error: `Mint SPL Solana untuk instrumen '${symbol}' tidak ditemukan (didukung: SOL, JUP, RAY, BONK, WIF atau pool Solana dengan alamat kontrak mint).`,
+    };
+  }
+
+  let tokenDecimals = knownToken?.decimals ?? 6;
+  if (!knownToken) {
+    const supplyRes = await fetchJsonWithTimeout(
+      'https://api.mainnet-beta.solana.com',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'getTokenSupply',
+          params: [tokenMint],
+        }),
+      },
+      4000,
+      true
+    );
+    const rpcDec = Number(supplyRes?.data?.result?.value?.decimals);
+    if (Number.isInteger(rpcDec) && rpcDec >= 0 && rpcDec <= 12) {
+      tokenDecimals = rpcDec;
+    }
+  }
+
+  const inputMint = isBuyToken ? SOLANA_MINTS.USDC.mint : tokenMint;
+  const outputMint = isBuyToken ? tokenMint : SOLANA_MINTS.USDC.mint;
+  const inDecimals = isBuyToken ? SOLANA_MINTS.USDC.decimals : tokenDecimals;
+  const outDecimals = isBuyToken ? tokenDecimals : SOLANA_MINTS.USDC.decimals;
+
+  const numSizeUsd = Number(sizeUsd);
+  const numQty = Number(quantity);
+  const rawAtomicAmount = isBuyToken
+    ? Math.floor(numSizeUsd * 10 ** inDecimals)
+    : Math.floor(numQty * 10 ** inDecimals);
+
+  if (!Number.isFinite(rawAtomicAmount) || rawAtomicAmount <= 0) {
+    return {
+      ok: false,
+      error: `Jumlah swap Solana tidak valid (${isBuyToken ? `$${numSizeUsd} USDC` : `${numQty} ${rawBase}`}).`,
+    };
+  }
+
+  const safeSlippage = Math.max(10, Math.min(300, Math.round(Number(slippageBps) || 75)));
+  const quoteUrl = `https://lite-api.jup.ag/swap/v1/quote?inputMint=${encodeURIComponent(inputMint)}&outputMint=${encodeURIComponent(outputMint)}&amount=${rawAtomicAmount}&slippageBps=${safeSlippage}`;
+  const quoteRes = await fetchJsonWithTimeout(quoteUrl, {}, 5500, true);
+  if (!quoteRes.ok || !quoteRes.data?.outAmount) {
+    return {
+      ok: false,
+      error: `Jupiter V1 Quote Gagal: ${quoteRes.data?.error || quoteRes.error || 'Tidak ada rute likuiditas aktif'}`,
+    };
+  }
+
+  const swapRes = await fetchJsonWithTimeout(
+    'https://lite-api.jup.ag/swap/v1/swap',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        quoteResponse: quoteRes.data,
+        userPublicKey: pubKey,
+        wrapAndUnwrapSol: true,
+        dynamicComputeUnitLimit: true,
+        prioritizationFeeLamports: 'auto',
+      }),
+    },
+    6500,
+    true
+  );
+
+  if (!swapRes.ok || !swapRes.data?.swapTransaction) {
+    return {
+      ok: false,
+      error: `Jupiter V1 Swap Transaction Builder Gagal: ${
+        swapRes.data?.error || swapRes.error || 'Gagal menyusun VersionedTransaction'
+      }`,
+    };
+  }
+
+  const inUi = Number(quoteRes.data.inAmount) / 10 ** inDecimals;
+  const outUi = Number(quoteRes.data.outAmount) / 10 ** outDecimals;
+  const effectivePrice = isBuyToken
+    ? outUi > 0
+      ? Number((inUi / outUi).toFixed(8))
+      : 0
+    : inUi > 0
+      ? Number((outUi / inUi).toFixed(8))
+      : 0;
+
+  return {
+    ok: true,
+    swapTransaction: String(swapRes.data.swapTransaction),
+    lastValidBlockHeight: swapRes.data.lastValidBlockHeight,
+    inputMint,
+    outputMint,
+    inAmount: String(quoteRes.data.inAmount),
+    outAmount: String(quoteRes.data.outAmount),
+    expectedInQty: Number(inUi.toFixed(8)),
+    expectedOutQty: Number(outUi.toFixed(8)),
+    effectivePrice,
+    priceImpactPct: Number((Number(quoteRes.data.priceImpactPct || 0) * 100).toFixed(4)),
+    routePlan: Array.isArray(quoteRes.data.routePlan)
+      ? quoteRes.data.routePlan.map((r) => ({
+          dexLabel: r?.swapInfo?.label || 'Solana AMM',
+          percent: r?.percent ?? 100,
+        }))
+      : [],
   };
 }
 
@@ -4969,7 +5361,10 @@ export async function fetchRealOpenPositions(payload = {}) {
 export async function getAllExchangesConfigStatus(useTestnet = false) {
   const probeVenue = async (spec) => {
     const t0 = Date.now();
-    const res = await fetchJsonWithTimeout(spec.url, spec.opts || {}, 4000, true);
+    let res = await fetchJsonWithTimeout(spec.url, spec.opts || {}, 4500, true);
+    if (!res.ok) {
+      res = await fetchJsonWithTimeout(spec.url, spec.opts || {}, 5500, true);
+    }
     const latencyMs = Date.now() - t0;
     return {
       priority: spec.priority,
@@ -5511,14 +5906,18 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
       const fUrl = useTestnet
         ? 'https://testnet.binancefuture.com/fapi/v1/time'
         : 'https://fapi.binance.com/fapi/v1/time';
-      const sUrl = useTestnet
-        ? 'https://testnet.binance.vision/api/v3/time'
+      const sUrlPrimary = useTestnet
+        ? 'https://demo-api.binance.com/api/v3/time'
         : 'https://api.binance.com/api/v3/time';
-      const [fPing, sPing, publicIp] = await Promise.all([
+      const [fPing, sPingPrimary, sPingLegacy, publicIp] = await Promise.all([
         fetchJsonWithTimeout(fUrl, {}, 4200, true),
-        fetchJsonWithTimeout(sUrl, {}, 4200, true),
+        fetchJsonWithTimeout(sUrlPrimary, {}, 4200, true),
+        useTestnet
+          ? fetchJsonWithTimeout('https://testnet.binance.vision/api/v3/time', {}, 4200, true)
+          : Promise.resolve({ ok: false }),
         detectMachinePublicIpv4(),
       ]);
+      const sPing = sPingPrimary.ok ? sPingPrimary : sPingLegacy;
       const latencyMs = Date.now() - t0;
       const ok = Boolean(fPing.ok || sPing.ok);
       return {
@@ -5602,6 +6001,12 @@ export async function handleGatewayApiRoute(pathname, searchParams, method, read
   if (pathname === '/api/account/positions' && method === 'POST') {
     const body = await readBody();
     const result = await fetchRealOpenPositions(body);
+    return { status: 200, payload: result };
+  }
+
+  if (pathname === '/api/execute/solana-swap-tx' && method === 'POST') {
+    const body = await readBody();
+    const result = await buildJupiterSwapTransaction(body);
     return { status: 200, payload: result };
   }
 
